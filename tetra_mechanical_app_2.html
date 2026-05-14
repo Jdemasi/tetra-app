@@ -1,0 +1,1256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tetra Mechanical Services — Job Cost System</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
+:root{--navy:#1B2A5E;--red:#B22234;--white:#fff;--gray50:#F8F9FA;--gray100:#F1F3F5;--gray200:#E9ECEF;--gray400:#ADB5BD;--gray600:#6C757D;--gray800:#343A40;--green:#1D9E75;--amber:#EF9F27;--danger:#E24B4A;--border:#E9ECEF}
+body{background:#F1F3F5;color:#343A40}
+.app{display:flex;height:100vh;overflow:hidden}
+
+/* SIDEBAR */
+.sb{width:220px;min-width:220px;background:var(--navy);display:flex;flex-direction:column;overflow-y:auto}
+.sb-logo{padding:16px;border-bottom:1px solid rgba(255,255,255,0.1);display:flex;align-items:center;gap:10px;flex-shrink:0}
+.sb-mark{width:34px;height:34px;background:var(--red);border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:700;color:#fff;flex-shrink:0}
+.sb-co{color:#fff;font-size:12px;font-weight:600;line-height:1.3}
+.sb-sub{color:rgba(255,255,255,0.45);font-size:10px}
+.sb-sec{padding:8px 0}
+.sb-lbl{font-size:10px;font-weight:600;color:rgba(255,255,255,0.3);padding:8px 16px 3px;letter-spacing:.07em;text-transform:uppercase}
+.sb-item{display:flex;align-items:center;gap:9px;padding:8px 16px;font-size:12px;color:rgba(255,255,255,0.6);cursor:pointer;transition:all .12s;border:none;background:none;width:100%;text-align:left}
+.sb-item:hover{background:rgba(255,255,255,0.08);color:#fff}
+.sb-item.active{background:var(--red);color:#fff}
+.sb-item svg{width:15px;height:15px;flex-shrink:0;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.sb-job{padding:4px 16px 4px 12px;cursor:pointer;display:flex;align-items:center;gap:8px}
+.sb-job:hover .sj-name{color:#fff}
+.sj-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.sj-name{font-size:11px;color:rgba(255,255,255,0.5);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;transition:.12s}
+.sj-num{font-size:10px;color:rgba(255,255,255,0.25)}
+.sb-job.active-job .sj-name{color:#fff;font-weight:600}
+.sb-mod{display:flex;align-items:center;gap:7px;padding:5px 16px 5px 28px;font-size:11px;color:rgba(255,255,255,0.45);cursor:pointer;transition:.12s;border:none;background:none;width:100%;text-align:left}
+.sb-mod:hover{color:#fff}
+.sb-mod.active{color:#fff;font-weight:600}
+.sb-mod svg{width:13px;height:13px;flex-shrink:0;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+
+/* MAIN */
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.topbar{background:#fff;border-bottom:1px solid var(--border);padding:0 20px;display:flex;align-items:center;justify-content:space-between;height:50px;flex-shrink:0}
+.breadcrumb{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--gray600)}
+.breadcrumb .cur{color:var(--gray800);font-weight:600}
+.breadcrumb .sep{color:var(--gray400)}
+.topbar-right{display:flex;align-items:center;gap:8px}
+.btn{padding:6px 14px;font-size:12px;border:1px solid var(--border);border-radius:7px;background:#fff;color:var(--gray800);cursor:pointer;display:inline-flex;align-items:center;gap:5px;transition:.12s;font-weight:500}
+.btn:hover{background:var(--gray100)}
+.btn-primary{background:var(--navy);color:#fff;border-color:var(--navy)}
+.btn-primary:hover{background:#16235a}
+.btn-red{background:var(--red);color:#fff;border-color:var(--red)}
+.btn-red:hover{background:#9e1e2e}
+.btn-sm{padding:4px 10px;font-size:11px}
+.btn svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+
+/* CONTENT */
+.content{flex:1;overflow-y:auto;padding:20px}
+
+/* CARDS */
+.card{background:#fff;border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:14px}
+.card-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.card-title{font-size:13px;font-weight:600;color:var(--gray800);display:flex;align-items:center;gap:7px}
+.card-title svg{width:15px;height:15px;stroke:var(--navy);fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+
+/* KPI GRID */
+.kgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:16px}
+.kcard{background:#fff;border:1px solid var(--border);border-radius:10px;padding:14px;border-top:3px solid var(--navy)}
+.kcard.red{border-top-color:var(--red)}
+.kcard.grn{border-top-color:var(--green)}
+.kcard.amb{border-top-color:var(--amber)}
+.klbl{font-size:11px;color:var(--gray600);margin-bottom:5px;font-weight:500}
+.kval{font-size:20px;font-weight:600;color:var(--gray800)}
+.ksub{font-size:10px;margin-top:3px;color:var(--gray600)}
+.ksub.g{color:var(--green)}.ksub.r{color:var(--danger)}.ksub.a{color:var(--amber)}
+
+/* TABLE */
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;font-size:10px;font-weight:600;color:var(--gray600);padding:7px 10px;border-bottom:1px solid var(--border);background:var(--gray50);text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}
+td{padding:9px 10px;border-bottom:1px solid var(--border);color:var(--gray800);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:var(--gray50)}
+.tbl-empty{text-align:center;color:var(--gray400);padding:32px;font-size:13px}
+
+/* BADGES */
+.badge{display:inline-flex;align-items:center;font-size:10px;padding:2px 8px;border-radius:20px;font-weight:600;white-space:nowrap}
+.b-paid{background:#E1F5EE;color:#085041}
+.b-pending{background:#E6F1FB;color:#0C447C}
+.b-overdue{background:#FCEBEB;color:#791F1F}
+.b-partial{background:#FFF3CD;color:#633806}
+.b-active{background:#E1F5EE;color:#085041}
+.b-complete{background:#E6F1FB;color:#0C447C}
+.b-hold{background:#FFF3CD;color:#633806}
+.b-notstarted{background:var(--gray100);color:var(--gray600)}
+
+/* FORM */
+.form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:14px}
+.fgroup{display:flex;flex-direction:column;gap:4px}
+.flbl{font-size:10px;font-weight:600;color:var(--gray600);text-transform:uppercase;letter-spacing:.04em}
+.finp{padding:7px 10px;font-size:12px;border:1px solid var(--border);border-radius:7px;background:#fff;color:var(--gray800);outline:none;transition:.12s;width:100%}
+.finp:focus{border-color:var(--navy);box-shadow:0 0 0 3px rgba(27,42,94,0.08)}
+select.finp{cursor:pointer}
+.form-actions{display:flex;gap:8px;justify-content:flex-end;padding-top:8px;border-top:1px solid var(--border);margin-top:4px}
+
+/* MODAL */
+.modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:100;align-items:center;justify-content:center}
+.modal-bg.open{display:flex}
+.modal{background:#fff;border-radius:12px;padding:20px;width:90%;max-width:560px;max-height:90vh;overflow-y:auto}
+.modal-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--border)}
+.modal-title{font-size:15px;font-weight:600;color:var(--gray800)}
+.modal-close{background:none;border:none;cursor:pointer;color:var(--gray400);font-size:20px;line-height:1;padding:2px}
+.modal-close:hover{color:var(--gray800)}
+
+/* LOADING */
+.loading{display:flex;align-items:center;justify-content:center;padding:40px;color:var(--gray400);font-size:13px;gap:8px}
+.spinner{width:18px;height:18px;border:2px solid var(--border);border-top-color:var(--navy);border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* TOAST */
+.toast{position:fixed;bottom:20px;right:20px;background:var(--gray800);color:#fff;padding:10px 16px;border-radius:8px;font-size:12px;font-weight:500;z-index:200;opacity:0;transform:translateY(8px);transition:.25s;pointer-events:none}
+.toast.show{opacity:1;transform:none}
+.toast.success{background:var(--green)}
+.toast.error{background:var(--danger)}
+
+/* PAGE VIEWS */
+.view{display:none}.view.active{display:block}
+
+/* GRID 2 */
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:700px){.g2{grid-template-columns:1fr}}
+
+/* ROW */
+.row-item{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)}
+.row-item:last-child{border-bottom:none}
+.ri-info{flex:1;min-width:0}
+.ri-name{font-size:12px;font-weight:600;color:var(--gray800);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ri-sub{font-size:10px;color:var(--gray600)}
+.ri-right{text-align:right;flex-shrink:0}
+.ri-val{font-size:13px;font-weight:600;color:var(--gray800)}
+.dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.dg{background:var(--green)}.da{background:var(--amber)}.dr{background:var(--danger)}.db{background:var(--navy)}
+.pbar-wrap{height:4px;background:var(--gray200);border-radius:2px;margin-top:4px;width:70px}
+.pbar{height:4px;border-radius:2px}
+.pg{background:var(--green)}.pa{background:var(--amber)}.pr{background:var(--danger)}
+.mono{font-family:monospace;font-size:11px}
+.text-right{text-align:right}
+.text-green{color:var(--green)}.text-red{color:var(--danger)}.text-amber{color:var(--amber)}
+.font-600{font-weight:600}
+.section-sub{font-size:11px;color:var(--gray600);margin-bottom:12px}
+</style>
+</head>
+<body>
+
+<div class="app">
+
+<!-- SIDEBAR -->
+<div class="sb">
+  <div class="sb-logo">
+    <div class="sb-mark">T</div>
+    <div><div class="sb-co">Tetra Mechanical</div><div class="sb-sub">Services</div></div>
+  </div>
+  <div class="sb-sec">
+    <div class="sb-lbl">Company</div>
+    <button class="sb-item active" data-view="dashboard">
+      <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>Dashboard
+    </button>
+    <button class="sb-item" data-view="wip">
+      <svg viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>WIP Schedule
+    </button>
+    <button class="sb-item" data-view="ar-aging">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>AR Aging
+    </button>
+  </div>
+  <div class="sb-sec">
+    <div class="sb-lbl">Projects</div>
+    <div id="sb-projects"></div>
+    <button class="sb-item" id="btn-new-project">
+      <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>New Project
+    </button>
+  </div>
+  <div class="sb-sec" style="margin-top:auto">
+    <div class="sb-lbl">System</div>
+    <button class="sb-item" data-view="employees">
+      <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Employees
+    </button>
+  </div>
+</div>
+
+<!-- MAIN -->
+<div class="main">
+  <div class="topbar">
+    <div class="breadcrumb" id="breadcrumb"><span class="cur">Company Dashboard</span></div>
+    <div class="topbar-right" id="topbar-actions"></div>
+  </div>
+  <div class="content" id="content">
+    <div class="loading"><div class="spinner"></div>Loading...</div>
+  </div>
+</div>
+
+</div>
+
+<!-- MODALS -->
+<div class="modal-bg" id="modal-project">
+  <div class="modal">
+    <div class="modal-hd"><div class="modal-title" id="modal-project-title">New Project</div><button class="modal-close" onclick="closeModal('modal-project')">×</button></div>
+    <div class="form-grid">
+      <div class="fgroup"><label class="flbl">Job Number</label><input class="finp" id="p-num" placeholder="e.g. 2601"></div>
+      <div class="fgroup"><label class="flbl">Job Name</label><input class="finp" id="p-name" placeholder="e.g. Edenwald"></div>
+      <div class="fgroup"><label class="flbl">Client</label><input class="finp" id="p-client" placeholder="e.g. PEG"></div>
+      <div class="fgroup"><label class="flbl">Status</label><select class="finp" id="p-status"><option>Active</option><option>Complete</option><option>On Hold</option><option>Bidding</option></select></div>
+      <div class="fgroup"><label class="flbl">Date Started</label><input class="finp" type="date" id="p-date"></div>
+      <div class="fgroup"><label class="flbl">Base Contract ($)</label><input class="finp" type="number" id="p-contract" placeholder="0"></div>
+    </div>
+    <div class="form-actions">
+      <button class="btn" onclick="closeModal('modal-project')">Cancel</button>
+      <button class="btn btn-red" onclick="saveProject()">Save Project</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="modal-phase">
+  <div class="modal">
+    <div class="modal-hd"><div class="modal-title">Add Phase</div><button class="modal-close" onclick="closeModal('modal-phase')">×</button></div>
+    <div class="form-grid">
+      <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Phase Name</label><input class="finp" id="ph-name" placeholder="e.g. Building 7"></div>
+      <div class="fgroup"><label class="flbl">Status</label><select class="finp" id="ph-status"><option>Not Started</option><option>In Progress</option><option>Complete</option><option>On Hold</option></select></div>
+      <div class="fgroup"><label class="flbl">Phase Budget ($)</label><input class="finp" type="number" id="ph-budget" placeholder="0"></div>
+    </div>
+    <div class="form-actions">
+      <button class="btn" onclick="closeModal('modal-phase')">Cancel</button>
+      <button class="btn btn-red" onclick="savePhase()">Save Phase</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="modal-purchase">
+  <div class="modal" style="max-width:640px">
+    <div class="modal-hd"><div class="modal-title">Log Invoice / Purchase</div><button class="modal-close" onclick="closeModal('modal-purchase')">×</button></div>
+    <div class="form-grid">
+      <div class="fgroup"><label class="flbl">Vendor</label><input class="finp" id="pu-vendor" placeholder="e.g. Ferguson"></div>
+      <div class="fgroup"><label class="flbl">Invoice #</label><input class="finp" id="pu-inv" placeholder="e.g. INV-1234"></div>
+      <div class="fgroup"><label class="flbl">Invoice Date</label><input class="finp" type="date" id="pu-date"></div>
+      <div class="fgroup"><label class="flbl">PO Number</label><input class="finp" id="pu-po" placeholder="Optional"></div>
+      <div class="fgroup"><label class="flbl">Category</label><select class="finp" id="pu-cat"><option value="">Select...</option><option>Materials</option><option>Labor</option><option>Subcontractors</option><option>Equipment</option><option>Rentals</option><option>Misc.</option></select></div>
+      <div class="fgroup"><label class="flbl">Phase</label><select class="finp" id="pu-phase"><option value="">Select phase...</option></select></div>
+      <div class="fgroup"><label class="flbl">PO Amount ($)</label><input class="finp" type="number" id="pu-amount" placeholder="0.00"></div>
+      <div class="fgroup"><label class="flbl">Paid Amount ($)</label><input class="finp" type="number" id="pu-paid" placeholder="0.00"></div>
+      <div class="fgroup"><label class="flbl">Terms (Days)</label><input class="finp" type="number" id="pu-terms" value="30"></div>
+      <div class="fgroup"><label class="flbl">Status</label><select class="finp" id="pu-status"><option>Pending</option><option>Paid</option><option>Partial</option><option>Overdue</option></select></div>
+    </div>
+    <div class="form-actions">
+      <button class="btn" onclick="closeModal('modal-purchase')">Cancel</button>
+      <button class="btn btn-red" onclick="savePurchase()">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="modal-labor">
+  <div class="modal" style="max-width:640px">
+    <div class="modal-hd"><div class="modal-title">Log Hours</div><button class="modal-close" onclick="closeModal('modal-labor')">×</button></div>
+    <div class="form-grid">
+      <div class="fgroup"><label class="flbl">Employee</label><select class="finp" id="la-emp"><option value="">Select...</option></select></div>
+      <div class="fgroup"><label class="flbl">Phase</label><select class="finp" id="la-phase"><option value="">Select phase...</option></select></div>
+      <div class="fgroup"><label class="flbl">Week Ending</label><input class="finp" type="date" id="la-week"></div>
+      <div class="fgroup"><label class="flbl">ST Hours</label><input class="finp" type="number" id="la-st" placeholder="0.00" step="0.25"></div>
+      <div class="fgroup"><label class="flbl">OT 1.5x Hours</label><input class="finp" type="number" id="la-ot15" placeholder="0.00" step="0.25"></div>
+      <div class="fgroup"><label class="flbl">OT 2x Hours</label><input class="finp" type="number" id="la-ot2" placeholder="0.00" step="0.25"></div>
+    </div>
+    <div id="la-cost-preview" style="background:var(--gray50);border-radius:8px;padding:10px;margin-bottom:12px;font-size:12px;color:var(--gray600)">Select employee to see cost preview</div>
+    <div class="form-actions">
+      <button class="btn" onclick="closeModal('modal-labor')">Cancel</button>
+      <button class="btn btn-red" onclick="saveLabor()">Save Hours</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="modal-invoice">
+  <div class="modal" style="max-width:600px">
+    <div class="modal-hd"><div class="modal-title">New Invoice to Client</div><button class="modal-close" onclick="closeModal('modal-invoice')">×</button></div>
+    <div class="form-grid">
+      <div class="fgroup"><label class="flbl">Invoice #</label><input class="finp" id="inv-num" placeholder="e.g. INV-2601-07"></div>
+      <div class="fgroup"><label class="flbl">Invoice Date</label><input class="finp" type="date" id="inv-date"></div>
+      <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Description</label><input class="finp" id="inv-desc" placeholder="e.g. Application #7 — Buildings 14 & 15"></div>
+      <div class="fgroup"><label class="flbl">Billed Amount ($)</label><input class="finp" type="number" id="inv-billed" placeholder="0.00" oninput="calcInvPreview()"></div>
+      <div class="fgroup"><label class="flbl">Retainage %</label><input class="finp" type="number" id="inv-ret-pct" value="10" oninput="calcInvPreview()"></div>
+      <div class="fgroup"><label class="flbl">Retainage Held ($)</label><input class="finp" id="inv-ret-held" readonly style="background:var(--gray50)"></div>
+      <div class="fgroup"><label class="flbl">Net Due ($)</label><input class="finp" id="inv-net" readonly style="background:var(--gray50)"></div>
+      <div class="fgroup"><label class="flbl">Paid Amount ($)</label><input class="finp" type="number" id="inv-paid" placeholder="0.00"></div>
+      <div class="fgroup"><label class="flbl">Terms (Days)</label><input class="finp" type="number" id="inv-terms" value="30"></div>
+      <div class="fgroup"><label class="flbl">Status</label><select class="finp" id="inv-status"><option>Pending</option><option>Paid</option><option>Partial</option><option>Overdue</option></select></div>
+    </div>
+    <div class="form-actions">
+      <button class="btn" onclick="closeModal('modal-invoice')">Cancel</button>
+      <button class="btn btn-red" onclick="saveInvoice()">Save Invoice</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="modal-employee">
+  <div class="modal">
+    <div class="modal-hd"><div class="modal-title">Add Employee</div><button class="modal-close" onclick="closeModal('modal-employee')">×</button></div>
+    <div class="form-grid">
+      <div class="fgroup"><label class="flbl">Full Name</label><input class="finp" id="em-name" placeholder="e.g. Craig Ryder"></div>
+      <div class="fgroup"><label class="flbl">Role</label><input class="finp" id="em-role" placeholder="e.g. Journeyman"></div>
+      <div class="fgroup"><label class="flbl">ST Rate ($/hr all-in)</label><input class="finp" type="number" id="em-rate" placeholder="0.00"></div>
+      <div class="fgroup"><label class="flbl">Effective Date</label><input class="finp" type="date" id="em-date"></div>
+    </div>
+    <div class="form-actions">
+      <button class="btn" onclick="closeModal('modal-employee')">Cancel</button>
+      <button class="btn btn-red" onclick="saveEmployee()">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="modal-co">
+  <div class="modal" style="max-width:600px">
+    <div class="modal-hd"><div class="modal-title">Log Change Order</div><button class="modal-close" onclick="closeModal('modal-co')">×</button></div>
+    <div class="form-grid">
+      <div class="fgroup"><label class="flbl">CO Number</label><input class="finp" id="co-num" placeholder="e.g. CO-001"></div>
+      <div class="fgroup"><label class="flbl">Date Submitted</label><input class="finp" type="date" id="co-date"></div>
+      <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Description</label><input class="finp" id="co-desc" placeholder="What does this change order cover?"></div>
+      <div class="fgroup"><label class="flbl">Amount ($)</label><input class="finp" type="number" id="co-amount" placeholder="0.00"></div>
+      <div class="fgroup"><label class="flbl">Type</label><select class="finp" id="co-type"><option value="">Select...</option><option>Labor</option><option>Material</option><option>Subcontractor</option><option>Equipment</option><option>Other</option></select></div>
+      <div class="fgroup"><label class="flbl">Status</label><select class="finp" id="co-status"><option>Pending</option><option>Submitted</option><option>Approved</option><option>Rejected</option></select></div>
+      <div class="fgroup"><label class="flbl">Date Approved</label><input class="finp" type="date" id="co-approved"></div>
+    </div>
+    <div class="form-actions">
+      <button class="btn" onclick="closeModal('modal-co')">Cancel</button>
+      <button class="btn btn-red" onclick="saveCO()">Save Change Order</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const SUPA_URL = 'https://mvwsmywudyvxfunyqkxt.supabase.co';
+const SUPA_KEY = 'sb_publishable_pjOx3XexFeKRRz0ZU2Ld0Q_uDYOkHzD';
+const { createClient } = supabase;
+const db = createClient(SUPA_URL, SUPA_KEY);
+
+let state = {
+  view: 'dashboard',
+  projects: [],
+  activeProject: null,
+  activeModule: null,
+  employees: [],
+  phases: [],
+  purchases: [],
+  laborEntries: [],
+  invoices: [],
+};
+
+const $ = id => document.getElementById(id);
+const fmt = n => n == null ? '$0' : '$' + Math.round(n).toLocaleString();
+const fmtD = n => n == null ? '$0.00' : '$' + parseFloat(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,',');
+const fmtPct = n => n == null ? '0%' : Math.round(n*100) + '%';
+const today = () => new Date().toISOString().split('T')[0];
+
+function toast(msg, type='success') {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'toast show ' + type;
+  setTimeout(() => t.className = 'toast', 2800);
+}
+
+function openModal(id) { $(id).classList.add('open'); }
+function closeModal(id) { $(id).classList.remove('open'); }
+
+// ── NAVIGATION ──────────────────────────────────────────────────────
+document.querySelectorAll('.sb-item[data-view]').forEach(btn => {
+  btn.addEventListener('click', () => navigate(btn.dataset.view));
+});
+$('btn-new-project').addEventListener('click', () => {
+  clearForm(['p-num','p-name','p-client','p-date','p-contract']);
+  $('p-status').value = 'Active';
+  $('modal-project-title').textContent = 'New Project';
+  openModal('modal-project');
+});
+
+function navigate(view, projectId=null, module=null) {
+  state.view = view;
+  state.activeProject = projectId ? state.projects.find(p=>p.id===projectId) : state.activeProject;
+  state.activeModule = module;
+  document.querySelectorAll('.sb-item').forEach(b => b.classList.remove('active'));
+  const btn = document.querySelector(`.sb-item[data-view="${view}"]`);
+  if (btn) btn.classList.add('active');
+  document.querySelectorAll('.sb-mod').forEach(b => b.classList.remove('active'));
+  if (module) {
+    const mb = document.querySelector(`.sb-mod[data-module="${module}"]`);
+    if (mb) mb.classList.add('active');
+  }
+  render();
+}
+
+// ── RENDER ───────────────────────────────────────────────────────────
+async function render() {
+  const c = $('content');
+  c.innerHTML = '<div class="loading"><div class="spinner"></div>Loading...</div>';
+  updateBreadcrumb();
+  $('topbar-actions').innerHTML = '';
+  if (state.view === 'dashboard') await renderDashboard();
+  else if (state.view === 'wip') await renderWIP();
+  else if (state.view === 'ar-aging') await renderARaging();
+  else if (state.view === 'employees') await renderEmployees();
+  else if (state.view === 'project' && state.activeProject) {
+    if (!state.activeModule || state.activeModule === 'setup') await renderJobSetup();
+    else if (state.activeModule === 'purchases') await renderPurchases();
+    else if (state.activeModule === 'labor') await renderLabor();
+    else if (state.activeModule === 'cos') await renderChangeOrders();
+    else if (state.activeModule === 'invoices') await renderInvoices();
+    else if (state.activeModule === 'phases') await renderPhaseBreakdown();
+    else if (state.activeModule === 'bva') await renderBVA();
+  }
+}
+
+function updateBreadcrumb() {
+  let html = '';
+  if (state.view === 'dashboard') html = '<span class="cur">Company Dashboard</span>';
+  else if (state.view === 'wip') html = '<span>Dashboard</span><span class="sep">/</span><span class="cur">WIP Schedule</span>';
+  else if (state.view === 'ar-aging') html = '<span>Dashboard</span><span class="sep">/</span><span class="cur">AR Aging</span>';
+  else if (state.view === 'employees') html = '<span>Dashboard</span><span class="sep">/</span><span class="cur">Employees</span>';
+  else if (state.view === 'project' && state.activeProject) {
+    const p = state.activeProject;
+    const modNames = {setup:'Job Setup',purchases:'Purchases & AP',labor:'Time & Labor',cos:'Change Orders',invoices:'Invoices & AR',phases:'Phase Breakdown',bva:'Budget vs Actual'};
+    html = `<span onclick="navigate('dashboard')" style="cursor:pointer">Dashboard</span><span class="sep">/</span><span onclick="navigate('project','${p.id}','setup')" style="cursor:pointer">${p.job_number} — ${p.job_name}</span>`;
+    if (state.activeModule) html += `<span class="sep">/</span><span class="cur">${modNames[state.activeModule]||''}</span>`;
+  }
+  $('breadcrumb').innerHTML = html;
+}
+
+// ── SIDEBAR PROJECTS ─────────────────────────────────────────────────
+function renderSidebarProjects() {
+  const c = $('sb-projects');
+  if (!state.projects.length) { c.innerHTML = ''; return; }
+  c.innerHTML = state.projects.map(p => {
+    const isActive = state.activeProject && state.activeProject.id === p.id;
+    const dotClass = p.status === 'Active' ? 'dg' : p.status === 'Complete' ? 'db' : 'da';
+    return `<div class="sb-job ${isActive?'active-job':''}" onclick="openProject('${p.id}')">
+      <div class="sj-dot ${dotClass}"></div>
+      <div class="sj-name">${p.job_name}</div>
+      <div class="sj-num">${p.job_number}</div>
+    </div>
+    ${isActive ? `
+    <button class="sb-mod ${state.activeModule==='setup'?'active':''}" data-module="setup" onclick="navigate('project','${p.id}','setup')">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Job Setup
+    </button>
+    <button class="sb-mod ${state.activeModule==='purchases'?'active':''}" data-module="purchases" onclick="navigate('project','${p.id}','purchases')">
+      <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>Purchases & AP
+    </button>
+    <button class="sb-mod ${state.activeModule==='labor'?'active':''}" data-module="labor" onclick="navigate('project','${p.id}','labor')">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>Time & Labor
+    </button>
+    <button class="sb-mod ${state.activeModule==='cos'?'active':''}" data-module="cos" onclick="navigate('project','${p.id}','cos')">
+      <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Change Orders
+    </button>
+    <button class="sb-mod ${state.activeModule==='invoices'?'active':''}" data-module="invoices" onclick="navigate('project','${p.id}','invoices')">
+      <svg viewBox="0 0 24 24"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>Invoices & AR
+    </button>
+    <button class="sb-mod ${state.activeModule==='phases'?'active':''}" data-module="phases" onclick="navigate('project','${p.id}','phases')">
+      <svg viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>Phase Breakdown
+    </button>
+    <button class="sb-mod ${state.activeModule==='bva'?'active':''}" data-module="bva" onclick="navigate('project','${p.id}','bva')">
+      <svg viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>Budget vs Actual
+    </button>` : ''}`;
+  }).join('');
+  document.querySelectorAll('.sb-mod').forEach(b => {
+    b.addEventListener('click', e => {
+      e.stopPropagation();
+      navigate('project', state.activeProject?.id, b.dataset.module);
+    });
+  });
+}
+
+function openProject(id) {
+  state.activeProject = state.projects.find(p => p.id === id);
+  navigate('project', id, 'setup');
+}
+
+// ── DASHBOARD ────────────────────────────────────────────────────────
+async function renderDashboard() {
+  const [{ data: projects }, { data: purchases }, { data: invoices }, { data: labor }] = await Promise.all([
+    db.from('projects').select('*').order('created_at'),
+    db.from('purchases').select('*'),
+    db.from('invoices').select('*'),
+    db.from('labor_entries').select('*'),
+  ]);
+  state.projects = projects || [];
+  renderSidebarProjects();
+  const totalContract = state.projects.reduce((s,p) => s + parseFloat(p.base_contract||0) + parseFloat(p.approved_cos||0), 0);
+  const totalBilled = (invoices||[]).reduce((s,i) => s + parseFloat(i.billed_amount||0), 0);
+  const totalPaid = (invoices||[]).reduce((s,i) => s + parseFloat(i.paid_amount||0), 0);
+  const totalCost = (purchases||[]).reduce((s,p) => s + parseFloat(p.po_amount||0), 0)
+    + (labor||[]).reduce((s,l) => s + (parseFloat(l.st_hours||0)*parseFloat(l.st_rate||0)) + (parseFloat(l.ot15_hours||0)*parseFloat(l.st_rate||0)*1.5) + (parseFloat(l.ot2_hours||0)*parseFloat(l.st_rate||0)*2), 0);
+  const activeJobs = state.projects.filter(p=>p.status==='Active').length;
+  $('content').innerHTML = `
+  <div class="kgrid">
+    <div class="kcard db"><div class="klbl">Active Jobs</div><div class="kval">${activeJobs}</div><div class="ksub">${fmt(totalContract)} total contract</div></div>
+    <div class="kcard red"><div class="klbl">Total Billed</div><div class="kval">${fmt(totalBilled)}</div><div class="ksub">to clients</div></div>
+    <div class="kcard amb"><div class="klbl">AR Outstanding</div><div class="kval">${fmt(totalBilled-totalPaid)}</div><div class="ksub a">${fmt(totalPaid)} collected</div></div>
+    <div class="kcard grn"><div class="klbl">Total Cost to Date</div><div class="kval">${fmt(totalCost)}</div><div class="ksub">all jobs</div></div>
+  </div>
+  <div class="g2">
+    <div class="card">
+      <div class="card-hd"><div class="card-title"><svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Projects</div>
+        <button class="btn btn-sm btn-red" onclick="$('btn-new-project').click()">+ New</button>
+      </div>
+      ${state.projects.length === 0 ? '<div class="tbl-empty">No projects yet. Create your first one.</div>' :
+        state.projects.map(p => {
+          const pInv = (invoices||[]).filter(i=>i.project_id===p.id);
+          const billed = pInv.reduce((s,i)=>s+parseFloat(i.billed_amount||0),0);
+          const contract = parseFloat(p.base_contract||0)+parseFloat(p.approved_cos||0);
+          const pct = contract>0 ? billed/contract : 0;
+          const dotC = p.status==='Active'?'dg':p.status==='Complete'?'db':'da';
+          const barC = pct>0.8?'pr':pct>0.5?'pa':'pg';
+          return `<div class="row-item" style="cursor:pointer" onclick="openProject('${p.id}')">
+            <div class="dot ${dotC}"></div>
+            <div class="ri-info">
+              <div class="ri-name">${p.job_number} — ${p.job_name}</div>
+              <div class="ri-sub">${p.client||'No client'}</div>
+            </div>
+            <div class="ri-right">
+              <div class="ri-val">${fmt(contract)}</div>
+              <div class="pbar-wrap"><div class="pbar ${barC}" style="width:${Math.min(100,Math.round(pct*100))}%"></div></div>
+              <div style="font-size:10px;color:var(--gray600);margin-top:2px">${Math.round(pct*100)}% billed</div>
+            </div>
+          </div>`;
+        }).join('')}
+    </div>
+    <div class="card">
+      <div class="card-hd"><div class="card-title"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>Recent Activity</div></div>
+      ${(purchases||[]).length===0 && (invoices||[]).length===0 ? '<div class="tbl-empty">No activity yet. Start by logging a purchase or invoice.</div>' :
+        [...(purchases||[]).slice(-3).map(p=>`<div class="row-item"><div class="dot db"></div><div class="ri-info"><div class="ri-name">${p.vendor||'Purchase'} — ${p.category||''}</div><div class="ri-sub">${p.invoice_date||''}</div></div><div class="ri-right"><div class="ri-val">${fmt(p.po_amount)}</div></div></div>`),
+         ...(invoices||[]).slice(-3).map(i=>`<div class="row-item"><div class="dot dg"></div><div class="ri-info"><div class="ri-name">Invoice ${i.invoice_number||''}</div><div class="ri-sub">${i.description||''}</div></div><div class="ri-right"><div class="ri-val">${fmt(i.billed_amount)}</div></div></div>`)
+        ].join('')}
+    </div>
+  </div>`;
+  $('topbar-actions').innerHTML = `<button class="btn btn-red" onclick="$('btn-new-project').click()">+ New Project</button>`;
+}
+
+// ── JOB SETUP ────────────────────────────────────────────────────────
+async function renderJobSetup() {
+  const p = state.activeProject;
+  const { data: phases } = await db.from('phases').select('*').eq('project_id', p.id).order('sort_order');
+  const { data: budgets } = await db.from('project_budgets').select('*').eq('project_id', p.id);
+  state.phases = phases || [];
+  const cats = ['Materials','Labor','Subcontractors','Equipment','Rentals','Misc.'];
+  const budMap = {};
+  (budgets||[]).forEach(b => budMap[b.category] = b.budgeted_amount);
+  $('content').innerHTML = `
+  <div class="g2">
+    <div class="card">
+      <div class="card-hd"><div class="card-title"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>Job Information</div>
+        <button class="btn btn-sm" onclick="editProject('${p.id}')">Edit</button>
+      </div>
+      <table><tbody>
+        <tr><td style="color:var(--gray600);font-size:11px;width:120px">Job Number</td><td class="font-600">${p.job_number}</td></tr>
+        <tr><td style="color:var(--gray600);font-size:11px">Job Name</td><td class="font-600">${p.job_name}</td></tr>
+        <tr><td style="color:var(--gray600);font-size:11px">Client</td><td>${p.client||'—'}</td></tr>
+        <tr><td style="color:var(--gray600);font-size:11px">Status</td><td><span class="badge b-${p.status?.toLowerCase().replace(' ','')}">${p.status}</span></td></tr>
+        <tr><td style="color:var(--gray600);font-size:11px">Date Started</td><td>${p.date_started||'—'}</td></tr>
+        <tr><td style="color:var(--gray600);font-size:11px">Base Contract</td><td class="font-600">${fmt(p.base_contract)}</td></tr>
+        <tr><td style="color:var(--gray600);font-size:11px">Approved COs</td><td>${fmt(p.approved_cos)}</td></tr>
+        <tr><td style="color:var(--gray600);font-size:11px">Adjusted Value</td><td class="font-600">${fmt(parseFloat(p.base_contract||0)+parseFloat(p.approved_cos||0))}</td></tr>
+      </tbody></table>
+    </div>
+    <div class="card">
+      <div class="card-hd"><div class="card-title"><svg viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>Cost Budget by Category</div></div>
+      <p class="section-sub">Set your budget per cost category for this job.</p>
+      ${cats.map(cat => `
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+        <div style="font-size:12px;font-weight:500;width:130px;flex-shrink:0">${cat}</div>
+        <input class="finp" type="number" placeholder="0" value="${budMap[cat]||''}" 
+          style="flex:1" onchange="saveBudget('${p.id}','${cat}',this.value)" data-cat="${cat}">
+      </div>`).join('')}
+      <div style="border-top:1px solid var(--border);margin-top:10px;padding-top:10px;display:flex;justify-content:space-between;font-size:12px">
+        <span style="color:var(--gray600);font-weight:600">Total Budget</span>
+        <span class="font-600">${fmt(Object.values(budMap).reduce((s,v)=>s+parseFloat(v||0),0))}</span>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-hd">
+      <div class="card-title"><svg viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/></svg>Phase List</div>
+      <button class="btn btn-sm btn-red" onclick="openAddPhase('${p.id}')">+ Add Phase</button>
+    </div>
+    <p class="section-sub">Define the phases for this job. These appear as dropdowns throughout the system.</p>
+    ${state.phases.length === 0 ? '<div class="tbl-empty">No phases yet. Add your first phase.</div>' :
+    `<table><thead><tr><th>Phase Name</th><th>Status</th><th>Budget</th></tr></thead><tbody>
+    ${state.phases.map(ph => `<tr>
+      <td class="font-600">${ph.phase_name}</td>
+      <td><span class="badge b-${ph.status?.toLowerCase().replace(' ','')}">${ph.status}</span></td>
+      <td>${fmt(ph.phase_budget)}</td>
+    </tr>`).join('')}
+    </tbody></table>`}
+  </div>`;
+  $('topbar-actions').innerHTML = `<button class="btn btn-sm" onclick="editProject('${p.id}')">Edit Job</button>`;
+}
+
+async function saveBudget(projectId, category, amount) {
+  const { error } = await db.from('project_budgets').upsert({ project_id: projectId, category, budgeted_amount: parseFloat(amount)||0 }, { onConflict: 'project_id,category' });
+  if (!error) toast('Budget saved');
+}
+
+function openAddPhase(projectId) {
+  clearForm(['ph-name','ph-budget']);
+  $('ph-status').value = 'Not Started';
+  openModal('modal-phase');
+  $('modal-phase').dataset.projectId = projectId;
+}
+
+async function savePhase() {
+  const projectId = $('modal-phase').dataset.projectId;
+  const name = $('ph-name').value.trim();
+  if (!name) { toast('Enter a phase name','error'); return; }
+  const { error } = await db.from('phases').insert({ project_id: projectId, phase_name: name, status: $('ph-status').value, phase_budget: parseFloat($('ph-budget').value)||0, sort_order: state.phases.length });
+  if (error) { toast('Error: '+error.message,'error'); return; }
+  closeModal('modal-phase');
+  toast('Phase added');
+  render();
+}
+
+// ── PURCHASES & AP ───────────────────────────────────────────────────
+async function renderPurchases() {
+  const p = state.activeProject;
+  const [{ data: purchases }, { data: phases }] = await Promise.all([
+    db.from('purchases').select('*').eq('project_id', p.id).order('created_at', {ascending:false}),
+    db.from('phases').select('*').eq('project_id', p.id).order('sort_order'),
+  ]);
+  state.purchases = purchases || [];
+  state.phases = phases || [];
+  const totalInv = state.purchases.reduce((s,pu)=>s+parseFloat(pu.po_amount||0),0);
+  const totalPaid = state.purchases.reduce((s,pu)=>s+parseFloat(pu.paid_amount||0),0);
+  $('content').innerHTML = `
+  <div class="kgrid">
+    <div class="kcard db"><div class="klbl">Total Invoiced</div><div class="kval">${fmt(totalInv)}</div></div>
+    <div class="kcard grn"><div class="klbl">Total Paid</div><div class="kval">${fmt(totalPaid)}</div></div>
+    <div class="kcard amb"><div class="klbl">Outstanding</div><div class="kval">${fmt(totalInv-totalPaid)}</div></div>
+    <div class="kcard red"><div class="klbl">Entries</div><div class="kval">${state.purchases.length}</div></div>
+  </div>
+  <div class="card">
+    <div class="card-hd"><div class="card-title"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>Purchases & Accounts Payable</div>
+      <button class="btn btn-sm btn-red" onclick="openNewPurchase('${p.id}')">+ Log Invoice</button>
+    </div>
+    <div class="tbl-wrap">
+    ${state.purchases.length === 0 ? '<div class="tbl-empty">No purchases logged yet. Click "Log Invoice" to add one.</div>' :
+    `<table><thead><tr><th>Vendor</th><th>Invoice #</th><th>Date</th><th>Category</th><th>Phase</th><th class="text-right">PO Amount</th><th class="text-right">Paid</th><th>Due</th><th>Status</th></tr></thead><tbody>
+    ${state.purchases.map(pu => {
+      const phase = state.phases.find(ph=>ph.id===pu.phase_id);
+      const invDate = pu.invoice_date ? new Date(pu.invoice_date) : null;
+      const dueDate = invDate ? new Date(invDate.getTime() + (pu.terms_days||30)*86400000) : null;
+      const daysLeft = dueDate ? Math.ceil((dueDate-new Date())/(86400000)) : null;
+      const daysStr = daysLeft===null?'—':daysLeft<0?`<span class="text-red">${Math.abs(daysLeft)}d late</span>`:daysLeft<=7?`<span class="text-amber">${daysLeft}d</span>`:`${daysLeft}d`;
+      return `<tr>
+        <td class="font-600">${pu.vendor||'—'}</td>
+        <td class="mono">${pu.invoice_number||'—'}</td>
+        <td>${pu.invoice_date||'—'}</td>
+        <td>${pu.category||'—'}</td>
+        <td>${phase?phase.phase_name:'—'}</td>
+        <td class="text-right font-600">${fmt(pu.po_amount)}</td>
+        <td class="text-right">${fmt(pu.paid_amount)}</td>
+        <td>${daysStr}</td>
+        <td><span class="badge b-${(pu.status||'pending').toLowerCase()}">${pu.status}</span></td>
+      </tr>`;
+    }).join('')}
+    </tbody></table>`}
+    </div>
+  </div>`;
+  $('topbar-actions').innerHTML = `<button class="btn btn-sm btn-red" onclick="openNewPurchase('${p.id}')">+ Log Invoice</button>`;
+}
+
+function openNewPurchase(projectId) {
+  clearForm(['pu-vendor','pu-inv','pu-po','pu-amount','pu-paid']);
+  $('pu-date').value = today();
+  $('pu-terms').value = 30;
+  $('pu-cat').value = '';
+  $('pu-status').value = 'Pending';
+  const sel = $('pu-phase');
+  sel.innerHTML = '<option value="">Select phase...</option>' + state.phases.map(ph=>`<option value="${ph.id}">${ph.phase_name}</option>`).join('');
+  $('modal-purchase').dataset.projectId = projectId;
+  openModal('modal-purchase');
+}
+
+async function savePurchase() {
+  const projectId = $('modal-purchase').dataset.projectId;
+  const { error } = await db.from('purchases').insert({
+    project_id: projectId,
+    phase_id: $('pu-phase').value || null,
+    vendor: $('pu-vendor').value,
+    invoice_number: $('pu-inv').value,
+    invoice_date: $('pu-date').value,
+    po_number: $('pu-po').value,
+    category: $('pu-cat').value,
+    po_amount: parseFloat($('pu-amount').value)||0,
+    paid_amount: parseFloat($('pu-paid').value)||0,
+    terms_days: parseInt($('pu-terms').value)||30,
+    status: $('pu-status').value,
+  });
+  if (error) { toast('Error: '+error.message,'error'); return; }
+  closeModal('modal-purchase');
+  toast('Purchase saved');
+  render();
+}
+
+// ── TIME & LABOR ─────────────────────────────────────────────────────
+async function renderLabor() {
+  const p = state.activeProject;
+  const [{ data: labor }, { data: phases }, { data: employees }] = await Promise.all([
+    db.from('labor_entries').select('*').eq('project_id', p.id).order('created_at', {ascending:false}),
+    db.from('phases').select('*').eq('project_id', p.id).order('sort_order'),
+    db.from('employees').select('*').eq('active', true).order('name'),
+  ]);
+  state.laborEntries = labor || [];
+  state.phases = phases || [];
+  state.employees = employees || [];
+  const calcCost = l => (parseFloat(l.st_hours||0)*parseFloat(l.st_rate||0)) + (parseFloat(l.ot15_hours||0)*parseFloat(l.st_rate||0)*1.5) + (parseFloat(l.ot2_hours||0)*parseFloat(l.st_rate||0)*2);
+  const totalHrs = state.laborEntries.reduce((s,l)=>s+parseFloat(l.st_hours||0)+parseFloat(l.ot15_hours||0)+parseFloat(l.ot2_hours||0),0);
+  const totalCost = state.laborEntries.reduce((s,l)=>s+calcCost(l),0);
+  $('content').innerHTML = `
+  <div class="kgrid">
+    <div class="kcard db"><div class="klbl">Total ST Hours</div><div class="kval">${state.laborEntries.reduce((s,l)=>s+parseFloat(l.st_hours||0),0).toFixed(1)}</div></div>
+    <div class="kcard amb"><div class="klbl">Total OT Hours</div><div class="kval">${state.laborEntries.reduce((s,l)=>s+parseFloat(l.ot15_hours||0)+parseFloat(l.ot2_hours||0),0).toFixed(1)}</div></div>
+    <div class="kcard red"><div class="klbl">Total Hours</div><div class="kval">${totalHrs.toFixed(1)}</div></div>
+    <div class="kcard grn"><div class="klbl">Total Labor Cost</div><div class="kval">${fmt(totalCost)}</div></div>
+  </div>
+  <div class="card">
+    <div class="card-hd"><div class="card-title"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>Time & Labor Log</div>
+      <button class="btn btn-sm btn-red" onclick="openNewLabor('${p.id}')">+ Log Hours</button>
+    </div>
+    <div class="tbl-wrap">
+    ${state.laborEntries.length === 0 ? '<div class="tbl-empty">No hours logged yet. Click "Log Hours" to add.</div>' :
+    `<table><thead><tr><th>Employee</th><th>Phase</th><th>Week Ending</th><th class="text-right">ST Hrs</th><th class="text-right">OT 1.5x</th><th class="text-right">OT 2x</th><th class="text-right">Total Hrs</th><th class="text-right">Rate</th><th class="text-right">Total Cost</th></tr></thead><tbody>
+    ${state.laborEntries.map(l => {
+      const phase = state.phases.find(ph=>ph.id===l.phase_id);
+      const totalH = parseFloat(l.st_hours||0)+parseFloat(l.ot15_hours||0)+parseFloat(l.ot2_hours||0);
+      const cost = calcCost(l);
+      return `<tr>
+        <td class="font-600">${l.employee_name||'—'}</td>
+        <td>${phase?phase.phase_name:'—'}</td>
+        <td>${l.week_ending||'—'}</td>
+        <td class="text-right">${parseFloat(l.st_hours||0).toFixed(2)}</td>
+        <td class="text-right">${parseFloat(l.ot15_hours||0).toFixed(2)}</td>
+        <td class="text-right">${parseFloat(l.ot2_hours||0).toFixed(2)}</td>
+        <td class="text-right font-600">${totalH.toFixed(2)}</td>
+        <td class="text-right">${fmtD(l.st_rate)}</td>
+        <td class="text-right font-600">${fmt(cost)}</td>
+      </tr>`;
+    }).join('')}
+    </tbody></table>`}
+    </div>
+  </div>`;
+  $('topbar-actions').innerHTML = `<button class="btn btn-sm btn-red" onclick="openNewLabor('${p.id}')">+ Log Hours</button>`;
+}
+
+function openNewLabor(projectId) {
+  $('la-week').value = today();
+  clearForm(['la-st','la-ot15','la-ot2']);
+  const empSel = $('la-emp');
+  empSel.innerHTML = '<option value="">Select employee...</option>' + state.employees.map(e=>`<option value="${e.id}" data-rate="${e.st_rate}" data-name="${e.name}" data-role="${e.role||''}">${e.name} — ${e.role||''}</option>`).join('');
+  const phSel = $('la-phase');
+  phSel.innerHTML = '<option value="">Select phase...</option>' + state.phases.map(ph=>`<option value="${ph.id}">${ph.phase_name}</option>`).join('');
+  empSel.onchange = updateLaborPreview;
+  ['la-st','la-ot15','la-ot2'].forEach(id => $(id).oninput = updateLaborPreview);
+  $('la-cost-preview').textContent = 'Select employee to see cost preview';
+  $('modal-labor').dataset.projectId = projectId;
+  openModal('modal-labor');
+}
+
+function updateLaborPreview() {
+  const sel = $('la-emp');
+  const opt = sel.options[sel.selectedIndex];
+  if (!opt || !opt.dataset.rate) { $('la-cost-preview').textContent = 'Select employee to see cost preview'; return; }
+  const rate = parseFloat(opt.dataset.rate)||0;
+  const st = parseFloat($('la-st').value)||0;
+  const ot15 = parseFloat($('la-ot15').value)||0;
+  const ot2 = parseFloat($('la-ot2').value)||0;
+  const stCost = st*rate, ot15Cost = ot15*rate*1.5, ot2Cost = ot2*rate*2;
+  const total = stCost+ot15Cost+ot2Cost;
+  $('la-cost-preview').innerHTML = `<strong>${opt.dataset.name}</strong> @ ${fmtD(rate)}/hr &nbsp;|&nbsp; ST: ${fmt(stCost)} &nbsp;|&nbsp; OT 1.5x: ${fmt(ot15Cost)} &nbsp;|&nbsp; OT 2x: ${fmt(ot2Cost)} &nbsp;|&nbsp; <strong>Total: ${fmt(total)}</strong>`;
+}
+
+async function saveLabor() {
+  const projectId = $('modal-labor').dataset.projectId;
+  const empSel = $('la-emp');
+  const opt = empSel.options[empSel.selectedIndex];
+  if (!opt.value) { toast('Select an employee','error'); return; }
+  const rate = parseFloat(opt.dataset.rate)||0;
+  const { error } = await db.from('labor_entries').insert({
+    project_id: projectId,
+    phase_id: $('la-phase').value || null,
+    employee_id: opt.value,
+    employee_name: opt.dataset.name,
+    role: opt.dataset.role,
+    week_ending: $('la-week').value,
+    st_hours: parseFloat($('la-st').value)||0,
+    ot15_hours: parseFloat($('la-ot15').value)||0,
+    ot2_hours: parseFloat($('la-ot2').value)||0,
+    st_rate: rate,
+  });
+  if (error) { toast('Error: '+error.message,'error'); return; }
+  closeModal('modal-labor');
+  toast('Hours saved');
+  render();
+}
+
+// ── INVOICES & AR ────────────────────────────────────────────────────
+async function renderInvoices() {
+  const p = state.activeProject;
+  const { data: invoices } = await db.from('invoices').select('*').eq('project_id', p.id).order('created_at', {ascending:false});
+  state.invoices = invoices || [];
+  const totalBilled = state.invoices.reduce((s,i)=>s+parseFloat(i.billed_amount||0),0);
+  const totalRet = state.invoices.reduce((s,i)=>s+parseFloat(i.billed_amount||0)*(parseFloat(i.retainage_pct||0)/100),0);
+  const totalPaid = state.invoices.reduce((s,i)=>s+parseFloat(i.paid_amount||0),0);
+  const outstanding = totalBilled - totalRet - totalPaid;
+  $('content').innerHTML = `
+  <div class="kgrid">
+    <div class="kcard db"><div class="klbl">Total Billed</div><div class="kval">${fmt(totalBilled)}</div></div>
+    <div class="kcard red"><div class="klbl">Retainage Held</div><div class="kval">${fmt(totalRet)}</div></div>
+    <div class="kcard grn"><div class="klbl">Total Collected</div><div class="kval">${fmt(totalPaid)}</div></div>
+    <div class="kcard amb"><div class="klbl">Outstanding</div><div class="kval">${fmt(outstanding)}</div></div>
+  </div>
+  <div class="card">
+    <div class="card-hd"><div class="card-title"><svg viewBox="0 0 24 24"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>Invoices & Accounts Receivable</div>
+      <button class="btn btn-sm btn-red" onclick="openNewInvoice('${p.id}')">+ New Invoice</button>
+    </div>
+    <div class="tbl-wrap">
+    ${state.invoices.length === 0 ? '<div class="tbl-empty">No invoices yet. Click "New Invoice" to create one.</div>' :
+    `<table><thead><tr><th>Invoice #</th><th>Date</th><th>Description</th><th class="text-right">Billed</th><th class="text-right">Retainage</th><th class="text-right">Net Due</th><th class="text-right">Paid</th><th>Due Date</th><th>Status</th></tr></thead><tbody>
+    ${state.invoices.map(i => {
+      const ret = parseFloat(i.billed_amount||0)*(parseFloat(i.retainage_pct||0)/100);
+      const net = parseFloat(i.billed_amount||0)-ret;
+      const invDate = i.invoice_date ? new Date(i.invoice_date) : null;
+      const dueDate = invDate ? new Date(invDate.getTime()+(i.terms_days||30)*86400000) : null;
+      const daysLeft = dueDate ? Math.ceil((dueDate-new Date())/86400000) : null;
+      const dueStr = dueDate ? dueDate.toISOString().split('T')[0] : '—';
+      const daysStr = daysLeft===null?'':daysLeft<0?` <span class="text-red">(${Math.abs(daysLeft)}d late)</span>`:daysLeft<=7?` <span class="text-amber">(${daysLeft}d)</span>`:'';
+      return `<tr>
+        <td class="mono font-600">${i.invoice_number||'—'}</td>
+        <td>${i.invoice_date||'—'}</td>
+        <td>${i.description||'—'}</td>
+        <td class="text-right font-600">${fmt(i.billed_amount)}</td>
+        <td class="text-right">${fmt(ret)}</td>
+        <td class="text-right">${fmt(net)}</td>
+        <td class="text-right">${fmt(i.paid_amount)}</td>
+        <td>${dueStr}${daysStr}</td>
+        <td><span class="badge b-${(i.status||'pending').toLowerCase()}">${i.status}</span></td>
+      </tr>`;
+    }).join('')}
+    </tbody></table>`}
+    </div>
+    <div style="border-top:1px solid var(--border);margin-top:10px;padding-top:10px;display:grid;grid-template-columns:repeat(4,1fr);gap:10px;font-size:12px">
+      <div><div style="color:var(--gray600)">Total Billed</div><div class="font-600">${fmt(totalBilled)}</div></div>
+      <div><div style="color:var(--gray600)">Retainage Held</div><div class="font-600 text-red">${fmt(totalRet)}</div></div>
+      <div><div style="color:var(--gray600)">Collected</div><div class="font-600 text-green">${fmt(totalPaid)}</div></div>
+      <div><div style="color:var(--gray600)">Outstanding</div><div class="font-600 text-amber">${fmt(outstanding)}</div></div>
+    </div>
+  </div>`;
+  $('topbar-actions').innerHTML = `<button class="btn btn-sm btn-red" onclick="openNewInvoice('${p.id}')">+ New Invoice</button>`;
+}
+
+function calcInvPreview() {
+  const billed = parseFloat($('inv-billed').value)||0;
+  const pct = parseFloat($('inv-ret-pct').value)||0;
+  const ret = billed*(pct/100);
+  $('inv-ret-held').value = ret.toFixed(2);
+  $('inv-net').value = (billed-ret).toFixed(2);
+}
+
+function openNewInvoice(projectId) {
+  clearForm(['inv-num','inv-desc','inv-billed','inv-paid','inv-ret-held','inv-net']);
+  $('inv-date').value = today();
+  $('inv-ret-pct').value = 10;
+  $('inv-terms').value = 30;
+  $('inv-status').value = 'Pending';
+  $('modal-invoice').dataset.projectId = projectId;
+  openModal('modal-invoice');
+}
+
+async function saveInvoice() {
+  const projectId = $('modal-invoice').dataset.projectId;
+  const { error } = await db.from('invoices').insert({
+    project_id: projectId,
+    invoice_number: $('inv-num').value,
+    invoice_date: $('inv-date').value,
+    description: $('inv-desc').value,
+    billed_amount: parseFloat($('inv-billed').value)||0,
+    retainage_pct: parseFloat($('inv-ret-pct').value)||10,
+    paid_amount: parseFloat($('inv-paid').value)||0,
+    terms_days: parseInt($('inv-terms').value)||30,
+    status: $('inv-status').value,
+  });
+  if (error) { toast('Error: '+error.message,'error'); return; }
+  closeModal('modal-invoice');
+  toast('Invoice saved');
+  render();
+}
+
+// ── PHASE BREAKDOWN ──────────────────────────────────────────────────
+async function renderPhaseBreakdown() {
+  const p = state.activeProject;
+  const [{ data: phases }, { data: purchases }, { data: labor }] = await Promise.all([
+    db.from('phases').select('*').eq('project_id', p.id).order('sort_order'),
+    db.from('purchases').select('*').eq('project_id', p.id),
+    db.from('labor_entries').select('*').eq('project_id', p.id),
+  ]);
+  const cats = ['Materials','Labor','Subcontractors','Equipment','Rentals','Misc.'];
+  $('content').innerHTML = `
+  <div class="card">
+    <div class="card-hd"><div class="card-title"><svg viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/></svg>Phase Breakdown — Cost to Date vs Budget</div>
+      <button class="btn btn-sm btn-red" onclick="openAddPhase('${p.id}')">+ Add Phase</button>
+    </div>
+    <p class="section-sub">All costs pull automatically from Purchases & AP and Time & Labor.</p>
+    ${(phases||[]).length === 0 ? '<div class="tbl-empty">No phases defined yet. Add phases in Job Setup.</div>' :
+    `<div class="tbl-wrap"><table><thead><tr><th>Phase</th><th>Status</th><th>Budget</th>${cats.map(c=>`<th class="text-right">${c}</th>`).join('')}<th class="text-right">Total Cost</th><th class="text-right">Remaining</th></tr></thead><tbody>
+    ${(phases||[]).map(ph => {
+      const phPurchases = (purchases||[]).filter(pu=>pu.phase_id===ph.id);
+      const phLabor = (labor||[]).filter(l=>l.phase_id===ph.id);
+      const catCosts = {};
+      cats.forEach(cat => {
+        if (cat==='Labor') catCosts[cat] = phLabor.reduce((s,l)=>(s+(parseFloat(l.st_hours||0)*parseFloat(l.st_rate||0))+(parseFloat(l.ot15_hours||0)*parseFloat(l.st_rate||0)*1.5)+(parseFloat(l.ot2_hours||0)*parseFloat(l.st_rate||0)*2)),0);
+        else catCosts[cat] = phPurchases.filter(pu=>pu.category===cat).reduce((s,pu)=>s+parseFloat(pu.po_amount||0),0);
+      });
+      const totalCost = Object.values(catCosts).reduce((s,v)=>s+v,0);
+      const remaining = parseFloat(ph.phase_budget||0)-totalCost;
+      return `<tr>
+        <td class="font-600">${ph.phase_name}</td>
+        <td><span class="badge b-${ph.status?.toLowerCase().replace(' ','')}">${ph.status}</span></td>
+        <td>${fmt(ph.phase_budget)}</td>
+        ${cats.map(cat=>`<td class="text-right">${catCosts[cat]>0?fmt(catCosts[cat]):'—'}</td>`).join('')}
+        <td class="text-right font-600">${fmt(totalCost)}</td>
+        <td class="text-right font-600 ${remaining<0?'text-red':'text-green'}">${fmt(remaining)}</td>
+      </tr>`;
+    }).join('')}
+    </tbody></table></div>`}
+  </div>`;
+}
+
+// ── BUDGET vs ACTUAL ─────────────────────────────────────────────────
+async function renderBVA() {
+  const p = state.activeProject;
+  const [{ data: budgets }, { data: purchases }, { data: labor }] = await Promise.all([
+    db.from('project_budgets').select('*').eq('project_id', p.id),
+    db.from('purchases').select('*').eq('project_id', p.id),
+    db.from('labor_entries').select('*').eq('project_id', p.id),
+  ]);
+  const cats = ['Materials','Labor','Subcontractors','Equipment','Rentals','Misc.'];
+  const budMap = {};
+  (budgets||[]).forEach(b => budMap[b.category]=parseFloat(b.budgeted_amount||0));
+  const totalBud = cats.reduce((s,c)=>s+(budMap[c]||0),0);
+  const laborCost = l => (parseFloat(l.st_hours||0)*parseFloat(l.st_rate||0))+(parseFloat(l.ot15_hours||0)*parseFloat(l.st_rate||0)*1.5)+(parseFloat(l.ot2_hours||0)*parseFloat(l.st_rate||0)*2);
+  const catActuals = {};
+  cats.forEach(cat => {
+    if (cat==='Labor') catActuals[cat] = (labor||[]).reduce((s,l)=>s+laborCost(l),0);
+    else catActuals[cat] = (purchases||[]).filter(pu=>pu.category===cat).reduce((s,pu)=>s+parseFloat(pu.po_amount||0),0);
+  });
+  const totalAct = cats.reduce((s,c)=>s+catActuals[c],0);
+  $('content').innerHTML = `
+  <div class="kgrid">
+    <div class="kcard db"><div class="klbl">Total Budget</div><div class="kval">${fmt(totalBud)}</div></div>
+    <div class="kcard red"><div class="klbl">Cost to Date</div><div class="kval">${fmt(totalAct)}</div></div>
+    <div class="kcard ${totalBud-totalAct<0?'red':'grn'}"><div class="klbl">Remaining</div><div class="kval">${fmt(totalBud-totalAct)}</div></div>
+    <div class="kcard amb"><div class="klbl">% Used</div><div class="kval">${totalBud>0?Math.round(totalAct/totalBud*100):0}%</div></div>
+  </div>
+  <div class="card">
+    <div class="card-hd"><div class="card-title"><svg viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>Budget vs Actual by Category</div></div>
+    <table><thead><tr><th>Category</th><th class="text-right">Budgeted</th><th class="text-right">Actual Cost</th><th class="text-right">Remaining</th><th>% Used</th></tr></thead><tbody>
+    ${cats.map((cat,i) => {
+      const bud = budMap[cat]||0;
+      const act = catActuals[cat]||0;
+      const rem = bud-act;
+      const pct = bud>0?act/bud:0;
+      const barColor = pct>0.9?'#E24B4A':pct>0.75?'#EF9F27':'#1D9E75';
+      return `<tr>
+        <td class="font-600">${cat}</td>
+        <td class="text-right">${fmt(bud)}</td>
+        <td class="text-right">${fmt(act)}</td>
+        <td class="text-right ${rem<0?'text-red':'text-green'} font-600">${fmt(rem)}</td>
+        <td style="min-width:120px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <div style="flex:1;height:6px;background:var(--gray200);border-radius:3px">
+              <div style="width:${Math.min(100,Math.round(pct*100))}%;height:6px;border-radius:3px;background:${barColor}"></div>
+            </div>
+            <span style="font-size:11px;font-weight:600;min-width:32px">${Math.round(pct*100)}%</span>
+          </div>
+        </td>
+      </tr>`;
+    }).join('')}
+    </tbody></table>
+    <div style="border-top:1px solid var(--border);margin-top:10px;padding-top:10px;display:flex;justify-content:space-between;font-size:12px;font-weight:600">
+      <span>TOTAL</span>
+      <span>${fmt(totalBud)}</span>
+      <span>${fmt(totalAct)}</span>
+      <span class="${totalBud-totalAct<0?'text-red':'text-green'}">${fmt(totalBud-totalAct)}</span>
+      <span>${totalBud>0?Math.round(totalAct/totalBud*100):0}%</span>
+    </div>
+  </div>`;
+}
+
+// ── CHANGE ORDERS ────────────────────────────────────────────────────
+async function renderChangeOrders() {
+  const p = state.activeProject;
+  const { data: cos } = await db.from('change_orders').select('*').eq('project_id', p.id).order('created_at', {ascending:false});
+  const approved = (cos||[]).filter(c=>c.status==='Approved').reduce((s,c)=>s+parseFloat(c.amount||0),0);
+  const pending  = (cos||[]).filter(c=>c.status==='Pending'||c.status==='Submitted').reduce((s,c)=>s+parseFloat(c.amount||0),0);
+  const rejected = (cos||[]).filter(c=>c.status==='Rejected').reduce((s,c)=>s+parseFloat(c.amount||0),0);
+  $('content').innerHTML = `
+  <div class="kgrid">
+    <div class="kcard grn"><div class="klbl">Approved COs</div><div class="kval">${fmt(approved)}</div><div class="ksub">${(cos||[]).filter(c=>c.status==='Approved').length} orders</div></div>
+    <div class="kcard amb"><div class="klbl">Pending / Submitted</div><div class="kval">${fmt(pending)}</div><div class="ksub">${(cos||[]).filter(c=>c.status==='Pending'||c.status==='Submitted').length} orders</div></div>
+    <div class="kcard red"><div class="klbl">Rejected</div><div class="kval">${fmt(rejected)}</div><div class="ksub">${(cos||[]).filter(c=>c.status==='Rejected').length} orders</div></div>
+    <div class="kcard db"><div class="klbl">Total Submitted</div><div class="kval">${fmt(approved+pending)}</div><div class="ksub">${(cos||[]).length} total</div></div>
+  </div>
+  <div class="card">
+    <div class="card-hd">
+      <div class="card-title">
+        <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Change Order Log
+      </div>
+      <button class="btn btn-sm btn-red" onclick="openNewCO('${p.id}')">+ New CO</button>
+    </div>
+    <p class="section-sub">Track all change orders — approved COs update the adjusted contract value.</p>
+    <div class="tbl-wrap">
+    ${(cos||[]).length === 0 ? '<div class="tbl-empty">No change orders yet. Click "+ New CO" to add one.</div>' :
+    `<table><thead><tr><th>CO #</th><th>Description</th><th>Type</th><th class="text-right">Amount</th><th>Submitted</th><th>Approved</th><th>Status</th></tr></thead><tbody>
+    ${(cos||[]).map(c=>`<tr>
+      <td class="mono font-600">${c.co_number||'—'}</td>
+      <td>${c.description||'—'}</td>
+      <td>${c.co_type||'—'}</td>
+      <td class="text-right font-600 ${parseFloat(c.amount||0)<0?'text-red':'text-green'}">${fmt(c.amount)}</td>
+      <td>${c.submitted_date||'—'}</td>
+      <td>${c.approved_date||'—'}</td>
+      <td><span class="badge b-${(c.status||'pending').toLowerCase().replace('/','').replace(' ','')}
+        ${c.status==='Approved'?'b-paid':c.status==='Rejected'?'b-overdue':c.status==='Submitted'?'b-partial':'b-pending'}">${c.status}</span></td>
+    </tr>`).join('')}
+    </tbody></table>`}
+    </div>
+  </div>`;
+  $('topbar-actions').innerHTML = `<button class="btn btn-sm btn-red" onclick="openNewCO('${p.id}')">+ New CO</button>`;
+}
+
+function openNewCO(projectId) {
+  clearForm(['co-num','co-desc','co-amount','co-approved']);
+  $('co-date').value = today();
+  $('co-status').value = 'Pending';
+  $('co-type').value = '';
+  $('modal-co').dataset.projectId = projectId;
+  openModal('modal-co');
+}
+
+async function saveCO() {
+  const projectId = $('modal-co').dataset.projectId;
+  const desc = $('co-desc').value.trim();
+  if (!desc) { toast('Enter a description','error'); return; }
+  const status = $('co-status').value;
+  const { error } = await db.from('change_orders').insert({
+    project_id: projectId,
+    co_number: $('co-num').value,
+    description: desc,
+    amount: parseFloat($('co-amount').value)||0,
+    co_type: $('co-type').value,
+    status,
+    submitted_date: $('co-date').value||null,
+    approved_date: $('co-approved').value||null,
+  });
+  if (error) { toast('Error: '+error.message,'error'); return; }
+  // If approved, update project approved_cos total
+  if (status === 'Approved') {
+    const proj = state.projects.find(p=>p.id===projectId);
+    if (proj) {
+      const newTotal = parseFloat(proj.approved_cos||0) + (parseFloat($('co-amount').value)||0);
+      await db.from('projects').update({approved_cos: newTotal}).eq('id', projectId);
+    }
+  }
+  closeModal('modal-co');
+  toast('Change order saved');
+  render();
+}
+
+// ── WIP SCHEDULE ─────────────────────────────────────────────────────
+async function renderWIP() {
+  const [{ data: projects }, { data: purchases }, { data: labor }, { data: invoices }, { data: budgets }] = await Promise.all([
+    db.from('projects').select('*').eq('status','Active'),
+    db.from('purchases').select('*'),
+    db.from('labor_entries').select('*'),
+    db.from('invoices').select('*'),
+    db.from('project_budgets').select('*'),
+  ]);
+  const laborCost = l => (parseFloat(l.st_hours||0)*parseFloat(l.st_rate||0))+(parseFloat(l.ot15_hours||0)*parseFloat(l.st_rate||0)*1.5)+(parseFloat(l.ot2_hours||0)*parseFloat(l.st_rate||0)*2);
+  $('content').innerHTML = `
+  <div class="card">
+    <div class="card-hd"><div class="card-title"><svg viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>WIP Schedule — Active Jobs</div></div>
+    <p class="section-sub">Work in Progress report showing over/under billing position for each active job.</p>
+    <div class="tbl-wrap"><table><thead><tr><th>Job</th><th class="text-right">Contract Value</th><th class="text-right">Total Budget</th><th class="text-right">Cost to Date</th><th class="text-right">% Complete</th><th class="text-right">Earned Revenue</th><th class="text-right">Billed to Date</th><th class="text-right">Over / (Under)</th></tr></thead><tbody>
+    ${(projects||[]).map(p => {
+      const pBud = (budgets||[]).filter(b=>b.project_id===p.id).reduce((s,b)=>s+parseFloat(b.budgeted_amount||0),0);
+      const pCost = (purchases||[]).filter(pu=>pu.project_id===p.id).reduce((s,pu)=>s+parseFloat(pu.po_amount||0),0) + (labor||[]).filter(l=>l.project_id===p.id).reduce((s,l)=>s+laborCost(l),0);
+      const pBilled = (invoices||[]).filter(i=>i.project_id===p.id).reduce((s,i)=>s+parseFloat(i.billed_amount||0),0);
+      const contract = parseFloat(p.base_contract||0)+parseFloat(p.approved_cos||0);
+      const pctComplete = pBud>0?pCost/pBud:0;
+      const earnedRev = contract*pctComplete;
+      const overUnder = pBilled-earnedRev;
+      return `<tr>
+        <td class="font-600">${p.job_number} — ${p.job_name}</td>
+        <td class="text-right">${fmt(contract)}</td>
+        <td class="text-right">${fmt(pBud)}</td>
+        <td class="text-right">${fmt(pCost)}</td>
+        <td class="text-right">${Math.round(pctComplete*100)}%</td>
+        <td class="text-right">${fmt(earnedRev)}</td>
+        <td class="text-right">${fmt(pBilled)}</td>
+        <td class="text-right font-600 ${overUnder>=0?'text-green':'text-red'}">${overUnder>=0?'+':''}${fmt(overUnder)}</td>
+      </tr>`;
+    }).join('')}
+    </tbody></table></div>
+  </div>`;
+}
+
+// ── AR AGING ─────────────────────────────────────────────────────────
+async function renderARaging() {
+  const [{ data: invoices }, { data: projects }] = await Promise.all([
+    db.from('invoices').select('*'),
+    db.from('projects').select('*'),
+  ]);
+  const projMap = {};
+  (projects||[]).forEach(p=>projMap[p.id]=p);
+  const now = new Date();
+  const buckets = {current:0,days30:0,days60:0,days90:0};
+  const rows = (invoices||[]).filter(i=>i.status!=='Paid').map(i => {
+    const ret = parseFloat(i.billed_amount||0)*(parseFloat(i.retainage_pct||0)/100);
+    const outstanding = parseFloat(i.billed_amount||0)-ret-parseFloat(i.paid_amount||0);
+    const invDate = i.invoice_date ? new Date(i.invoice_date) : now;
+    const dueDate = new Date(invDate.getTime()+(i.terms_days||30)*86400000);
+    const daysLate = Math.ceil((now-dueDate)/86400000);
+    if (daysLate<=0) buckets.current+=outstanding;
+    else if (daysLate<=30) buckets.days30+=outstanding;
+    else if (daysLate<=60) buckets.days60+=outstanding;
+    else buckets.days90+=outstanding;
+    return {i,outstanding,daysLate,proj:projMap[i.project_id]};
+  });
+  const total = Object.values(buckets).reduce((s,v)=>s+v,0);
+  $('content').innerHTML = `
+  <div class="kgrid">
+    <div class="kcard grn"><div class="klbl">Current</div><div class="kval">${fmt(buckets.current)}</div></div>
+    <div class="kcard amb"><div class="klbl">1–30 Days Late</div><div class="kval">${fmt(buckets.days30)}</div></div>
+    <div class="kcard red"><div class="klbl">31–60 Days Late</div><div class="kval">${fmt(buckets.days60)}</div></div>
+    <div class="kcard red"><div class="klbl">60+ Days Late</div><div class="kval">${fmt(buckets.days90)}</div></div>
+  </div>
+  <div class="card">
+    <div class="card-hd"><div class="card-title"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>AR Aging Detail</div></div>
+    ${rows.length===0?'<div class="tbl-empty">No outstanding invoices.</div>':
+    `<div class="tbl-wrap"><table><thead><tr><th>Job</th><th>Invoice #</th><th>Description</th><th class="text-right">Outstanding</th><th>Days Late</th><th>Status</th></tr></thead><tbody>
+    ${rows.map(({i,outstanding,daysLate,proj})=>`<tr>
+      <td class="font-600">${proj?proj.job_number+' — '+proj.job_name:'—'}</td>
+      <td class="mono">${i.invoice_number||'—'}</td>
+      <td>${i.description||'—'}</td>
+      <td class="text-right font-600">${fmt(outstanding)}</td>
+      <td class="${daysLate<=0?'text-green':daysLate<=30?'text-amber':'text-red'} font-600">${daysLate<=0?'Current':daysLate+'d late'}</td>
+      <td><span class="badge b-${(i.status||'pending').toLowerCase()}">${i.status}</span></td>
+    </tr>`).join('')}
+    </tbody></table></div>`}
+  </div>`;
+}
+
+// ── EMPLOYEES ────────────────────────────────────────────────────────
+async function renderEmployees() {
+  const { data: employees } = await db.from('employees').select('*').order('name');
+  state.employees = employees || [];
+  $('content').innerHTML = `
+  <div class="card">
+    <div class="card-hd"><div class="card-title"><svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>Employee Roster & Rates</div>
+      <button class="btn btn-sm btn-red" onclick="openModal('modal-employee')">+ Add Employee</button>
+    </div>
+    <table><thead><tr><th>Name</th><th>Role</th><th class="text-right">ST Rate ($/hr)</th><th>Effective Date</th><th>Status</th></tr></thead><tbody>
+    ${state.employees.map(e=>`<tr>
+      <td class="font-600">${e.name}</td>
+      <td>${e.role||'—'}</td>
+      <td class="text-right font-600">${fmtD(e.st_rate)}</td>
+      <td>${e.effective_date||'—'}</td>
+      <td><span class="badge ${e.active?'b-active':'b-hold'}">${e.active?'Active':'Inactive'}</span></td>
+    </tr>`).join('')}
+    </tbody></table>
+  </div>`;
+  $('topbar-actions').innerHTML = `<button class="btn btn-sm btn-red" onclick="openModal('modal-employee')">+ Add Employee</button>`;
+}
+
+async function saveEmployee() {
+  const name = $('em-name').value.trim();
+  if (!name) { toast('Enter employee name','error'); return; }
+  const { error } = await db.from('employees').insert({ name, role: $('em-role').value, st_rate: parseFloat($('em-rate').value)||0, effective_date: $('em-date').value||null, active: true });
+  if (error) { toast('Error: '+error.message,'error'); return; }
+  closeModal('modal-employee');
+  toast('Employee added');
+  render();
+}
+
+// ── PROJECT CRUD ─────────────────────────────────────────────────────
+async function saveProject() {
+  const num = $('p-num').value.trim();
+  const name = $('p-name').value.trim();
+  if (!num || !name) { toast('Job number and name required','error'); return; }
+  const data = { job_number:num, job_name:name, client:$('p-client').value, status:$('p-status').value, date_started:$('p-date').value||null, base_contract:parseFloat($('p-contract').value)||0 };
+  const editId = $('modal-project').dataset.editId;
+  let error;
+  if (editId) {
+    ({error} = await db.from('projects').update(data).eq('id',editId));
+  } else {
+    ({error} = await db.from('projects').insert(data));
+  }
+  if (error) { toast('Error: '+error.message,'error'); return; }
+  delete $('modal-project').dataset.editId;
+  closeModal('modal-project');
+  toast('Project saved');
+  const { data: projects } = await db.from('projects').select('*').order('created_at');
+  state.projects = projects || [];
+  if (!editId && state.projects.length) {
+    state.activeProject = state.projects[state.projects.length-1];
+    navigate('project', state.activeProject.id, 'setup');
+  } else {
+    renderSidebarProjects();
+    if (state.activeProject) {
+      state.activeProject = state.projects.find(p=>p.id===state.activeProject.id);
+    }
+    render();
+  }
+}
+
+function editProject(id) {
+  const p = state.projects.find(p=>p.id===id);
+  if (!p) return;
+  $('p-num').value = p.job_number;
+  $('p-name').value = p.job_name;
+  $('p-client').value = p.client||'';
+  $('p-status').value = p.status||'Active';
+  $('p-date').value = p.date_started||'';
+  $('p-contract').value = p.base_contract||0;
+  $('modal-project-title').textContent = 'Edit Project';
+  $('modal-project').dataset.editId = id;
+  openModal('modal-project');
+}
+
+function clearForm(ids) { ids.forEach(id => { const el=$(id); if(el) el.value=''; }); }
+
+// close modals on bg click
+document.querySelectorAll('.modal-bg').forEach(bg => {
+  bg.addEventListener('click', e => { if(e.target===bg) bg.classList.remove('open'); });
+});
+
+// ── INIT ─────────────────────────────────────────────────────────────
+async function init() {
+  const { data: projects } = await db.from('projects').select('*').order('created_at');
+  state.projects = projects || [];
+  const { data: employees } = await db.from('employees').select('*').order('name');
+  state.employees = employees || [];
+  renderSidebarProjects();
+  await renderDashboard();
+}
+
+init();
+</script>
+</body>
+</html>

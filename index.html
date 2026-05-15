@@ -1349,23 +1349,33 @@ async function renderPhaseBreakdown() {
       const phL=(labor||[]).filter(l=>l.phase_id===ph.id);
       const phP=(purchases||[]).filter(pu=>pu.phase_id===ph.id);
       const bHrs=parseFloat(ph.budgeted_hours||0);
+      const phaseBudget=parseFloat(ph.phase_budget||0);
+      // For sub/equipment phases (no hours), use phase_budget as budgeted cost
+      const isSubEquipPhase = bHrs===0 && phaseBudget>0;
       const bLab=bHrs*burdenRate;
       const aHrs=phL.reduce((s,l)=>s+laborHrs(l),0);
       const aLab=phL.reduce((s,l)=>s+laborCost(l),0);
       const vHrs=bHrs-aHrs; const vLab=bLab-aLab;
       const mat=phP.filter(pu=>pu.category==="Materials").reduce((s,pu)=>s+parseFloat(pu.po_amount||0),0);
-      const oth=phP.filter(pu=>pu.category!=="Materials"&&pu.category!=="Labor").reduce((s,pu)=>s+parseFloat(pu.po_amount||0),0);
+      const actOth=phP.filter(pu=>pu.category!=="Materials"&&pu.category!=="Labor").reduce((s,pu)=>s+parseFloat(pu.po_amount||0),0);
+      const budOth = isSubEquipPhase ? phaseBudget : 0;
+      const othVariance = isSubEquipPhase ? budOth - actOth : 0;
       return `<tr style="background:${bg}">
         <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-weight:600;font-size:12px">${ph.phase_name}</td>
         <td style="padding:8px 8px;border-bottom:1px solid var(--border)"><span class="badge b-${(ph.status||"").toLowerCase().replace(" ","")}">${ph.status}</span></td>
-        <td style="padding:8px 8px;border-bottom:1px solid var(--border);text-align:right;background:#F5F8FF;font-size:12px">${bHrs>0?bHrs.toFixed(1)+" hrs":"—"}</td>
+        <td style="padding:8px 8px;border-bottom:1px solid var(--border);text-align:right;background:#F5F8FF;font-size:12px">${bHrs>0?bHrs.toFixed(1)+" hrs":isSubEquipPhase?"—":"—"}</td>
         <td style="padding:8px 8px;border-bottom:1px solid var(--border);text-align:right;background:#F5F8FF;font-size:12px;font-weight:${aHrs>0?"600":"400"}">${aHrs>0?aHrs.toFixed(1)+" hrs":"—"}</td>
-        <td style="padding:8px 8px;border-bottom:1px solid var(--border);text-align:right;background:#F5F8FF;font-size:12px;font-weight:600;color:${bHrs===0?"var(--gray400)":vHrs>=0?"var(--green)":"var(--danger)"}">${bHrs===0?"—":(vHrs>=0?"+":"")+vHrs.toFixed(1)+" hrs"}</td>
+        <td style="padding:8px 8px;border-bottom:1px solid var(--border);text-align:right;background:#F5F8FF;font-size:12px;font-weight:600;color:${bHrs===0&&!isSubEquipPhase?"var(--gray400)":vHrs>=0?"var(--green)":"var(--danger)"}">${bHrs===0&&!isSubEquipPhase?"—":(vHrs>=0?"+":"")+vHrs.toFixed(1)+" hrs"}</td>
         <td style="padding:8px 8px;border-bottom:1px solid var(--border);text-align:right;background:#F0FFF8;font-size:12px">${bLab>0?fmt(bLab):"—"}</td>
         <td style="padding:8px 8px;border-bottom:1px solid var(--border);text-align:right;background:#F0FFF8;font-size:12px;font-weight:${aLab>0?"600":"400"}">${aLab>0?fmt(aLab):"—"}</td>
         <td style="padding:8px 8px;border-bottom:1px solid var(--border);text-align:right;background:#F0FFF8;font-size:12px;font-weight:600;color:${bLab===0?"var(--gray400)":vLab>=0?"var(--green)":"var(--danger)"}">${bLab===0?"—":(vLab>=0?"+":"")+fmt(vLab)}</td>
         <td style="padding:8px 8px;border-bottom:1px solid var(--border);text-align:right;background:#FFF8F0;font-size:12px">${mat>0?fmt(mat):"—"}</td>
-        <td style="padding:8px 8px;border-bottom:1px solid var(--border);text-align:right;background:#FFF8F0;font-size:12px">${oth>0?fmt(oth):"—"}</td>
+        <td style="padding:8px 8px;border-bottom:1px solid var(--border);text-align:right;background:#FFF8F0;font-size:12px;font-weight:600">
+          ${budOth>0?'<span style="color:var(--gray600);font-size:10px">Bud: </span>'+fmt(budOth)+'<br>':''}
+          ${actOth>0?'<span style="color:var(--gray600);font-size:10px">Act: </span>'+fmt(actOth):''}
+          ${budOth===0&&actOth===0?'—':''}
+          ${budOth>0?'<br><span style="font-size:10px;color:'+(othVariance>=0?'var(--green)':'var(--danger)')+'">'+( othVariance>=0?'+':'')+fmt(othVariance)+'</span>':''}
+        </td>
       </tr>`;
     }).join("")}
     </tbody>

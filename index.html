@@ -1805,38 +1805,37 @@ function parseResidentialEstimate(wb, data) {
               const first = nums[0];
               const cost = nums.find(n=>n>5000)||0;
               const isGang = pat.gang && first < 200;
-              const hours = isGang ? Math.round(first*14) : Math.round(first);
-              foundPhases.push({ name:pat.name, gangDays:isGang?first:0, hours, laborCost:cost||Math.round(hours*180), selected:true });
+              // Read labor rate from estimate
+              const lrRow = rows.find(r => r && String(r[0]||'').includes('Labor Rate'));
+              const lRate = lrRow ? (parseFloat(lrRow[1])||180) : 180;
+              const gangRRow = rows.find(r => r && String(r[0]||'').includes('Gang Day'));
+              const gRate = gangRRow ? (parseFloat(gangRRow[1])||2520) : 2520;
+              const hpd = Math.round(gRate / (2 * lRate)); // hrs per gang day
+              const hours = isGang ? Math.round(first * hpd * 2) : Math.round(first);
+              foundPhases.push({ name:pat.name, gangDays:isGang?first:0, hours, laborCost:cost||Math.round(hours*lRate), selected:true });
             }
           }
         });
 
-        // Check secondary columns (Patterson format - col 11/14)
-        // Detect gang day value from the rate: Patterson = $2880/day = 2men x 8hrs x $180
-        // Edenwald = $2520/day = 2men x 7hrs x $180
-        if (c11 && !isNaN(c14) && c14 >= 0) {
+        // Check secondary columns (Patterson/alternate format - col 11 = name, col 14 = gang days)
+        if (c11 && !isNaN(c14) && c14 > 0) {
           phasePatterns.forEach(pat => {
             if (!foundPhases.find(p=>p.name===pat.name) && pat.re.test(c11)) {
               const gangDays = c14;
-              // Detect hours per day from gang rate row if available, default 14 (Edenwald)
-              const gangRateRow = rows.find(r => String(r[11]||'').includes('Gang Day / Rate'));
-              const gangRate = gangRateRow ? parseFloat(gangRateRow[15]||gangRateRow[14]||0) : 2520;
-              const hrsPerDay = gangRate >= 2800 ? 16 : 14; // $2880 = 8hr day, $2520 = 7hr day
-              const hours = Math.round(gangDays * hrsPerDay);
-              const cost = Math.round(hours * 180);
-              if (gangDays > 0) {
-                foundPhases.push({ name:pat.name, gangDays, hours, laborCost:cost, selected:true });
-              }
+              // Gang rate is in col 15 of the "Gang Day / Rate" row
+              // Hours per gang day = gang_rate / (2 men * labor_rate)
+              // Default to 14 hrs (2 men x 7 hrs) if we cant find the rate
+              const gangRateRow = rows.find(r => r && String(r[11]||'').includes('Gang Day / Rate (2 Men) Amount'));
+              const gangRate = gangRateRow ? (parseFloat(gangRateRow[15])||2520) : 2520;
+              // Read labor rate from estimate - check col 1 of Labor Rate row
+              const laborRateRow = rows.find(r => r && String(r[0]||'').includes('Labor Rate'));
+              const laborRate = laborRateRow ? (parseFloat(laborRateRow[1])||180) : 180;
+              const hrsPerGangDay = Math.round(gangRate / (2 * laborRate));
+              const hours = Math.round(gangDays * hrsPerGangDay * 2); // total man-hours
+              const cost = Math.round(hours * laborRate);
+              foundPhases.push({ name:pat.name, gangDays, hours, laborCost:cost, selected:true });
             }
           });
-        }
-        // Also check for copper/pipe install hours in col 11 area
-        if (/copper.*install|pipe.*rough|add.?on.*labor/i.test(c11)) {
-          const hrs = parseFloat(row[13]||row[12]||0);
-          const pat = phasePatterns.find(p => p.re.test(c11));
-          if (pat && hrs > 0 && !foundPhases.find(p=>p.name===pat.name)) {
-            foundPhases.push({ name:pat.name, gangDays:0, hours:Math.round(hrs), laborCost:Math.round(hrs*180), selected:true });
-          }
         }
 
         if (/material base/i.test(a)) { const v=row.map(c=>parseFloat(c)).filter(n=>!isNaN(n)&&n>10000); if(v.length) totalMaterial=v[0]; }

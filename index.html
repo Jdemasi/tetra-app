@@ -1850,7 +1850,11 @@ function parseResidentialEstimate(wb, data) {
         if (/tooling\s*%/i.test(a)) { const v=row.map(c=>parseFloat(c)).filter(n=>!isNaN(n)&&n>1000); if(v.length) categories.tooling=v[0]; }
         if (/contingency\s*%/i.test(a)) { const v=row.map(c=>parseFloat(c)).filter(n=>!isNaN(n)&&n>1000); if(v.length) categories.contingency=v[0]; }
         if (/bond\s*percent/i.test(a)) { const v=row.map(c=>parseFloat(c)).filter(n=>!isNaN(n)&&n>1000); if(v.length) categories.bond=v[0]; }
-        if (/design\s*%/i.test(a)) { const v=row.map(c=>parseFloat(c)).filter(n=>!isNaN(n)&&n>1000); if(v.length) categories.design=v[0]; }
+        if (/design\s*%/i.test(a)) { 
+          const pct = parseFloat(row[4])||0;
+          if (pct > 0) { const v=row.map(c=>parseFloat(c)).filter(n=>!isNaN(n)&&n>1000); if(v.length) categories.design=v[0]; }
+          else categories.design = 0;
+        }
         if (/total bid amount/i.test(a)) { const v=row.map(c=>parseFloat(c)).filter(n=>!isNaN(n)&&n>100000); if(v.length) totalBid=v[0]; }
       });
     } catch(e) { console.log('Parse error:',e); }
@@ -1981,7 +1985,9 @@ function showImportPreview(data) {
   const generalNames = ['Design','Bond','Contingency','Tooling','Connex/Shanty'];
   generalNames.forEach(g => {
     const catVal = data.categories[g.toLowerCase()] || 0;
-    window._importItems.push({ type:'general', name:g, hours:0, budget:catVal });
+    if (catVal > 0) {
+      window._importItems.push({ type:'general', name:g, hours:0, budget:catVal });
+    }
   });
 
   console.log('Preview ready:', window._importItems.length, 'items for project:', importProjectId);

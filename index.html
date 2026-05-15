@@ -1943,15 +1943,18 @@ function parseResidentialEstimate(wb, data) {
         }
         // Store individual subs and equipment as phases
         data.subPhases = [];
+        let equipTotal = 0;
         bRows.forEach(row => {
           const name = String(row[0]||'').trim();
           const base = parseFloat(row[1])||0;
           if (name && base > 1000 && !name.includes('ONLY') && !name.includes('Total') && !/tetra/i.test(name)) {
             const isEquip = /equip|klima/i.test(name);
             data.subPhases.push({ name: name, budget: base, type: isEquip ? 'equipment' : 'sub' });
+            if (isEquip) equipTotal += base;
           }
         });
-        console.log('Sub phases:', data.subPhases);
+        data.equipmentCost = equipTotal;
+        console.log('Sub phases:', data.subPhases, 'Equipment total:', equipTotal);
       }
     } catch(e) { console.log('Breakdown sheet error:', e); }
   }
@@ -2259,9 +2262,10 @@ async function confirmImport() {
     }
     const item = items[i];
     const hours = item.type === 'phase' ? (item.hours||0) : 0;
-    const budget = item.type === 'phase' ? Math.round(hours * burdenRate) : (item.budget||0);
-    const category = item.type === 'sub' ? 'Subcontractors' : item.type === 'equipment' ? 'Equipment' : null;
-    console.log('Inserting phase', i+1, ':', item.name, '| hours:', hours, '| budget:', budget, '| project:', projectId);
+    const budget = item.type === 'phase' ? Math.round(hours * burdenRate) : Math.round(item.budget||0);
+    const isEquip = item.type === 'equipment' || /klima|equipment/i.test(item.name);
+    const category = isEquip ? 'Equipment' : item.type === 'sub' ? 'Subcontractors' : null;
+    console.log('Inserting:', item.name, '| type:', item.type, '| budget:', budget, '| category:', category);
     const { error } = await db.from('phases').insert({
       project_id: projectId,
       phase_name: item.name,
@@ -2283,10 +2287,10 @@ async function confirmImport() {
   if (importCatBudgets && importData) {
     const totalHrs = importData.phases.reduce((s,p)=>s+p.hours,0);
     const cats = [
-      { category:'Materials', budgeted_amount: importData.totalMaterial||0 },
-      { category:'Labor',     budgeted_amount: Math.round(totalHrs*burdenRate) },
-      { category:'Subcontractors', budgeted_amount: importData.subcontractorCost||0 },
-      { category:'Equipment', budgeted_amount: importData.equipmentCost||0 },
+      { category:'Materials',      budgeted_amount: importData.totalMaterial||0 },
+      { category:'Labor',          budgeted_amount: Math.round(totalHrs*burdenRate) },
+      { category:'Subcontractors', budgeted_amount: (importData.subcontractorCost||0) - (importData.equipmentCost||0) },
+      { category:'Equipment',      budgeted_amount: importData.equipmentCost||0 },
     ].filter(c => c.budgeted_amount > 0);
     for (const cb of cats) {
       if (cb.budgeted_amount>0) {

@@ -350,6 +350,7 @@ select.finp{cursor:pointer}
         <table style="width:100%;border-collapse:collapse;font-size:12px">
           <thead>
             <tr style="background:var(--gray50)">
+              <th style="padding:7px 10px;text-align:left;font-size:10px;font-weight:600;color:var(--gray600);border-bottom:1px solid var(--border);width:36px">✓</th>
               <th style="padding:7px 10px;text-align:left;font-size:10px;font-weight:600;color:var(--gray600);border-bottom:1px solid var(--border)">Phase / Building</th>
               <th style="padding:7px 10px;text-align:left;font-size:10px;font-weight:600;color:var(--gray600);border-bottom:1px solid var(--border)">Type</th>
               <th style="padding:7px 10px;text-align:right;font-size:10px;font-weight:600;color:var(--gray600);border-bottom:1px solid var(--border)">Budgeted Hrs</th>
@@ -1944,14 +1945,21 @@ function showImportPreview(data) {
 
   console.log('Preview ready:', window._importItems.length, 'items for project:', importProjectId);
 
-  // Build preview table
+  // Build preview table with checkboxes
   const previewTbody = $('import-preview-rows');
   previewTbody.innerHTML = window._importItems.map((item, i) => {
     const bg = i%2===0?'#fff':'var(--gray50)';
     const icon = item.type==='building'?'📁':item.type==='phase'?'⚙️':'📌';
     const typeLabel = item.type==='building'?'Building':item.type==='phase'?'Work Phase':'Overhead';
     const labBud = item.type==='phase' ? Math.round(item.hours * br) : 0;
-    return '<tr style="background:'+bg+'">' +
+    // Auto-uncheck items with no hours and no budget
+    const hasValue = item.hours > 0 || item.budget > 0;
+    const checked = hasValue ? 'checked' : '';
+    const rowStyle = hasValue ? '' : 'opacity:0.5';
+    return '<tr style="background:'+bg+';'+rowStyle+'">' +
+      '<td style="padding:7px 10px;border-bottom:1px solid var(--border);width:36px">' +
+        '<input type="checkbox" id="imp-cb-'+i+'" '+checked+'>' +
+      '</td>' +
       '<td style="padding:7px 10px;border-bottom:1px solid var(--border);font-weight:600">'+icon+' '+item.name+'</td>' +
       '<td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:11px;color:var(--gray600)">'+typeLabel+'</td>' +
       '<td style="padding:7px 10px;border-bottom:1px solid var(--border);text-align:right">'+(item.hours>0?item.hours+' hrs':'—')+'</td>' +
@@ -1984,8 +1992,13 @@ async function confirmImport() {
     return;
   }
 
-  // Import ALL items directly — no checkbox filtering
+  // Import only checked items — use explicit IDs for reliable checkbox reading
   for (let i = 0; i < items.length; i++) {
+    const cb = document.getElementById('imp-cb-'+i);
+    if (cb && !cb.checked) {
+      console.log('Skipping unchecked:', items[i].name);
+      continue;
+    }
     const item = items[i];
     const hours = item.type === 'phase' ? (item.hours||0) : 0;
     const budget = item.type === 'phase' ? Math.round(hours * burdenRate) : (item.budget||0);

@@ -1793,6 +1793,11 @@ function parseResidentialEstimate(wb, data) {
       rows.forEach(row => {
         const a = String(row[0]||'').trim();
         const b = String(row[1]||'').trim();
+        // Also check columns 11+ where Patterson puts phase names
+        const c11 = String(row[11]||'').trim();
+        const c14 = parseFloat(row[14]);
+
+        // Check primary columns (Edenwald format - col 0/1)
         phasePatterns.forEach(pat => {
           if (!foundPhases.find(p=>p.name===pat.name) && (pat.re.test(a)||pat.re.test(b))) {
             const nums = row.map(c=>parseFloat(c)).filter(n=>!isNaN(n)&&n>0);
@@ -1805,6 +1810,21 @@ function parseResidentialEstimate(wb, data) {
             }
           }
         });
+
+        // Check secondary columns (Patterson format - col 11/14)
+        if (c11 && !isNaN(c14) && c14 >= 0) {
+          phasePatterns.forEach(pat => {
+            if (!foundPhases.find(p=>p.name===pat.name) && pat.re.test(c11)) {
+              const gangDays = c14;
+              const hours = Math.round(gangDays * 14);
+              const cost = Math.round(hours * 180);
+              if (gangDays > 0) {
+                foundPhases.push({ name:pat.name, gangDays, hours, laborCost:cost, selected:true });
+              }
+            }
+          });
+        }
+
         if (/material base/i.test(a)) { const v=row.map(c=>parseFloat(c)).filter(n=>!isNaN(n)&&n>10000); if(v.length) totalMaterial=v[0]; }
         if (/tooling\s*%/i.test(a)) { const v=row.map(c=>parseFloat(c)).filter(n=>!isNaN(n)&&n>1000); if(v.length) categories.tooling=v[0]; }
         if (/contingency\s*%/i.test(a)) { const v=row.map(c=>parseFloat(c)).filter(n=>!isNaN(n)&&n>1000); if(v.length) categories.contingency=v[0]; }
@@ -1835,7 +1855,7 @@ function parseResidentialEstimate(wb, data) {
     } catch(e) {}
   }
 
-  data.phases = foundPhases.length >= 5 ? foundPhases : EDENWALD_PHASES.map(p=>({...p, selected:true}));
+  data.phases = foundPhases.length >= 1 ? foundPhases : EDENWALD_PHASES.map(p=>({...p, selected:true}));
   data.buildings = foundBuildings.length >= 3 ? foundBuildings : EDENWALD_BUILDINGS;
   data.categories = Object.keys(categories).length >= 3 ? categories : EDENWALD_CATS;
   data.totalMaterial = totalMaterial;

@@ -1960,26 +1960,67 @@ async function confirmImport() {
   const btn = $('import-confirm-btn');
   btn.textContent = 'Importing...'; btn.disabled = true;
 
-  // Collect checked items
-  const checkboxes = document.querySelectorAll('#import-preview-rows input[type=checkbox]:checked');
-  const toImport = Array.from(checkboxes).map(cb => cb.dataset);
-
   let sortOrder = 0;
   const errors = [];
+  let imported = 0;
 
-  for (const item of toImport) {
-    const hours = parseFloat(item.hours||0);
-    const laborBudget = hours > 0 ? Math.round(hours * burdenRate) : parseFloat(item.budget||0);
-    const phaseData = {
+  // Use importData directly — more reliable than reading from DOM checkboxes
+  if (!importData) { toast('No import data found','error'); btn.textContent='✓ Import'; btn.disabled=false; return; }
+
+  // Get all checked checkboxes to know which items user wants
+  const checkboxes = document.querySelectorAll('#import-preview-rows input[type=checkbox]:checked');
+  const checkedTypes = new Set(Array.from(checkboxes).map(cb => cb.dataset.type));
+  const checkedNames = new Set(Array.from(checkboxes).map(cb => cb.dataset.name));
+
+  // Insert buildings
+  if (checkedTypes.has('building')) {
+    for (const bldg of importData.buildings) {
+      if (!checkedNames.has(bldg)) continue;
+      const { error } = await db.from('phases').insert({
+        project_id: projectId,
+        phase_name: bldg,
+        status: 'Not Started',
+        budgeted_hours: 0,
+        phase_budget: 0,
+        sort_order: sortOrder++,
+      });
+      if (error) errors.push(bldg + ': ' + error.message);
+      else imported++;
+    }
+  }
+
+  // Insert work phases
+  for (const ph of importData.phases) {
+    if (!checkedNames.has(ph.name)) continue;
+    const hours = parseFloat(ph.hours||0);
+    const laborBudget = hours > 0 ? Math.round(hours * burdenRate) : parseFloat(ph.laborCost||0);
+    const { error } = await db.from('phases').insert({
       project_id: projectId,
-      phase_name: item.name,
+      phase_name: ph.name,
       status: 'Not Started',
       budgeted_hours: hours,
       phase_budget: laborBudget,
       sort_order: sortOrder++,
-    };
-    const { error } = await db.from('phases').insert(phaseData);
-    if (error) errors.push(`${item.name}: ${error.message}`);
+    });
+    if (error) errors.push(ph.name + ': ' + error.message);
+    else imported++;
+  }
+
+  // Insert general phases (Design, Bond, Contingency, Tooling, Connex/Shanty)
+  const generals = ['Design','Bond','Contingency','Tooling','Connex/Shanty'];
+  for (const g of generals) {
+    if (!checkedNames.has(g)) continue;
+    const budget = importData.categories[g.toLowerCase()] || 0;
+    const { error } = await db.from('phases').insert({
+      project_id: projectId,
+      phase_name: g,
+      status: 'Not Started',
+      budgeted_hours: 0,
+      phase_budget: budget,
+      sort_order: sortOrder++,
+    });
+    if (error) errors.push(g + ': ' + error.message);
+    else imported++;
   }
 
   // Import category budgets if checked
@@ -2007,9 +2048,9 @@ async function confirmImport() {
   closeModal('modal-import');
 
   if (errors.length) {
-    toast(`Imported with ${errors.length} error(s)`, 'error');
+    toast('Imported ' + imported + ' items with ' + errors.length + ' error(s): ' + errors[0], 'error');
   } else {
-    toast(`✓ Imported ${toImport.length} phases successfully!`);
+    toast('✓ Imported ' + imported + ' phases successfully!');
   }
   navigate('project', projectId, 'setup');
 }

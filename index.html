@@ -1042,6 +1042,7 @@ async function savePurchase() {
 // ── TIME & LABOR ─────────────────────────────────────────────────────
 async function renderLabor() {
   const p = state.activeProject;
+  const burdenRate = parseFloat(p.burden_rate||160);
   const [{ data: labor }, { data: phases }, { data: employees }] = await Promise.all([
     db.from('labor_entries').select('*').eq('project_id', p.id).order('created_at', {ascending:false}),
     db.from('phases').select('*').eq('project_id', p.id).order('sort_order'),
@@ -1051,17 +1052,36 @@ async function renderLabor() {
   state.phases = phases || [];
   state.employees = employees || [];
   const calcCost = l => (parseFloat(l.st_hours||0)*parseFloat(l.st_rate||0)) + (parseFloat(l.ot15_hours||0)*parseFloat(l.st_rate||0)*1.5) + (parseFloat(l.ot2_hours||0)*parseFloat(l.st_rate||0)*2);
-  const totalHrs = state.laborEntries.reduce((s,l)=>s+parseFloat(l.st_hours||0)+parseFloat(l.ot15_hours||0)+parseFloat(l.ot2_hours||0),0);
-  const totalCost = state.laborEntries.reduce((s,l)=>s+calcCost(l),0);
+  const totalActHrs = state.laborEntries.reduce((s,l)=>s+parseFloat(l.st_hours||0)+parseFloat(l.ot15_hours||0)+parseFloat(l.ot2_hours||0),0);
+  const totalActCost = state.laborEntries.reduce((s,l)=>s+calcCost(l),0);
+  const totalBudHrs = state.phases.reduce((s,ph)=>s+parseFloat(ph.budgeted_hours||0),0);
+  const totalBudLabor = totalBudHrs * burdenRate;
+  const hrsRemaining = totalBudHrs - totalActHrs;
+  const costRemaining = totalBudLabor - totalActCost;
   $('content').innerHTML = `
   <div class="kgrid">
-    <div class="kcard db"><div class="klbl">Total ST Hours</div><div class="kval">${state.laborEntries.reduce((s,l)=>s+parseFloat(l.st_hours||0),0).toFixed(1)}</div></div>
-    <div class="kcard amb"><div class="klbl">Total OT Hours</div><div class="kval">${state.laborEntries.reduce((s,l)=>s+parseFloat(l.ot15_hours||0)+parseFloat(l.ot2_hours||0),0).toFixed(1)}</div></div>
-    <div class="kcard red"><div class="klbl">Total Hours</div><div class="kval">${totalHrs.toFixed(1)}</div></div>
-    <div class="kcard grn"><div class="klbl">Total Labor Cost</div><div class="kval">${fmt(totalCost)}</div></div>
+    <div class="kcard db">
+      <div class="klbl">Budgeted Hours</div>
+      <div class="kval">${totalBudHrs.toFixed(0)}</div>
+      <div class="ksub m">@ $${burdenRate}/hr = ${fmt(totalBudLabor)}</div>
+    </div>
+    <div class="kcard ${totalActHrs>totalBudHrs?'red':'grn'}">
+      <div class="klbl">Actual Hours</div>
+      <div class="kval">${totalActHrs.toFixed(1)}</div>
+      <div class="ksub ${hrsRemaining>=0?'g':'r'}">${hrsRemaining>=0?hrsRemaining.toFixed(1)+' hrs remaining':Math.abs(hrsRemaining).toFixed(1)+' hrs over'}</div>
+    </div>
+    <div class="kcard amb">
+      <div class="klbl">ST Hours</div>
+      <div class="kval">${state.laborEntries.reduce((s,l)=>s+parseFloat(l.st_hours||0),0).toFixed(1)}</div>
+    </div>
+    <div class="kcard ${totalActCost>totalBudLabor?'red':'grn'}">
+      <div class="klbl">Actual Labor Cost</div>
+      <div class="kval">${fmt(totalActCost)}</div>
+      <div class="ksub ${costRemaining>=0?'g':'r'}">${fmt(Math.abs(costRemaining))} ${costRemaining>=0?'remaining':'over budget'}</div>
+    </div>
   </div>
   <div class="card">
-    <div class="card-hd"><div class="card-title"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>Time & Labor Log</div>
+    <div class="card-hd"><div class="card-title"><svg viewBox="0 0 24 24" style="width:15px;height:15px;stroke:var(--navy);fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>Time & Labor Log</div>
       <button class="btn btn-sm btn-red" onclick="openNewLabor('${p.id}')">+ Log Hours</button>
     </div>
     <div class="tbl-wrap">
@@ -1071,19 +1091,29 @@ async function renderLabor() {
       const phase = state.phases.find(ph=>ph.id===l.phase_id);
       const totalH = parseFloat(l.st_hours||0)+parseFloat(l.ot15_hours||0)+parseFloat(l.ot2_hours||0);
       const cost = calcCost(l);
-      return `<tr>
-        <td class="font-600">${l.employee_name||'—'}</td>
-        <td>${phase?phase.phase_name:'—'}</td>
-        <td>${l.week_ending||'—'}</td>
-        <td class="text-right">${parseFloat(l.st_hours||0).toFixed(2)}</td>
-        <td class="text-right">${parseFloat(l.ot15_hours||0).toFixed(2)}</td>
-        <td class="text-right">${parseFloat(l.ot2_hours||0).toFixed(2)}</td>
-        <td class="text-right font-600">${totalH.toFixed(2)}</td>
-        <td class="text-right">${fmtD(l.st_rate)}</td>
-        <td class="text-right font-600">${fmt(cost)}</td>
-      </tr>`;
+      return '<tr>' +
+        '<td class="font-600">'+(l.employee_name||'—')+'</td>' +
+        '<td>'+(phase?phase.phase_name:'—')+'</td>' +
+        '<td>'+(l.week_ending||'—')+'</td>' +
+        '<td class="text-right">'+parseFloat(l.st_hours||0).toFixed(2)+'</td>' +
+        '<td class="text-right">'+parseFloat(l.ot15_hours||0).toFixed(2)+'</td>' +
+        '<td class="text-right">'+parseFloat(l.ot2_hours||0).toFixed(2)+'</td>' +
+        '<td class="text-right font-600">'+totalH.toFixed(2)+'</td>' +
+        '<td class="text-right">'+fmtD(l.st_rate)+'</td>' +
+        '<td class="text-right font-600">'+fmt(cost)+'</td>' +
+        '</tr>';
     }).join('')}
-    </tbody></table>`}
+    </tbody>
+    <tfoot><tr style="background:var(--navy)">
+      <td colspan="3" style="padding:8px 10px;color:#fff;font-weight:600">TOTALS</td>
+      <td class="text-right" style="padding:8px 10px;color:#fff;font-weight:600">${state.laborEntries.reduce((s,l)=>s+parseFloat(l.st_hours||0),0).toFixed(2)}</td>
+      <td class="text-right" style="padding:8px 10px;color:#fff;font-weight:600">${state.laborEntries.reduce((s,l)=>s+parseFloat(l.ot15_hours||0),0).toFixed(2)}</td>
+      <td class="text-right" style="padding:8px 10px;color:#fff;font-weight:600">${state.laborEntries.reduce((s,l)=>s+parseFloat(l.ot2_hours||0),0).toFixed(2)}</td>
+      <td class="text-right" style="padding:8px 10px;color:#fff;font-weight:600">${totalActHrs.toFixed(2)}</td>
+      <td class="text-right" style="padding:8px 10px;color:#fff"></td>
+      <td class="text-right" style="padding:8px 10px;color:#fff;font-weight:600">${fmt(totalActCost)}</td>
+    </tr></tfoot>
+    </table>`}
     </div>
   </div>`;
   $('topbar-actions').innerHTML = `<button class="btn btn-sm btn-red" onclick="openNewLabor('${p.id}')">+ Log Hours</button>`;

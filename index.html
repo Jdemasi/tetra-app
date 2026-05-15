@@ -1993,10 +1993,14 @@ async function confirmImport() {
   console.log('Checked indices:', checkedIndices.size);
   console.log('Project ID:', projectId);
 
+  // If no checkboxes detected as checked, import everything
+  const importAll = checkedIndices.size === 0;
+  if (importAll) console.log('No checkboxes detected — importing all items');
+
   // Use window._importItems which was stored during preview
   const items = window._importItems || [];
   for (let i = 0; i < items.length; i++) {
-    if (!checkedIndices.has(i)) continue;
+    if (!importAll && !checkedIndices.has(i)) continue;
     const item = items[i];
     const hours = item.type === 'phase' ? item.hours : 0;
     const budget = item.type === 'phase' ? Math.round(hours * burdenRate) : item.budget;

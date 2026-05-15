@@ -1896,114 +1896,53 @@ function showImportPreview(data) {
   $('import-step1').style.display = 'none';
   $('import-step2').style.display = 'block';
 
-  const totalPhases = data.buildings.length + data.phases.length;
+  const br = parseFloat($('import-burden-rate').value) || 160;
   const totalHrs = data.phases.reduce((s,p)=>s+p.hours,0);
-  const laborBudget = Math.round(totalHrs * 160);
+  const totalLaborBudget = Math.round(totalHrs * br);
+  const isIndustrial = data.estimateType === 'industrial';
+  const detectedRate = data.blendedRate || br;
 
   // Summary KPIs
-  const isIndustrial = data.estimateType === 'industrial';
-  const detectedRate = data.blendedRate || burdenRate;
-  $('import-summary').innerHTML = `
-    <div style="background:var(--gray50);border:1px solid var(--border);border-radius:8px;padding:10px;text-align:center">
-      <div style="font-size:10px;color:var(--gray600);margin-bottom:4px">${isIndustrial ? 'WORK GROUPS' : 'BUILDINGS'}</div>
-      <div style="font-size:20px;font-weight:600;color:var(--navy)">${isIndustrial ? data.phases.length : data.buildings.length}</div>
-      <div style="font-size:9px;color:var(--gray600);margin-top:2px">${isIndustrial ? '🏭 Industrial Format' : '🏠 Residential Format'}</div>
-    </div>
-    <div style="background:var(--gray50);border:1px solid var(--border);border-radius:8px;padding:10px;text-align:center">
-      <div style="font-size:10px;color:var(--gray600);margin-bottom:4px">${isIndustrial ? 'ACTIVITIES' : 'WORK PHASES'}</div>
-      <div style="font-size:20px;font-weight:600;color:var(--navy)">${data.phases.length}</div>
-    </div>
-    <div style="background:var(--gray50);border:1px solid var(--border);border-radius:8px;padding:10px;text-align:center">
-      <div style="font-size:10px;color:var(--gray600);margin-bottom:4px">BUDGETED HRS</div>
-      <div style="font-size:20px;font-weight:600;color:var(--navy)">${Math.round(totalHrs).toLocaleString()}</div>
-    </div>
-    <div style="background:var(--gray50);border:1px solid var(--border);border-radius:8px;padding:10px;text-align:center">
-      <div style="font-size:10px;color:var(--gray600);margin-bottom:4px">LABOR BUDGET</div>
-      <div style="font-size:20px;font-weight:600;color:var(--red)">${fmt(laborBudget)}</div>
-      <div style="font-size:9px;color:var(--gray600);margin-top:2px">@ $${Math.round(detectedRate)}/hr</div>
-    </div>`;
-  // Update burden rate input with detected rate
+  $('import-summary').innerHTML =
+    '<div style="background:var(--gray50);border:1px solid var(--border);border-radius:8px;padding:10px;text-align:center">' +
+      '<div style="font-size:10px;color:var(--gray600);margin-bottom:4px">' + (isIndustrial?'WORK GROUPS':'BUILDINGS') + '</div>' +
+      '<div style="font-size:20px;font-weight:600;color:var(--navy)">' + (isIndustrial?data.phases.length:data.buildings.length) + '</div>' +
+      '<div style="font-size:9px;color:var(--gray600);margin-top:2px">' + (isIndustrial?'🏭 Industrial':'🏠 Residential') + '</div>' +
+    '</div>' +
+    '<div style="background:var(--gray50);border:1px solid var(--border);border-radius:8px;padding:10px;text-align:center">' +
+      '<div style="font-size:10px;color:var(--gray600);margin-bottom:4px">WORK PHASES</div>' +
+      '<div style="font-size:20px;font-weight:600;color:var(--navy)">' + data.phases.length + '</div>' +
+    '</div>' +
+    '<div style="background:var(--gray50);border:1px solid var(--border);border-radius:8px;padding:10px;text-align:center">' +
+      '<div style="font-size:10px;color:var(--gray600);margin-bottom:4px">BUDGETED HRS</div>' +
+      '<div style="font-size:20px;font-weight:600;color:var(--navy)">' + Math.round(totalHrs).toLocaleString() + '</div>' +
+    '</div>' +
+    '<div style="background:var(--gray50);border:1px solid var(--border);border-radius:8px;padding:10px;text-align:center">' +
+      '<div style="font-size:10px;color:var(--gray600);margin-bottom:4px">LABOR BUDGET</div>' +
+      '<div style="font-size:20px;font-weight:600;color:var(--red)">' + fmt(totalLaborBudget) + '</div>' +
+      '<div style="font-size:9px;color:var(--gray600);margin-top:2px">@ $' + Math.round(detectedRate) + '/hr</div>' +
+    '</div>';
+
   if (isIndustrial && data.blendedRate) {
     $('import-burden-rate').value = Math.round(data.blendedRate);
   }
 
-  // Preview rows
-  const tbody = $('import-preview-rows');
-  let html = '';
-  let rowIdx = 0;
-
-  // Buildings as parent phases
-  data.buildings.forEach((bldg, i) => {
-    const bg = i % 2 === 0 ? '#EFF4FF' : '#F8F9FF';
-    html += `<tr style="background:${bg}">
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border)">
-        <input type="checkbox" checked data-idx="${rowIdx}" data-type="building" data-name="${bldg}">
-      </td>
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border);font-weight:600;color:var(--navy)">📁 ${bldg}</td>
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border);font-size:11px;color:var(--gray600)">Building (Parent)</td>
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right;color:var(--gray400)">—</td>
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right;color:var(--gray400)">—</td>
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right;color:var(--gray400)">—</td>
-    </tr>`;
-    rowIdx++;
-  });
-
-  // Work type phases
-  data.phases.forEach((ph, i) => {
-    const bg = i % 2 === 0 ? '#FFF' : '#FAFAFA';
-    const laborBud = Math.round(ph.hours * 160);
-    html += `<tr style="background:${bg}">
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border)">
-        <input type="checkbox" checked data-idx="${rowIdx}" data-type="phase" data-name="${ph.name}" data-hours="${ph.hours}" data-labor="${laborBud}">
-      </td>
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border);padding-left:24px">⚙️ ${ph.name}</td>
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border);font-size:11px;color:var(--gray600)">Work Type (${ph.gangDays} gang days)</td>
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right;font-weight:600">${Math.round(ph.hours).toLocaleString()}</td>
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right;font-weight:600;color:var(--green)">${fmt(laborBud)}</td>
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right;font-weight:600">${fmt(ph.laborCost)}</td>
-    </tr>`;
-    rowIdx++;
-  });
-
-  // General phases
-  const generals = ['Design','Bond','Contingency','Tooling','Connex/Shanty'];
-  generals.forEach((g, i) => {
-    const bg = i % 2 === 0 ? '#FFFBF0' : '#FFF8E8';
-    const catVal = data.categories[g.toLowerCase()] || 0;
-    html += `<tr style="background:${bg}">
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border)">
-        <input type="checkbox" checked data-idx="${rowIdx}" data-type="general" data-name="${g}" data-budget="${catVal}">
-      </td>
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border);padding-left:24px">📌 ${g}</td>
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border);font-size:11px;color:var(--gray600)">General / All Phases</td>
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right;color:var(--gray400)">—</td>
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right;color:var(--gray400)">—</td>
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right;font-weight:600">${catVal>0?fmt(catVal):'—'}</td>
-    </tr>`;
-    rowIdx++;
-  });
-
-  // Store structured import items
+  // Build _importItems array — this is what confirmImport uses
   window._importItems = [];
-  const burdenRate = parseFloat($('import-burden-rate').value)||160;
-
-  // Add buildings
   data.buildings.forEach(bldg => {
     window._importItems.push({ type:'building', name:bldg, hours:0, budget:0 });
   });
-  // Add work phases
   data.phases.forEach(ph => {
-    const laborBudget = Math.round(ph.hours * burdenRate);
-    window._importItems.push({ type:'phase', name:ph.name, hours:ph.hours, budget:laborBudget, laborCost:ph.laborCost });
+    const laborBudget = Math.round(ph.hours * br);
+    window._importItems.push({ type:'phase', name:ph.name, hours:ph.hours, budget:laborBudget });
   });
-  // Add general items
   const generalNames = ['Design','Bond','Contingency','Tooling','Connex/Shanty'];
   generalNames.forEach(g => {
-    const catVal = data.categories[g.toLowerCase()]||0;
+    const catVal = data.categories[g.toLowerCase()] || 0;
     window._importItems.push({ type:'general', name:g, hours:0, budget:catVal });
   });
 
-  console.log('Import items ready:', window._importItems.length, window._importItems);
+  console.log('Preview ready:', window._importItems.length, 'items for project:', importProjectId);
 
   // Build preview table
   const previewTbody = $('import-preview-rows');
@@ -2011,7 +1950,7 @@ function showImportPreview(data) {
     const bg = i%2===0?'#fff':'var(--gray50)';
     const icon = item.type==='building'?'📁':item.type==='phase'?'⚙️':'📌';
     const typeLabel = item.type==='building'?'Building':item.type==='phase'?'Work Phase':'Overhead';
-    const labBud = item.type==='phase' ? Math.round(item.hours * burdenRate) : 0;
+    const labBud = item.type==='phase' ? Math.round(item.hours * br) : 0;
     return '<tr style="background:'+bg+'">' +
       '<td style="padding:7px 10px;border-bottom:1px solid var(--border);font-weight:600">'+icon+' '+item.name+'</td>' +
       '<td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:11px;color:var(--gray600)">'+typeLabel+'</td>' +
@@ -2021,6 +1960,7 @@ function showImportPreview(data) {
       '</tr>';
   }).join('');
 }
+
 
 async function confirmImport() {
   // Use module-level projectId — more reliable than dataset

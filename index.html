@@ -1893,6 +1893,69 @@ function parseResidentialEstimate(wb, data) {
     } catch(e) { console.log('Parse error:',e); }
   }
 
+  // Parse breakdown sheet (Patterson style) - subs with markup, equipment, labor
+  const breakdownSheet = wb.Sheets['Sheet1'] || wb.Sheets['Breakdown'] || wb.Sheets['Cost Breakdown'];
+  if (breakdownSheet) {
+    try {
+      const bRows = XLSX.utils.sheet_to_json(breakdownSheet, {header:1, defval:''});
+      let subTotal = 0, subMarkupTotal = 0;
+      let breakdownLabor = [];
+      let hasBreakdown = false;
+
+      bRows.forEach(row => {
+        // Sub rows: col 0 = company name, col 1 = base, col 2 = markup
+        const companyName = String(row[0]||'').trim();
+        const base = parseFloat(row[1])||0;
+        const markup = parseFloat(row[2])||0;
+
+        // Labor hours: col 8 = "208hrs", col 9 = rate, col 10 = cost, col 11 = description
+        const hrsCell = String(row[8]||'');
+        const phaseName = String(row[11]||'').trim();
+        const rate = parseFloat(row[9])||0;
+        const cost = parseFloat(row[10])||0;
+
+        // Read sub rows (company name + base + markup)
+        if (companyName && base > 1000 && markup > 1000 && !companyName.includes('ONLY') && !companyName.includes('Total')) {
+          hasBreakdown = true;
+          // Map company to category
+          const isEquip = /equip|klima|victoria|tin/i.test(companyName);
+          const isInsul = /insul|rfj/i.test(companyName);
+          const isTab = /tab|airpath/i.test(companyName);
+          const isSelf = /tetra/i.test(companyName);
+          if (!isSelf) {
+            subTotal += base;
+            subMarkupTotal += markup;
+          }
+        }
+
+        // Read labor hour rows
+        if (/\d+hrs/i.test(hrsCell) && phaseName) {
+          const hrsMatch = hrsCell.match(/([\d.]+)hrs/i);
+          if (hrsMatch) {
+            const hrs = Math.round(parseFloat(hrsMatch[1]));
+            breakdownLabor.push({ name: phaseName, hours: hrs, cost: cost || Math.round(hrs * (rate||145)) });
+          }
+        }
+      });
+
+      // If we found breakdown data, just add sub costs — keep Tetra hours from bid breakdown
+      if (hasBreakdown) {
+        console.log('Breakdown sheet found — sub total with markup:', subMarkupTotal);
+        if (subMarkupTotal > 0) {
+          data.subcontractorCost = subMarkupTotal;
+          data.subcontractorBase = subTotal;
+        }
+        // Add equipment cost to categories if found
+        const equipCost = bRows.reduce((s, row) => {
+          const name = String(row[0]||'').trim();
+          const markup = parseFloat(row[2])||0;
+          return /equip|klima/i.test(name) && markup > 0 ? s + markup : s;
+        }, 0);
+        if (equipCost > 0) data.equipmentCost = equipCost;
+      }
+    } catch(e) { console.log('Breakdown sheet error:', e); }
+  }
+
   // Parse Subcontractors sheet for Add-On Labor, Copper/Pipe Install, Welding
   const subSheet = wb.Sheets['Subcontractors'] || wb.Sheets['Sub'];
   if (subSheet) {
@@ -2173,9 +2236,11 @@ async function confirmImport() {
   if (importCatBudgets && importData) {
     const totalHrs = importData.phases.reduce((s,p)=>s+p.hours,0);
     const cats = [
-      { category:'Materials', budgeted_amount: importData.totalMaterial||242000 },
+      { category:'Materials', budgeted_amount: importData.totalMaterial||0 },
       { category:'Labor',     budgeted_amount: Math.round(totalHrs*burdenRate) },
-    ];
+      { category:'Subcontractors', budgeted_amount: importData.subcontractorCost||0 },
+      { category:'Equipment', budgeted_amount: importData.equipmentCost||0 },
+    ].filter(c => c.budgeted_amount > 0);
     for (const cb of cats) {
       if (cb.budgeted_amount>0) {
         await db.from('project_budgets').upsert({ project_id:projectId, ...cb }, { onConflict:'project_id,category' });

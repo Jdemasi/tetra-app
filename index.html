@@ -1866,22 +1866,34 @@ function parseResidentialEstimate(wb, data) {
     try {
       const subRows = XLSX.utils.sheet_to_json(subSheet, {header:1, defval:''});
       subRows.forEach(row => {
-        row.forEach((cell, colIdx) => {
-          if (typeof cell === 'string' && /\d+\.?\d*hrs/i.test(cell)) {
-            const hrsMatch = cell.match(/([\d.]+)hrs/i);
-            if (hrsMatch) {
-              const hrs = Math.round(parseFloat(hrsMatch[1]));
-              const cost = parseFloat(row[colIdx+1])||0;
-              if (!foundPhases.find(p=>p.name==='Add-On Labor') && hrs > 1000) {
-                foundPhases.push({ name:'Add-On Labor', gangDays:0, hours:hrs, laborCost:cost, selected:true });
-              } else if (!foundPhases.find(p=>p.name==='Copper/Pipe Install') && hrs > 400 && hrs < 1000) {
-                foundPhases.push({ name:'Copper/Pipe Install', gangDays:0, hours:hrs, laborCost:cost, selected:true });
-              } else if (!foundPhases.find(p=>p.name==='Welding') && hrs > 10 && hrs < 150) {
-                foundPhases.push({ name:'Welding', gangDays:0, hours:hrs, laborCost:cost, selected:true });
+        // Hours in col 9, cost in col 10, phase name in col 12
+        const hrsCell = String(row[9]||'');
+        const phaseName = String(row[12]||'').trim();
+        if (/\d+\.?\d*hrs/i.test(hrsCell) && phaseName) {
+          const hrsMatch = hrsCell.match(/([\d.]+)hrs/i);
+          if (hrsMatch) {
+            const hrs = Math.round(parseFloat(hrsMatch[1]));
+            const cost = parseFloat(row[10])||Math.round(hrs*180);
+            // Match to known phase patterns
+            const phasePatMap = [
+              { re: /add.?on|add on/i,           name: 'Add-On Labor'        },
+              { re: /copper.*install|copper/i,    name: 'Copper/Pipe Install' },
+              { re: /welding/i,                   name: 'Welding'             },
+              { re: /delivery.*equip/i,           name: 'Delivery of Equipment' },
+              { re: /hydro/i,                     name: 'Hydro Testing'       },
+              { re: /mobil/i,                     name: 'Mob/Demob'           },
+              { re: /core.*drill/i,               name: 'Core Drilling'       },
+              { re: /tie.*in/i,                   name: 'Tie Ins'             },
+              { re: /misc/i,                      name: 'Misc Labor'          },
+              { re: /delivery.*material/i,        name: 'Delivery of Material'},
+            ];
+            phasePatMap.forEach(pat => {
+              if (pat.re.test(phaseName) && !foundPhases.find(p=>p.name===pat.name)) {
+                foundPhases.push({ name:pat.name, gangDays:0, hours:hrs, laborCost:cost, selected:true });
               }
-            }
+            });
           }
-        });
+        }
       });
       console.log('Sub sheet parsed, phases now:', foundPhases.length);
     } catch(e) { console.log('Sub sheet error:', e); }
@@ -1891,20 +1903,28 @@ function parseResidentialEstimate(wb, data) {
     try {
       const rows = XLSX.utils.sheet_to_json(proposalSheet, {header:1, defval:''});
       rows.forEach(row => {
+        // Check all columns for building references
         row.forEach(cell => {
           if (typeof cell === 'string') {
-            const m = cell.match(/Buildings?\s*([\d,\s&]+)/gi);
-            if (m) m.forEach(match => {
-              const nums = match.match(/\d+/g);
-              if (nums) nums.forEach(n => {
-                const name = 'Building ' + n;
-                if (!foundBuildings.includes(name) && parseInt(n) !== 16) foundBuildings.push(name);
+            // Match "Buildings X,X,X" or "Building X"
+            const matches = cell.match(/Buildings?\s*([\d,\s&]+(?:\d+))/gi);
+            if (matches) {
+              matches.forEach(match => {
+                const nums = match.match(/\d+/g);
+                if (nums) nums.forEach(n => {
+                  const num = parseInt(n);
+                  const name = 'Building ' + n;
+                  if (!foundBuildings.includes(name) && num !== 16 && num < 100) {
+                    foundBuildings.push(name);
+                  }
+                });
               });
-            });
+            }
           }
         });
       });
-    } catch(e) {}
+      console.log('Buildings found:', foundBuildings);
+    } catch(e) { console.log('Proposal sheet error:', e); }
   }
 
   data.phases = foundPhases.length >= 1 ? foundPhases : EDENWALD_PHASES.map(p=>({...p, selected:true}));

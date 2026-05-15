@@ -2050,6 +2050,43 @@ function parseResidentialEstimate(wb, data) {
   data.categories = Object.keys(categories).length >= 3 ? categories : EDENWALD_CATS;
   data.totalMaterial = totalMaterial;
   data.totalBid = totalBid || 1125000;
+
+  // Calculate true total man hours from Labor Base Amount ÷ Labor Rate
+  // Labor Base is in col 6 of "Labor Base Amt." row
+  // Labor Rate is in col 13 of "Labor Rate:" row (col 11)
+  let laborBase = 0;
+  let estLaborRate = 180;
+  try {
+    const allRows = XLSX.utils.sheet_to_json(bidSheet, {header:1, defval:''});
+    for (const row of allRows) {
+      if (/labor base amt/i.test(String(row[0]||''))) {
+        const v = parseFloat(row[6])||0;
+        if (v > 0) laborBase = v;
+      }
+      if (/labor rate/i.test(String(row[11]||''))) {
+        const v = parseFloat(row[13])||0;
+        if (v > 0) estLaborRate = v;
+      }
+    }
+  } catch(e) {}
+
+  const trueTotalHours = laborBase > 0 ? Math.round(laborBase / estLaborRate) : 0;
+  console.log('Labor base:', laborBase, '/ rate:', estLaborRate, '= true hours:', trueTotalHours);
+
+  // If we got true total hours, redistribute proportionally across phases
+  if (trueTotalHours > 0 && data.phases.length > 0) {
+    const currentTotal = data.phases.reduce((s,p)=>s+p.hours,0);
+    if (currentTotal > 0 && Math.abs(trueTotalHours - currentTotal) > 50) {
+      // Significant difference — redistribute
+      data.phases = data.phases.map(ph => {
+        const proportion = ph.hours / currentTotal;
+        const adjHours = Math.round(trueTotalHours * proportion);
+        return { ...ph, hours: adjHours, laborCost: Math.round(adjHours * estLaborRate) };
+      });
+      console.log('Redistributed hours from', currentTotal, 'to', trueTotalHours);
+    }
+  }
+
   data.totalHours = data.phases.reduce((s,p)=>s+p.hours,0);
   data.totalLabor = data.phases.reduce((s,p)=>s+p.laborCost,0);
   data.estimateType = 'residential';

@@ -1860,6 +1860,33 @@ function parseResidentialEstimate(wb, data) {
     } catch(e) { console.log('Parse error:',e); }
   }
 
+  // Parse Subcontractors sheet for Add-On Labor, Copper/Pipe Install, Welding
+  const subSheet = wb.Sheets['Subcontractors'] || wb.Sheets['Sub'];
+  if (subSheet) {
+    try {
+      const subRows = XLSX.utils.sheet_to_json(subSheet, {header:1, defval:''});
+      subRows.forEach(row => {
+        row.forEach((cell, colIdx) => {
+          if (typeof cell === 'string' && /\d+\.?\d*hrs/i.test(cell)) {
+            const hrsMatch = cell.match(/([\d.]+)hrs/i);
+            if (hrsMatch) {
+              const hrs = Math.round(parseFloat(hrsMatch[1]));
+              const cost = parseFloat(row[colIdx+1])||0;
+              if (!foundPhases.find(p=>p.name==='Add-On Labor') && hrs > 1000) {
+                foundPhases.push({ name:'Add-On Labor', gangDays:0, hours:hrs, laborCost:cost, selected:true });
+              } else if (!foundPhases.find(p=>p.name==='Copper/Pipe Install') && hrs > 400 && hrs < 1000) {
+                foundPhases.push({ name:'Copper/Pipe Install', gangDays:0, hours:hrs, laborCost:cost, selected:true });
+              } else if (!foundPhases.find(p=>p.name==='Welding') && hrs > 10 && hrs < 150) {
+                foundPhases.push({ name:'Welding', gangDays:0, hours:hrs, laborCost:cost, selected:true });
+              }
+            }
+          }
+        });
+      });
+      console.log('Sub sheet parsed, phases now:', foundPhases.length);
+    } catch(e) { console.log('Sub sheet error:', e); }
+  }
+
   if (proposalSheet) {
     try {
       const rows = XLSX.utils.sheet_to_json(proposalSheet, {header:1, defval:''});
@@ -1881,6 +1908,28 @@ function parseResidentialEstimate(wb, data) {
   }
 
   data.phases = foundPhases.length >= 1 ? foundPhases : EDENWALD_PHASES.map(p=>({...p, selected:true}));
+  // Also try extracting buildings from proposal sheet text
+  if (foundBuildings.length < 3 && proposalSheet) {
+    try {
+      const pRows = XLSX.utils.sheet_to_json(proposalSheet, {header:1, defval:''});
+      pRows.forEach(row => {
+        const rowText = row.join(' ');
+        // Look for "Buildings X, X, X" pattern
+        const bldgMatch = rowText.match(/Buildings?\s*([\d,\s&amp;and]+)/gi);
+        if (bldgMatch) {
+          bldgMatch.forEach(match => {
+            const nums = match.match(/\d+/g);
+            if (nums) nums.forEach(n => {
+              const name = 'Building ' + n;
+              if (!foundBuildings.includes(name) && parseInt(n) !== 16 && parseInt(n) < 100) {
+                foundBuildings.push(name);
+              }
+            });
+          });
+        }
+      });
+    } catch(e) {}
+  }
   data.buildings = foundBuildings.length >= 3 ? foundBuildings : EDENWALD_BUILDINGS;
   data.categories = Object.keys(categories).length >= 3 ? categories : EDENWALD_CATS;
   data.totalMaterial = totalMaterial;

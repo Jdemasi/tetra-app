@@ -1954,6 +1954,23 @@ function showImportPreview(data) {
   });
 
   tbody.innerHTML = html;
+
+  // Store structured import items for confirmImport to use directly
+  window._importItems = [];
+  data.buildings.forEach(bldg => {
+    window._importItems.push({ type:'building', name:bldg, hours:0, budget:0 });
+  });
+  data.phases.forEach(ph => {
+    const burdenRate = parseFloat($('import-burden-rate').value)||160;
+    const laborBudget = Math.round(ph.hours * burdenRate);
+    window._importItems.push({ type:'phase', name:ph.name, hours:ph.hours, budget:laborBudget });
+  });
+  const generalNames = ['Design','Bond','Contingency','Tooling','Connex/Shanty'];
+  generalNames.forEach(g => {
+    const catVal = data.categories[g.toLowerCase()]||0;
+    window._importItems.push({ type:'general', name:g, hours:0, budget:catVal });
+  });
+  console.log('Import items stored:', window._importItems.length, window._importItems);
 }
 
 async function confirmImport() {
@@ -1963,109 +1980,81 @@ async function confirmImport() {
   const btn = $('import-confirm-btn');
   btn.textContent = 'Importing...'; btn.disabled = true;
 
-  let sortOrder = 0;
   const errors = [];
   let imported = 0;
+  let sortOrder = 0;
 
-  // Debug logging
-  console.log('=== IMPORT DEBUG ===');
-  console.log('projectId:', projectId);
-  console.log('importData:', importData);
-  console.log('burdenRate:', burdenRate);
+  // Get which checkboxes are checked by index
+  const checkboxes = document.querySelectorAll('#import-preview-rows input[type=checkbox]');
+  const checkedIndices = new Set();
+  checkboxes.forEach((cb, idx) => { if (cb.checked) checkedIndices.add(idx); });
 
-  // Use importData directly — more reliable than reading from DOM checkboxes
-  if (!importData) { 
-    console.log('ERROR: No importData');
-    toast('No import data — please upload the estimate file first','error'); 
-    btn.textContent='✓ Import'; btn.disabled=false; return; 
-  }
-  console.log('phases to import:', importData.phases?.length);
-  console.log('buildings to import:', importData.buildings?.length);
+  console.log('Total items:', window._importItems?.length);
+  console.log('Checked indices:', checkedIndices.size);
+  console.log('Project ID:', projectId);
 
-  // Get all checked checkboxes to know which items user wants
-  const checkboxes = document.querySelectorAll('#import-preview-rows input[type=checkbox]:checked');
-  const checkedTypes = new Set(Array.from(checkboxes).map(cb => cb.dataset.type));
-  const checkedNames = new Set(Array.from(checkboxes).map(cb => cb.dataset.name));
-
-  // Insert buildings
-  if (checkedTypes.has('building')) {
-    for (const bldg of importData.buildings) {
-      if (!checkedNames.has(bldg)) continue;
-      const { error } = await db.from('phases').insert({
-        project_id: projectId,
-        phase_name: bldg,
-        status: 'Not Started',
-        budgeted_hours: 0,
-        phase_budget: 0,
-        sort_order: sortOrder++,
-      });
-      if (error) errors.push(bldg + ': ' + error.message);
-      else imported++;
-    }
-  }
-
-  // Insert work phases
-  for (const ph of importData.phases) {
-    if (!checkedNames.has(ph.name)) continue;
-    const hours = parseFloat(ph.hours||0);
-    const laborBudget = hours > 0 ? Math.round(hours * burdenRate) : parseFloat(ph.laborCost||0);
-    const { error } = await db.from('phases').insert({
+  // Use window._importItems which was stored during preview
+  const items = window._importItems || [];
+  for (let i = 0; i < items.length; i++) {
+    if (!checkedIndices.has(i)) continue;
+    const item = items[i];
+    const hours = item.type === 'phase' ? item.hours : 0;
+    const budget = item.type === 'phase' ? Math.round(hours * burdenRate) : item.budget;
+    console.log('Inserting:', item.name, hours, budget);
+    const { data, error } = await db.from('phases').insert({
       project_id: projectId,
-      phase_name: ph.name,
+      phase_name: item.name,
       status: 'Not Started',
       budgeted_hours: hours,
-      phase_budget: laborBudget,
-      sort_order: sortOrder++,
-    });
-    if (error) errors.push(ph.name + ': ' + error.message);
-    else imported++;
-  }
-
-  // Insert general phases (Design, Bond, Contingency, Tooling, Connex/Shanty)
-  const generals = ['Design','Bond','Contingency','Tooling','Connex/Shanty'];
-  for (const g of generals) {
-    if (!checkedNames.has(g)) continue;
-    const budget = importData.categories[g.toLowerCase()] || 0;
-    const { error } = await db.from('phases').insert({
-      project_id: projectId,
-      phase_name: g,
-      status: 'Not Started',
-      budgeted_hours: 0,
       phase_budget: budget,
       sort_order: sortOrder++,
     });
-    if (error) errors.push(g + ': ' + error.message);
-    else imported++;
+    if (error) {
+      console.error('Insert error for', item.name, ':', error);
+      errors.push(item.name + ': ' + error.message);
+    } else {
+      imported++;
+      console.log('Inserted:', item.name);
+    }
   }
 
-  // Import category budgets if checked
+  // Import category budgets
   if (importCatBudgets && importData) {
     const totalHrs = importData.phases.reduce((s,p)=>s+p.hours,0);
-    const catBudgets = [
-      { category: 'Materials', budgeted_amount: importData.totalMaterial || 242000 },
-      { category: 'Labor', budgeted_amount: Math.round(totalHrs * burdenRate) },
-      { category: 'Misc.', budgeted_amount: (importData.categories.tooling||0)+(importData.categories.contingency||0) },
+    const cats = [
+      { category:'Materials', budgeted_amount: importData.totalMaterial||242000 },
+      { category:'Labor',     budgeted_amount: Math.round(totalHrs*burdenRate) },
     ];
-    for (const cb of catBudgets) {
-      if (cb.budgeted_amount > 0) {
-        await db.from('project_budgets').upsert({ project_id: projectId, ...cb }, { onConflict: 'project_id,category' });
+    for (const cb of cats) {
+      if (cb.budgeted_amount>0) {
+        await db.from('project_budgets').upsert({ project_id:projectId, ...cb }, { onConflict:'project_id,category' });
       }
     }
-    // Bond and Design as misc
-    if (importData.categories.bond || importData.categories.design) {
-      const bondDesign = (importData.categories.bond||0) + (importData.categories.design||0);
-      await db.from('project_budgets').upsert({ project_id: projectId, category: 'Misc.', budgeted_amount: bondDesign }, { onConflict: 'project_id,category' });
+    // Save allowances to cost_line_items
+    const allowances = [
+      { item_name:'Tooling',      budgeted_amount: importData.categories.tooling||0      },
+      { item_name:'Contingency',  budgeted_amount: importData.categories.contingency||0  },
+      { item_name:'Bond',         budgeted_amount: importData.categories.bond||0         },
+      { item_name:'Design',       budgeted_amount: importData.categories.design||0       },
+    ];
+    for (const a of allowances) {
+      if (a.budgeted_amount>0) {
+        const { data:ex } = await db.from('cost_line_items').select('id').eq('project_id',projectId).eq('item_name',a.item_name).maybeSingle();
+        if (ex) await db.from('cost_line_items').update({ budgeted_amount:a.budgeted_amount }).eq('id',ex.id);
+        else await db.from('cost_line_items').insert({ project_id:projectId, ...a });
+      }
     }
   }
 
   btn.textContent = '✓ Import — Create Phases & Budgets';
   btn.disabled = false;
   closeModal('modal-import');
+  window._importItems = [];
 
   if (errors.length) {
-    toast('Imported ' + imported + ' items with ' + errors.length + ' error(s): ' + errors[0], 'error');
+    toast('Imported ' + imported + ' phases. ' + errors.length + ' errors: ' + errors[0], 'error');
   } else {
-    toast('✓ Imported ' + imported + ' phases successfully!');
+    toast('✓ ' + imported + ' phases imported successfully!');
   }
   navigate('project', projectId, 'setup');
 }

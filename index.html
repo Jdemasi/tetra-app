@@ -325,12 +325,12 @@ select.finp{cursor:pointer}
 <div class="modal-bg" id="modal-import">
   <div class="modal" style="max-width:780px;width:95%">
     <div class="modal-hd">
-      <div class="modal-title">📥 Import Estimate — Auto-Build Phases & Budgets</div>
+      <div class="modal-title">📥 Import Estimate — AI-Powered Phase Builder</div>
       <button class="modal-close" onclick="closeModal('modal-import')">×</button>
     </div>
     <div id="import-step1">
       <p style="font-size:12px;color:var(--gray600);margin-bottom:14px">
-        Upload your Tetra estimating Excel file. The app will read your bid breakdown, extract phases, buildings, hours, and budgets — then show you a preview before saving anything.
+        Upload your Tetra estimating Excel file. Our AI reads your bid breakdown and extracts all phases, buildings, hours, and budgets automatically — works for any estimate format.
       </p>
       <div id="import-dropzone" style="border:2px dashed var(--border);border-radius:10px;padding:40px;text-align:center;cursor:pointer;transition:.2s;background:var(--gray50)" onclick="$('import-file-input').click()" ondragover="event.preventDefault();this.style.borderColor='var(--red)'" ondragleave="this.style.borderColor='var(--border)'" ondrop="handleImportDrop(event)">
         <div style="font-size:32px;margin-bottom:10px">📊</div>
@@ -344,31 +344,26 @@ select.finp{cursor:pointer}
       <div id="import-summary" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px"></div>
       <div style="margin-bottom:8px;display:flex;align-items:center;justify-content:space-between">
         <div style="font-size:12px;font-weight:600;color:var(--gray800)">📋 Phases to Import</div>
-        <div style="font-size:11px;color:var(--gray600)">Review before saving — uncheck any you don't want</div>
+        <div style="font-size:11px;color:var(--gray600)">All items will be imported — review below</div>
       </div>
       <div style="max-height:340px;overflow-y:auto;border:1px solid var(--border);border-radius:8px">
         <table style="width:100%;border-collapse:collapse;font-size:12px">
           <thead>
             <tr style="background:var(--gray50)">
-              <th style="padding:7px 10px;text-align:left;font-size:10px;font-weight:600;color:var(--gray600);border-bottom:1px solid var(--border);width:36px">✓</th>
               <th style="padding:7px 10px;text-align:left;font-size:10px;font-weight:600;color:var(--gray600);border-bottom:1px solid var(--border)">Phase / Building</th>
               <th style="padding:7px 10px;text-align:left;font-size:10px;font-weight:600;color:var(--gray600);border-bottom:1px solid var(--border)">Type</th>
               <th style="padding:7px 10px;text-align:right;font-size:10px;font-weight:600;color:var(--gray600);border-bottom:1px solid var(--border)">Budgeted Hrs</th>
-              <th style="padding:7px 10px;text-align:right;font-size:10px;font-weight:600;color:var(--gray600);border-bottom:1px solid var(--border)">Labor Budget ($160/hr)</th>
-              <th style="padding:7px 10px;text-align:right;font-size:10px;font-weight:600;color:var(--gray600);border-bottom:1px solid var(--border)">Total Budget</th>
+              <th style="padding:7px 10px;text-align:right;font-size:10px;font-weight:600;color:var(--gray600);border-bottom:1px solid var(--border)">Labor Budget</th>
+              <th style="padding:7px 10px;text-align:right;font-size:10px;font-weight:600;color:var(--gray600);border-bottom:1px solid var(--border)">Phase Budget</th>
             </tr>
           </thead>
           <tbody id="import-preview-rows"></tbody>
         </table>
       </div>
-      <div style="margin-top:10px;padding:10px;background:var(--gray50);border-radius:8px;font-size:11px;color:var(--gray600)">
-        <strong>Labor budget</strong> = Budgeted hours × $160/hr burden rate &nbsp;|&nbsp; 
-        <strong>Total budget</strong> = Labor + Material + Other costs from estimate
-      </div>
       <div style="margin-top:10px;display:flex;align-items:center;gap:8px">
         <div style="font-size:11px;color:var(--gray600)">Burden rate:</div>
         <input id="import-burden-rate" type="number" value="160" style="width:80px;padding:4px 8px;font-size:12px;border:1px solid var(--border);border-radius:6px">
-        <div style="font-size:11px;color:var(--gray600)">/hr &nbsp;|&nbsp; Also import category budgets (Materials, Labor total, etc.)?</div>
+        <div style="font-size:11px;color:var(--gray600)">/hr &nbsp;|&nbsp; Import category budgets?</div>
         <label style="display:flex;align-items:center;gap:5px;font-size:11px;cursor:pointer">
           <input type="checkbox" id="import-cat-budgets" checked> Yes
         </label>
@@ -376,7 +371,7 @@ select.finp{cursor:pointer}
       <div class="form-actions" style="margin-top:14px">
         <button class="btn" onclick="resetImport()">← Back</button>
         <button class="btn btn-red" onclick="confirmImport()" id="import-confirm-btn">
-          ✓ Import — Create Phases & Budgets
+          ✓ Import All Phases & Budgets
         </button>
       </div>
     </div>
@@ -1988,24 +1983,43 @@ function showImportPreview(data) {
     rowIdx++;
   });
 
-  tbody.innerHTML = html;
-
-  // Store structured import items for confirmImport to use directly
+  // Store structured import items
   window._importItems = [];
+  const burdenRate = parseFloat($('import-burden-rate').value)||160;
+
+  // Add buildings
   data.buildings.forEach(bldg => {
     window._importItems.push({ type:'building', name:bldg, hours:0, budget:0 });
   });
+  // Add work phases
   data.phases.forEach(ph => {
-    const burdenRate = parseFloat($('import-burden-rate').value)||160;
     const laborBudget = Math.round(ph.hours * burdenRate);
-    window._importItems.push({ type:'phase', name:ph.name, hours:ph.hours, budget:laborBudget });
+    window._importItems.push({ type:'phase', name:ph.name, hours:ph.hours, budget:laborBudget, laborCost:ph.laborCost });
   });
+  // Add general items
   const generalNames = ['Design','Bond','Contingency','Tooling','Connex/Shanty'];
   generalNames.forEach(g => {
     const catVal = data.categories[g.toLowerCase()]||0;
     window._importItems.push({ type:'general', name:g, hours:0, budget:catVal });
   });
-  console.log('Import items stored:', window._importItems.length, window._importItems);
+
+  console.log('Import items ready:', window._importItems.length, window._importItems);
+
+  // Build preview table
+  const previewTbody = $('import-preview-rows');
+  previewTbody.innerHTML = window._importItems.map((item, i) => {
+    const bg = i%2===0?'#fff':'var(--gray50)';
+    const icon = item.type==='building'?'📁':item.type==='phase'?'⚙️':'📌';
+    const typeLabel = item.type==='building'?'Building':item.type==='phase'?'Work Phase':'Overhead';
+    const labBud = item.type==='phase' ? Math.round(item.hours * burdenRate) : 0;
+    return '<tr style="background:'+bg+'">' +
+      '<td style="padding:7px 10px;border-bottom:1px solid var(--border);font-weight:600">'+icon+' '+item.name+'</td>' +
+      '<td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:11px;color:var(--gray600)">'+typeLabel+'</td>' +
+      '<td style="padding:7px 10px;border-bottom:1px solid var(--border);text-align:right">'+(item.hours>0?item.hours+' hrs':'—')+'</td>' +
+      '<td style="padding:7px 10px;border-bottom:1px solid var(--border);text-align:right;color:var(--green);font-weight:600">'+(labBud>0?fmt(labBud):'—')+'</td>' +
+      '<td style="padding:7px 10px;border-bottom:1px solid var(--border);text-align:right;font-weight:600">'+(item.budget>0?fmt(item.budget):'—')+'</td>' +
+      '</tr>';
+  }).join('');
 }
 
 async function confirmImport() {
@@ -2021,28 +2035,22 @@ async function confirmImport() {
   let imported = 0;
   let sortOrder = 0;
 
-  // Get which checkboxes are checked by index
-  const checkboxes = document.querySelectorAll('#import-preview-rows input[type=checkbox]');
-  const checkedIndices = new Set();
-  checkboxes.forEach((cb, idx) => { if (cb.checked) checkedIndices.add(idx); });
-
-  console.log('Total items:', window._importItems?.length);
-  console.log('Checked indices:', checkedIndices.size);
-  console.log('Project ID:', projectId);
-
-  // If no checkboxes detected as checked, import everything
-  const importAll = checkedIndices.size === 0;
-  if (importAll) console.log('No checkboxes detected — importing all items');
-
-  // Use window._importItems which was stored during preview
   const items = window._importItems || [];
+  console.log('Importing', items.length, 'items to project', projectId);
+
+  if (!items.length) {
+    toast('No items to import — please upload an estimate file first', 'error');
+    btn.textContent = '✓ Import All Phases & Budgets'; btn.disabled = false;
+    return;
+  }
+
+  // Import ALL items directly — no checkbox filtering
   for (let i = 0; i < items.length; i++) {
-    if (!importAll && !checkedIndices.has(i)) continue;
     const item = items[i];
-    const hours = item.type === 'phase' ? item.hours : 0;
-    const budget = item.type === 'phase' ? Math.round(hours * burdenRate) : item.budget;
-    console.log('Inserting:', item.name, hours, budget);
-    const { data, error } = await db.from('phases').insert({
+    const hours = item.type === 'phase' ? (item.hours||0) : 0;
+    const budget = item.type === 'phase' ? Math.round(hours * burdenRate) : (item.budget||0);
+    console.log('Inserting phase', i+1, ':', item.name, '| hours:', hours, '| budget:', budget, '| project:', projectId);
+    const { error } = await db.from('phases').insert({
       project_id: projectId,
       phase_name: item.name,
       status: 'Not Started',
@@ -2051,11 +2059,11 @@ async function confirmImport() {
       sort_order: sortOrder++,
     });
     if (error) {
-      console.error('Insert error for', item.name, ':', error);
+      console.error('ERROR inserting', item.name, ':', error.message, error);
       errors.push(item.name + ': ' + error.message);
     } else {
       imported++;
-      console.log('Inserted:', item.name);
+      console.log('✓ Inserted:', item.name);
     }
   }
 
@@ -2087,7 +2095,7 @@ async function confirmImport() {
     }
   }
 
-  btn.textContent = '✓ Import — Create Phases & Budgets';
+  btn.textContent = '✓ Import All Phases & Budgets';
   btn.disabled = false;
   closeModal('modal-import');
   window._importItems = [];

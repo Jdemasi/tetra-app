@@ -1894,7 +1894,7 @@ function parseResidentialEstimate(wb, data) {
   }
 
   // Parse breakdown sheet (Patterson style) - subs with markup, equipment, labor
-  const breakdownSheet = wb.Sheets['Sheet1'] || wb.Sheets['Breakdown'] || wb.Sheets['Cost Breakdown'];
+  const breakdownSheet = wb.Sheets['Sub Breakdown'] || wb.Sheets['Sheet1'] || wb.Sheets['Breakdown'] || wb.Sheets['Cost Breakdown'];
   if (breakdownSheet) {
     try {
       const bRows = XLSX.utils.sheet_to_json(breakdownSheet, {header:1, defval:''});

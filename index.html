@@ -1917,14 +1917,10 @@ function parseResidentialEstimate(wb, data) {
         // Read sub rows (company name + base + markup)
         if (companyName && base > 1000 && markup > 1000 && !companyName.includes('ONLY') && !companyName.includes('Total')) {
           hasBreakdown = true;
-          // Map company to category
-          const isEquip = /equip|klima|victoria|tin/i.test(companyName);
-          const isInsul = /insul|rfj/i.test(companyName);
-          const isTab = /tab|airpath/i.test(companyName);
           const isSelf = /tetra/i.test(companyName);
           if (!isSelf) {
-            subTotal += base;
-            subMarkupTotal += markup;
+            subTotal += base;        // base cost = what you pay
+            subMarkupTotal += markup; // markup = what you charge client
           }
         }
 
@@ -1940,18 +1936,22 @@ function parseResidentialEstimate(wb, data) {
 
       // If we found breakdown data, just add sub costs — keep Tetra hours from bid breakdown
       if (hasBreakdown) {
-        console.log('Breakdown sheet found — sub total with markup:', subMarkupTotal);
-        if (subMarkupTotal > 0) {
-          data.subcontractorCost = subMarkupTotal;
-          data.subcontractorBase = subTotal;
+        console.log('Breakdown sheet found — sub base:', subTotal, 'sub markup:', subMarkupTotal);
+        if (subTotal > 0) {
+          data.subcontractorCost = subTotal;
+          data.subcontractorMarkup = subMarkupTotal;
         }
-        // Add equipment cost to categories if found
-        const equipCost = bRows.reduce((s, row) => {
+        // Store individual subs and equipment as phases
+        data.subPhases = [];
+        bRows.forEach(row => {
           const name = String(row[0]||'').trim();
-          const markup = parseFloat(row[2])||0;
-          return /equip|klima/i.test(name) && markup > 0 ? s + markup : s;
-        }, 0);
-        if (equipCost > 0) data.equipmentCost = equipCost;
+          const base = parseFloat(row[1])||0;
+          if (name && base > 1000 && !name.includes('ONLY') && !name.includes('Total') && !/tetra/i.test(name)) {
+            const isEquip = /equip|klima/i.test(name);
+            data.subPhases.push({ name: name, budget: base, type: isEquip ? 'equipment' : 'sub' });
+          }
+        });
+        console.log('Sub phases:', data.subPhases);
       }
     } catch(e) { console.log('Breakdown sheet error:', e); }
   }
@@ -2147,6 +2147,15 @@ function showImportPreview(data) {
     const laborBudget = Math.round(ph.hours * br);
     window._importItems.push({ type:'phase', name:ph.name, hours:ph.hours, budget:laborBudget });
   });
+
+  // Add individual sub and equipment phases from breakdown sheet
+  if (data.subPhases && data.subPhases.length > 0) {
+    data.subPhases.forEach(sp => {
+      const icon = sp.type === 'equipment' ? '🔧' : '👷';
+      window._importItems.push({ type: sp.type, name: sp.name, hours: 0, budget: sp.budget });
+    });
+  }
+
   const generalNames = ['Design','Bond','Contingency','Tooling','Connex/Shanty'];
   generalNames.forEach(g => {
     const catVal = data.categories[g.toLowerCase()] || 0;
@@ -2161,8 +2170,8 @@ function showImportPreview(data) {
   const previewTbody = $('import-preview-rows');
   previewTbody.innerHTML = window._importItems.map((item, i) => {
     const bg = i%2===0?'#fff':'var(--gray50)';
-    const icon = item.type==='building'?'📁':item.type==='phase'?'⚙️':'📌';
-    const typeLabel = item.type==='building'?'Building':item.type==='phase'?'Work Phase':'Overhead';
+    const icon = item.type==='building'?'📁':item.type==='phase'?'⚙️':item.type==='sub'?'👷':item.type==='equipment'?'🔧':'📌';
+    const typeLabel = item.type==='building'?'Building':item.type==='phase'?'Work Phase':item.type==='sub'?'Subcontractor':item.type==='equipment'?'Equipment':'Overhead';
     const labBud = item.type==='phase' ? Math.round(item.hours * br) : 0;
     // Auto-uncheck items with no hours and no budget
     const hasValue = item.hours > 0 || item.budget > 0;
@@ -2214,6 +2223,7 @@ async function confirmImport() {
     const item = items[i];
     const hours = item.type === 'phase' ? (item.hours||0) : 0;
     const budget = item.type === 'phase' ? Math.round(hours * burdenRate) : (item.budget||0);
+    const category = item.type === 'sub' ? 'Subcontractors' : item.type === 'equipment' ? 'Equipment' : null;
     console.log('Inserting phase', i+1, ':', item.name, '| hours:', hours, '| budget:', budget, '| project:', projectId);
     const { error } = await db.from('phases').insert({
       project_id: projectId,

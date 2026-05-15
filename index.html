@@ -1779,16 +1779,24 @@ function parseResidentialEstimate(wb, data) {
     try {
       const rows = XLSX.utils.sheet_to_json(bidSheet, {header:1, defval:''});
       const phasePatterns = [
-        { re: /delivery of equip/i,       name: 'Delivery of Equipment', gang: true  },
-        { re: /hydro testing\b/i,          name: 'Hydro Testing',         gang: true  },
-        { re: /mob.*demob/i,               name: 'Mob/Demob',             gang: true  },
-        { re: /core drill/i,               name: 'Core Drilling',         gang: true  },
-        { re: /tie ins?\b/i,               name: 'Tie Ins',               gang: true  },
-        { re: /misc.*labor\b/i,            name: 'Misc Labor',            gang: true  },
-        { re: /delivery of material/i,     name: 'Delivery of Material',  gang: true  },
-        { re: /add.?on.*labor/i,           name: 'Add-On Labor',          gang: false },
-        { re: /copper.*install|pipe.*rough/i, name: 'Copper/Pipe Install',gang: false },
-        { re: /welding\b/i,                name: 'Welding',               gang: false },
+        { re: /delivery of equip/i,            name: 'Delivery of Equipment', gang: true  },
+        { re: /hydro testing on ot|hydro.*overtime/i, name: 'Hydro Testing OT', gang: true },
+        { re: /hydro testing\b/i,              name: 'Hydro Testing',         gang: true  },
+        { re: /mob.*demob|mobiliz.*demob/i,    name: 'Mob/Demob',             gang: true  },
+        { re: /core drill/i,                   name: 'Core Drilling',         gang: true  },
+        { re: /tie ins?\b/i,                   name: 'Tie Ins',               gang: true  },
+        { re: /misc.*trim/i,                   name: 'Misc Trim',             gang: true  },
+        { re: /misc.*labor\b/i,                name: 'Misc Labor',            gang: true  },
+        { re: /delivery of material/i,         name: 'Delivery of Material',  gang: true  },
+        { re: /add.?on.*labor/i,               name: 'Add-On Labor',          gang: false },
+        { re: /copper.*install|pipe.*rough/i,  name: 'Copper/Pipe Install',   gang: false },
+        { re: /welding\b/i,                    name: 'Welding',               gang: false },
+        { re: /^demo\b|^demo on/i,             name: 'Demo',                  gang: true  },
+        { re: /landing.*equip/i,               name: 'Landing of Equipment',  gang: true  },
+        { re: /sleeve/i,                       name: 'Sleeves',               gang: true  },
+        { re: /equip.*trim/i,                  name: 'Equipment Trim',        gang: true  },
+        { re: /pump.*install/i,                name: 'Pump Install',          gang: true  },
+        { re: /dbl.*fcu|fcu.*trim/i,           name: 'FCU Trim',              gang: true  },
       ];
       rows.forEach(row => {
         const a = String(row[0]||'').trim();

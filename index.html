@@ -1646,15 +1646,20 @@ async function editBurdenRate(projectId, currentRate) {
 
 // ── ESTIMATE IMPORT ──────────────────────────────────────────────────
 let importData = null;
+let importProjectId = null;
 
 function openImport(projectId) {
   resetImport();
+  importProjectId = projectId;
   $('modal-import').dataset.projectId = projectId;
+  console.log('Opening import for project:', projectId);
   openModal('modal-import');
 }
 
 function resetImport() {
   importData = null;
+  importProjectId = null;
+  window._importItems = [];
   $('import-step1').style.display = 'block';
   $('import-step2').style.display = 'none';
   $('import-status').textContent = '';
@@ -1974,7 +1979,9 @@ function showImportPreview(data) {
 }
 
 async function confirmImport() {
-  const projectId = $('modal-import').dataset.projectId;
+  // Use module-level projectId — more reliable than dataset
+  const projectId = importProjectId || $('modal-import').dataset.projectId;
+  console.log('Confirming import for project:', projectId, '(importProjectId:', importProjectId, ')');
   const burdenRate = parseFloat($('import-burden-rate').value) || 160;
   const importCatBudgets = $('import-cat-budgets').checked;
   const btn = $('import-confirm-btn');

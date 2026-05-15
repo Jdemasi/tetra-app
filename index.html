@@ -892,7 +892,40 @@ async function renderJobSetup() {
 
   $('topbar-actions').innerHTML = `
     <button class="btn btn-sm" onclick="openImport('${p.id}')">📥 Import Estimate</button>
-    <button class="btn btn-sm" onclick="editProject('${p.id}')">Edit Job</button>`;
+    <button class="btn btn-sm" onclick="editProject('${p.id}')">Edit Job</button>
+    <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deleteProject('${p.id}','${p.job_number}','${p.job_name}')">🗑 Delete Job</button>`;
+}
+
+async function deleteProject(projectId, jobNumber, jobName) {
+  const confirm1 = confirm(`Delete ${jobNumber} — ${jobName}?\n\nThis will permanently delete the job and ALL associated data including phases, purchases, labor entries, invoices, and change orders.\n\nThis cannot be undone.`);
+  if (!confirm1) return;
+  const confirm2 = prompt(`Type the job number "${jobNumber}" to confirm deletion:`);
+  if (confirm2 !== jobNumber) {
+    if (confirm2 !== null) toast('Job number did not match — deletion cancelled', 'error');
+    return;
+  }
+  toast('Deleting job...');
+  // Delete all related data in order
+  await db.from('pay_app_line_items').delete().eq('project_id', projectId);
+  await db.from('pay_applications').delete().eq('project_id', projectId);
+  await db.from('lien_waivers').delete().eq('project_id', projectId);
+  await db.from('change_orders').delete().eq('project_id', projectId);
+  await db.from('labor_entries').delete().eq('project_id', projectId);
+  await db.from('purchases').delete().eq('project_id', projectId);
+  await db.from('purchase_orders').delete().eq('project_id', projectId);
+  await db.from('invoices').delete().eq('project_id', projectId);
+  await db.from('cost_line_items').delete().eq('project_id', projectId);
+  await db.from('project_budgets').delete().eq('project_id', projectId);
+  await db.from('phases').delete().eq('project_id', projectId);
+  await db.from('project_subs').delete().eq('project_id', projectId);
+  const { error } = await db.from('projects').delete().eq('id', projectId);
+  if (error) { toast('Error deleting job: ' + error.message, 'error'); return; }
+  // Update state and navigate to dashboard
+  state.projects = state.projects.filter(p => p.id !== projectId);
+  state.activeProject = null;
+  state.activeModule = null;
+  toast(jobNumber + ' — ' + jobName + ' deleted successfully');
+  navigate('dashboard');
 }
 
 async function saveCostLineItem(projectId, itemName, amount) {

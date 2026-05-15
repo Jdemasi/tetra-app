@@ -1674,13 +1674,16 @@ function handleImportFile(file) {
     $('import-status').innerHTML = '<span style="color:var(--danger)">Please upload an .xlsx file</span>';
     return;
   }
+  console.log('Reading file:', file.name, file.size, 'bytes');
   $('import-status').innerHTML = '<span style="color:var(--navy)">Reading estimate...</span>';
   const reader = new FileReader();
   reader.onload = e => {
     try {
       const wb = XLSX.read(e.target.result, {type:'array'});
+      console.log('Sheets found:', wb.SheetNames);
       importData = parseEstimate(wb);
-      if (!importData) {
+      console.log('Parsed importData:', importData);
+      if (!importData || (!importData.phases?.length && !importData.buildings?.length)) {
         $('import-status').innerHTML = '<span style="color:var(--danger)">Could not parse this file. Make sure it\'s a Tetra estimating sheet.</span>';
         return;
       }
@@ -1964,8 +1967,20 @@ async function confirmImport() {
   const errors = [];
   let imported = 0;
 
+  // Debug logging
+  console.log('=== IMPORT DEBUG ===');
+  console.log('projectId:', projectId);
+  console.log('importData:', importData);
+  console.log('burdenRate:', burdenRate);
+
   // Use importData directly — more reliable than reading from DOM checkboxes
-  if (!importData) { toast('No import data found','error'); btn.textContent='✓ Import'; btn.disabled=false; return; }
+  if (!importData) { 
+    console.log('ERROR: No importData');
+    toast('No import data — please upload the estimate file first','error'); 
+    btn.textContent='✓ Import'; btn.disabled=false; return; 
+  }
+  console.log('phases to import:', importData.phases?.length);
+  console.log('buildings to import:', importData.buildings?.length);
 
   // Get all checked checkboxes to know which items user wants
   const checkboxes = document.querySelectorAll('#import-preview-rows input[type=checkbox]:checked');

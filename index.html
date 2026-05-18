@@ -1412,6 +1412,9 @@ function parseInvoiceText(text, filename) {
     'natind': 'National Industrial Supply',
     'nefco': 'Nefco',
     'ideal supply': 'Ideal Supply Co.',
+    'idealsupply': 'Ideal Supply Co.',
+    'the ideal supply': 'Ideal Supply Co.',
+    'communipaw': 'Ideal Supply Co.',  // unique to Ideal's address
     'airweld': 'Airweld',
     'cassone': 'Cassone',
     'united rentals': 'United Rentals',
@@ -1422,6 +1425,7 @@ function parseInvoiceText(text, filename) {
     'mobile steam': 'Mobile Steam',
     'fw webb': 'FW Webb',
     'f.w. webb': 'FW Webb',
+    'nefcocorp': 'Nefco',
   };
   for (const [key, name] of Object.entries(vendorMap)) {
     if (t.toLowerCase().includes(key.toLowerCase())) {
@@ -1505,6 +1509,31 @@ function parseInvoiceText(text, filename) {
     // Safety net: if AMOUNT DUE didn't yield a value, grab the largest
     // comma-formatted currency value in the doc. NIS totals are always >=
     // any individual line item.
+    if (amountDue === null) {
+      const allNums = [...t.matchAll(/\b([\d]{1,3}(?:,\d{3})*\.\d{2})\b/g)];
+      let max = 0;
+      for (const m of allNums) {
+        const v = parseFloat(m[1].replace(/,/g, ''));
+        if (v > max) max = v;
+      }
+      if (max > 0) amountDue = max;
+    }
+  }
+
+  // Ideal-specific path: Ideal prints "Amount Due" with the value below it
+  // in the same column. Layout puts Subtotal/S&H/Sales Tax/Amount Due labels
+  // stacked vertically with values to the right — PDF.js extraction can put
+  // them in odd orders. Look for "Amount Due" with permissive whitespace,
+  // fall back to largest currency number (Ideal totals also exceed any line
+  // item).
+  if (inv.vendor === 'Ideal Supply Co.') {
+    // Try Amount Due (case-insensitive, any whitespace before the number)
+    const idealMatches = [...t.matchAll(/Amount\s*Due[:\s]*\$?\s*([\d,]+\.\d{2})/gi)];
+    for (let i = idealMatches.length - 1; i >= 0; i--) {
+      const v = parseFloat(idealMatches[i][1].replace(/,/g, ''));
+      if (v > 0) { amountDue = v; break; }
+    }
+    // Fallback: largest comma-formatted currency value
     if (amountDue === null) {
       const allNums = [...t.matchAll(/\b([\d]{1,3}(?:,\d{3})*\.\d{2})\b/g)];
       let max = 0;

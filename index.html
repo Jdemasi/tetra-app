@@ -1404,7 +1404,7 @@ function parseInvoiceText(text, filename) {
   const vendorMap = {
     'national industrial supply': 'National Industrial Supply',
     'natindllc': 'National Industrial Supply',
-    'NIS': 'National Industrial Supply',
+    'natind': 'National Industrial Supply',
     'nefco': 'Nefco',
     'ideal supply': 'Ideal Supply Co.',
     'airweld': 'Airweld',
@@ -1412,8 +1412,11 @@ function parseInvoiceText(text, filename) {
     'united rentals': 'United Rentals',
     'mayer malbin': 'Mayer Malbin',
     'core & main': 'Core & Main',
+    'core and main': 'Core & Main',
     'shaw supply': 'Shaw Supply',
     'mobile steam': 'Mobile Steam',
+    'fw webb': 'FW Webb',
+    'f.w. webb': 'FW Webb',
   };
   for (const [key, name] of Object.entries(vendorMap)) {
     if (t.toLowerCase().includes(key.toLowerCase())) {
@@ -1422,30 +1425,33 @@ function parseInvoiceText(text, filename) {
     }
   }
 
-  // ── INVOICE NUMBER ────────────────────────────────────────────────
-  // NIS format: plain number like 5196867
-  // Nefco: S6085145.003
-  // Ideal: S2173362.001
-  // United Rentals: 261686333-001
-  // Airweld: order number like 2486426305
-  const invPatterns = [
-    /INVOICE\s*(?:NUMBER|NO\.?|#)?\s*([A-Z]?\d{5,}(?:[.\-]\d+)?)/i,
-    /INV(?:OICE)?[#\s]+([A-Z]?\d{5,}(?:[.\-]\d+)?)/i,
-    /Receipt\s*#\s*(\d+)/i,
-  ];
-  for (const pat of invPatterns) {
-    const m = t.match(pat);
-    if (m) { inv.invoice_number = m[1]; break; }
-  }
-
   // ── PO NUMBER (from vendor's customer order field) ────────────────
-  // Format: 1997-2601-210 → PO=1997, Job=2601, CostCode=210
-  const poPattern = /(\d{4})[- ](\d{4})[- ](\d{2,3})/;
+  // Format variations: 1997-2601-210 or 1998 - 2601- 240 or 2002-2601-210
+  const poPattern = /(\d{4})\s*[- ]\s*(\d{4})\s*[- ]\s*(\d{2,3})/;
   const poMatch = t.match(poPattern);
   if (poMatch) {
     inv.po_number = poMatch[1];
     inv.job_number = poMatch[2];
     inv.cost_code = poMatch[3];
+  }
+
+  // ── INVOICE NUMBER ────────────────────────────────────────────────
+  const invPatterns = [
+    /INVOICE\s*(?:NUMBER|NO\.?|#)?\s*[:\s]+([A-Z]?\d{5,}(?:[.\-]\d+)?)/i,
+    /Invoice\s*[:\s]+([A-Z]\d{7}(?:\.\d+)?)/i,   // S2173362.001, S6085145.003
+    /INV(?:OICE)?[#\s:]+([A-Z]?\d{5,}(?:[.\-]\d+)?)/i,
+    /Receipt\s*#\s*(\d+)/i,
+    /^(\d{6,8})$/m,  // Plain number on its own line (NIS: 5196867)
+  ];
+  // Don't overwrite if already found
+  if (!inv.invoice_number) {
+    for (const pat of invPatterns) {
+      const m = t.match(pat);
+      if (m && m[1] && !m[1].match(/^(20\d{2}|26\d{2})$/)) { // exclude years
+        inv.invoice_number = m[1];
+        break;
+      }
+    }
   }
 
   // ── AMOUNT DUE ────────────────────────────────────────────────────

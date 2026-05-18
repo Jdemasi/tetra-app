@@ -259,9 +259,9 @@ select.finp{cursor:pointer}
     <!-- AI Upload Section -->
     <div id="pu-upload-zone" style="border:2px dashed var(--border);border-radius:10px;padding:16px;margin-bottom:14px;text-align:center;cursor:pointer;transition:.2s" onclick="triggerInvoiceUpload()" onmouseenter="this.style.borderColor='var(--red)'" onmouseleave="this.style.borderColor='var(--border)'">
       <div style="font-size:24px;margin-bottom:4px">📎</div>
-      <div style="font-size:13px;font-weight:600;color:var(--navy)">Upload Invoice PDF</div>
-      <div style="font-size:11px;color:var(--gray600);margin-top:2px">AI reads vendor, invoice #, amount, PO # automatically</div>
-      <input type="file" id="pu-pdf-input" accept=".pdf,.PDF" style="display:none" onchange="readInvoicePDF(this)">
+      <div style="font-size:13px;font-weight:600;color:var(--navy)">Upload Invoice — PDF, JPG, or PNG</div>
+      <div style="font-size:11px;color:var(--gray600);margin-top:2px">AI reads vendor, invoice #, amount, PO # automatically. Scanned files use OCR (slower).</div>
+      <input type="file" id="pu-pdf-input" accept=".pdf,.PDF,.jpg,.jpeg,.JPG,.JPEG,.png,.PNG" style="display:none" onchange="readInvoiceFile(this)">
     </div>
     <div id="pu-ai-status" style="display:none;padding:8px 12px;border-radius:7px;font-size:12px;margin-bottom:10px;background:var(--gray50)"></div>
 
@@ -1389,7 +1389,60 @@ function triggerInvoiceUpload() {
   $('pu-pdf-input').click();
 }
 
-async function readInvoicePDF(input) {
+// ─── OCR LOADER (lazy) ──────────────────────────────────────────────
+async function ensureTesseract() {
+  if (window.Tesseract) return window.Tesseract;
+  await new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.0.4/dist/tesseract.min.js';
+    s.onload = res;
+    s.onerror = () => rej(new Error('Failed to load Tesseract OCR library'));
+    document.head.appendChild(s);
+  });
+  return window.Tesseract;
+}
+
+async function ensurePDFjs() {
+  if (window.pdfjsLib) return window.pdfjsLib;
+  await new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    s.onload = res; s.onerror = rej;
+    document.head.appendChild(s);
+  });
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  return window.pdfjsLib;
+}
+
+// Render a PDF page to a canvas blob for OCR
+async function pdfPageToImage(pdf, pageNum, scale = 2) {
+  const page = await pdf.getPage(pageNum);
+  const viewport = page.getViewport({ scale });
+  const canvas = document.createElement('canvas');
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  const ctx = canvas.getContext('2d');
+  await page.render({ canvasContext: ctx, viewport }).promise;
+  return new Promise(res => canvas.toBlob(res, 'image/png'));
+}
+
+// OCR an image blob/file and return text
+async function ocrImage(blobOrFile, statusEl, label) {
+  const Tesseract = await ensureTesseract();
+  const result = await Tesseract.recognize(blobOrFile, 'eng', {
+    logger: m => {
+      if (statusEl && m.status === 'recognizing text' && m.progress) {
+        const pct = Math.round(m.progress * 100);
+        statusEl.innerHTML = `🔍 OCR scanning ${label}... ${pct}%`;
+      }
+    },
+  });
+  return result.data.text || '';
+}
+
+// Main entry point — dispatches based on file type
+async function readInvoiceFile(input) {
   const file = input.files[0];
   if (!file) return;
 
@@ -1397,34 +1450,49 @@ async function readInvoicePDF(input) {
   status.style.display = 'block';
   status.style.background = '#FFF8E1';
   status.style.color = 'var(--gray800)';
-  status.innerHTML = '📄 Reading invoice...';
+
+  const name = file.name.toLowerCase();
+  const isImage = name.endsWith('.jpg') || name.endsWith('.jpeg') || name.endsWith('.png');
+  const isPdf = name.endsWith('.pdf');
 
   try {
-    // Load PDF.js if not already loaded
-    if (!window.pdfjsLib) {
-      await new Promise((res, rej) => {
-        const s = document.createElement('script');
-        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
-        s.onload = res; s.onerror = rej;
-        document.head.appendChild(s);
-      });
-      window.pdfjsLib.GlobalWorkerOptions.workerSrc =
-        'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-    }
-
-    // Read PDF as ArrayBuffer
-    const arrayBuffer = await file.arrayBuffer();
-    const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-
-    // Extract all text from all pages
     let fullText = '';
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const content = await page.getTextContent();
-      fullText += content.items.map(item => item.str).join(' ') + '\n';
+    let usedOCR = false;
+
+    if (isPdf) {
+      status.innerHTML = '📄 Reading PDF...';
+      const pdfjsLib = await ensurePDFjs();
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+
+      // First pass: try direct text extraction (fast, free)
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const content = await page.getTextContent();
+        fullText += content.items.map(item => item.str).join(' ') + '\n';
+      }
+
+      // If the PDF is a scan (no embedded text), the extraction will return
+      // mostly empty / very short text. Fall back to OCR per page.
+      if (fullText.trim().length < 50) {
+        status.innerHTML = '🔍 PDF has no text layer — running OCR (this takes 5–15 seconds per page)...';
+        usedOCR = true;
+        fullText = '';
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const imgBlob = await pdfPageToImage(pdf, i, 2);
+          const pageText = await ocrImage(imgBlob, status, `page ${i} of ${pdf.numPages}`);
+          fullText += pageText + '\n';
+        }
+      }
+    } else if (isImage) {
+      status.innerHTML = '🔍 OCR scanning image (this takes 5–15 seconds)...';
+      usedOCR = true;
+      fullText = await ocrImage(file, status, 'image');
+    } else {
+      throw new Error('Unsupported file type — use PDF, JPG, or PNG');
     }
 
-    console.log('PDF text extracted:', fullText.substring(0, 500));
+    console.log('Text extracted', usedOCR ? '(via OCR)' : '(via PDF.js)', ':', fullText.substring(0, 500));
 
     // Parse the extracted text
     const inv = parseInvoiceText(fullText, file.name);
@@ -1471,15 +1539,22 @@ async function readInvoicePDF(input) {
     ].filter(Boolean).join(' — ');
 
     if (fields) {
-      status.style.background = '#F0FFF8';
-      status.style.color = 'var(--green)';
-      status.innerHTML = '✅ ' + fields + ' — <em>Review and adjust if needed</em>';
+      if (usedOCR) {
+        // OCR-based read — flag for extra review since accuracy is ~95% not 100%
+        status.style.background = '#FFF8E1';
+        status.style.color = 'var(--gray800)';
+        status.innerHTML = '⚠️ <strong>OCR result</strong> — ' + fields + ' — <em>Please verify all fields carefully (OCR can misread digits)</em>';
+      } else {
+        status.style.background = '#F0FFF8';
+        status.style.color = 'var(--green)';
+        status.innerHTML = '✅ ' + fields + ' — <em>Review and adjust if needed</em>';
+      }
     } else {
       status.style.background = '#FFF8E1';
       status.style.color = 'var(--amber)';
-      // Stash extracted text on window for debugging and add a copy button
       window._lastInvoiceText = fullText;
-      status.innerHTML = '⚠️ Could not auto-read all fields — please fill in manually ' +
+      const ocrTag = usedOCR ? ' (OCR was used)' : '';
+      status.innerHTML = `⚠️ Could not auto-read fields${ocrTag} — please fill in manually ` +
         '<button onclick="navigator.clipboard.writeText(window._lastInvoiceText).then(()=>{this.textContent=\'✓ Copied!\'});this.style.background=\'#FFD700\';" ' +
         'style="margin-left:8px;padding:2px 8px;font-size:11px;border:1px solid var(--amber);background:#FFF;border-radius:4px;cursor:pointer">' +
         '📋 Copy extracted text (for debugging)</button>';
@@ -1488,12 +1563,15 @@ async function readInvoicePDF(input) {
   } catch(e) {
     status.style.background = '#FFF0F0';
     status.style.color = 'var(--danger)';
-    status.innerHTML = '❌ Error reading PDF — please fill in manually';
-    console.error('PDF read error:', e);
+    status.innerHTML = '❌ Error reading file: ' + (e.message || 'unknown error') + ' — please fill in manually';
+    console.error('Invoice read error:', e);
   }
 
   input.value = '';
 }
+
+// Backward compat — old onchange handler name
+const readInvoicePDF = readInvoiceFile;
 
 function parseInvoiceText(text, filename) {
   const inv = {};
@@ -1668,24 +1746,45 @@ function parseInvoiceText(text, filename) {
   //  1. Stacked layout "INVOICE DATE INVOICE NUMBER <date>" (Ideal)
   //  2. Standard "Invoice Date <date>" label
   //  3. First M/D/YYYY in the FIRST 200 chars (NIS top-of-page timestamp)
-  //  4. ISO date elsewhere, EXCLUDING the NIS template footer pattern
+  //  4. OCR fallback: tolerate extra whitespace inside the date (e.g. "04 / 13 / 26")
+  //     and tolerate slight label corruption (e.g. "INVOIGE DATE", "lNVOICE DATE")
+  //  5. ISO date elsewhere, EXCLUDING the NIS template footer pattern
   //     "2017.1 - 2017-07-25" which would otherwise match.
   let foundDate = null;
-  const stackedDate = t.match(/INVOICE\s*DATE\s+INVOICE\s*NUMBER\s+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i);
-  if (stackedDate) foundDate = stackedDate[1];
+
+  // Helper: normalize a date string with possible OCR-inserted spaces, like
+  // "04 / 13 / 26" or "04/ 13 /26" → "04/13/26"
+  const cleanDate = (d) => d.replace(/\s+/g, '');
+
+  const stackedDate = t.match(/INVOICE\s*DATE\s+INVOICE\s*NUMBER\s+(\d{1,2}\s*[\/\-]\s*\d{1,2}\s*[\/\-]\s*\d{2,4})/i);
+  if (stackedDate) foundDate = cleanDate(stackedDate[1]);
   if (!foundDate) {
-    const m = t.match(/Invoice\s*Date\s+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i);
-    if (m) foundDate = m[1];
+    const m = t.match(/Invoice\s*Date\s+(\d{1,2}\s*[\/\-]\s*\d{1,2}\s*[\/\-]\s*\d{2,4})/i);
+    if (m) foundDate = cleanDate(m[1]);
   }
   if (!foundDate) {
-    const m = t.match(/INVOICE\s*DATE\s+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i);
-    if (m) foundDate = m[1];
+    const m = t.match(/INVOICE\s*DATE\s+(\d{1,2}\s*[\/\-]\s*\d{1,2}\s*[\/\-]\s*\d{2,4})/i);
+    if (m) foundDate = cleanDate(m[1]);
+  }
+  // OCR-tolerant: "INVOICE DATE" with possibly garbled letters
+  // (e.g. INVOIGE DATE, lNVOICE DATE, INV0ICE DATE — common OCR misreads)
+  if (!foundDate) {
+    const m = t.match(/[Il1][Nn][Vv][O0o][Il1][CGc][Ee]\s*[Dd][Aa][Tt][Ee]\s+(?:[A-Za-z0-9\s]{0,30}?)(\d{1,2}\s*[\/\-]\s*\d{1,2}\s*[\/\-]\s*\d{2,4})/);
+    if (m) foundDate = cleanDate(m[1]);
   }
   if (!foundDate) {
     // First M/D/YYYY in the first 200 chars — NIS prints the date at the very top
     const top = t.substring(0, 200);
     const m = top.match(/\b(\d{1,2}\/\d{1,2}\/\d{4})\b/);
     if (m) foundDate = m[1];
+  }
+  if (!foundDate) {
+    // Final OCR fallback: scan first 600 chars for ANY M/D/YY or M/D/YYYY date
+    // (Ideal scans put the invoice date in the upper-right corner; OCR may
+    // produce extra spaces around the slashes)
+    const top = t.substring(0, 600);
+    const m = top.match(/\b(\d{1,2}\s*[\/\-]\s*\d{1,2}\s*[\/\-]\s*\d{2,4})\b/);
+    if (m) foundDate = cleanDate(m[1]);
   }
   if (!foundDate) {
     // ISO date — but skip the NIS template version marker like "2017.1 - 2017-07-25"

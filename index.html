@@ -795,6 +795,14 @@ async function renderDashboard() {
 
 // ── JOB SETUP ────────────────────────────────────────────────────────
 async function renderJobSetup() {
+  // Always fetch fresh project data to get latest approved_cos, contract etc
+  const { data: freshProject } = await db.from('projects').select('*').eq('id', state.activeProject.id).single();
+  if (freshProject) {
+    state.activeProject = freshProject;
+    // Update in projects array too
+    const idx = state.projects.findIndex(p=>p.id===freshProject.id);
+    if (idx >= 0) state.projects[idx] = freshProject;
+  }
   const p = state.activeProject;
   const { data: phases } = await db.from('phases').select('*').eq('project_id', p.id).order('sort_order');
   const { data: budgets } = await db.from('project_budgets').select('*').eq('project_id', p.id);

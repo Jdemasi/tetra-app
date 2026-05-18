@@ -1904,7 +1904,7 @@ async function renderLabor() {
     </div>
     <div class="tbl-wrap">
     ${state.laborEntries.length === 0 ? '<div class="tbl-empty">No hours logged yet. Click "Log Hours" to add.</div>' :
-    `<table><thead><tr><th>Employee</th><th>Phase</th><th>Week Ending</th><th class="text-right">ST Hrs</th><th class="text-right">OT 1.5x</th><th class="text-right">OT 2x</th><th class="text-right">Total Hrs</th><th class="text-right">Rate</th><th class="text-right">Total Cost</th></tr></thead><tbody>
+    `<table><thead><tr><th>Employee</th><th>Phase</th><th>Week Ending</th><th class="text-right">ST Hrs</th><th class="text-right">OT 1.5x</th><th class="text-right">OT 2x</th><th class="text-right">Total Hrs</th><th class="text-right">Rate</th><th class="text-right">Total Cost</th><th style="width:90px"></th></tr></thead><tbody>
     ${state.laborEntries.map(l => {
       const phase = state.phases.find(ph=>ph.id===l.phase_id);
       const totalH = parseFloat(l.st_hours||0)+parseFloat(l.ot15_hours||0)+parseFloat(l.ot2_hours||0);
@@ -1919,6 +1919,10 @@ async function renderLabor() {
         '<td class="text-right font-600">'+totalH.toFixed(2)+'</td>' +
         '<td class="text-right">'+fmtD(l.st_rate)+'</td>' +
         '<td class="text-right font-600">'+fmt(cost)+'</td>' +
+        '<td><div style="display:flex;gap:4px">' +
+          '<button class="btn btn-sm" onclick="openEditLabor(\''+l.id+'\',\''+p.id+'\')">Edit</button>' +
+          '<button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deleteLaborEntry(\''+l.id+'\',\''+p.id+'\')">✕</button>' +
+        '</div></td>' +
         '</tr>';
     }).join('')}
     </tbody>
@@ -1930,6 +1934,7 @@ async function renderLabor() {
       <td class="text-right" style="padding:8px 10px;color:#fff;font-weight:600">${totalActHrs.toFixed(2)}</td>
       <td class="text-right" style="padding:8px 10px;color:#fff"></td>
       <td class="text-right" style="padding:8px 10px;color:#fff;font-weight:600">${fmt(totalActCost)}</td>
+      <td></td>
     </tr></tfoot>
     </table>`}
     </div>
@@ -1941,6 +1946,7 @@ function openNewLabor(projectId) {
   $('la-week').value = today();
   clearForm(['la-st','la-ot15','la-ot2']);
   const empSel = $('la-emp');
+  empSel.disabled = false;
   empSel.innerHTML = '<option value="">Select employee...</option>' + state.employees.map(e=>`<option value="${e.id}" data-rate="${e.st_rate}" data-name="${e.name}" data-role="${e.role||''}">${e.name} — ${e.role||''}</option>`).join('');
   const phSel = $('la-phase');
   phSel.innerHTML = '<option value="">Select phase...</option>' + state.phases.map(ph=>`<option value="${ph.id}">${ph.phase_name}</option>`).join('');
@@ -1948,29 +1954,116 @@ function openNewLabor(projectId) {
   ['la-st','la-ot15','la-ot2'].forEach(id => $(id).oninput = updateLaborPreview);
   $('la-cost-preview').textContent = 'Select employee to see cost preview';
   $('modal-labor').dataset.projectId = projectId;
+  delete $('modal-labor').dataset.editId;
+  delete $('modal-labor').dataset.lockedRate;
+  // Reset modal title
+  const titleEl = document.querySelector('#modal-labor .modal-title');
+  if (titleEl) titleEl.textContent = 'Log Hours';
   openModal('modal-labor');
 }
 
+async function openEditLabor(entryId, projectId) {
+  const { data: entry } = await db.from('labor_entries').select('*').eq('id', entryId).single();
+  if (!entry) { toast('Could not load entry','error'); return; }
+
+  // Make sure phases are loaded for this project
+  if (!state.phases?.length) {
+    const { data: phases } = await db.from('phases').select('*').eq('project_id', projectId).order('sort_order');
+    state.phases = phases || [];
+  }
+  if (!state.employees?.length) {
+    const { data: emps } = await db.from('employees').select('*').eq('active', true).order('name');
+    state.employees = emps || [];
+  }
+
+  const empSel = $('la-emp');
+  // Build dropdown but make sure the original employee is listed even if inactive now
+  let opts = '<option value="">Select employee...</option>';
+  let foundEmp = false;
+  state.employees.forEach(e => {
+    const sel = e.id === entry.employee_id ? 'selected' : '';
+    if (sel) foundEmp = true;
+    opts += `<option value="${e.id}" data-rate="${e.st_rate}" data-name="${e.name}" data-role="${e.role||''}" ${sel}>${e.name} — ${e.role||''}</option>`;
+  });
+  if (!foundEmp && entry.employee_id) {
+    // Employee no longer in active list — add a placeholder so the value shows
+    opts += `<option value="${entry.employee_id}" data-rate="${entry.st_rate}" data-name="${entry.employee_name}" data-role="${entry.role||''}" selected>${entry.employee_name} (historical)</option>`;
+  }
+  empSel.innerHTML = opts;
+  // Lock employee selection — changing the employee would change the rate (preserve history per option A)
+  empSel.disabled = true;
+
+  // Phase dropdown
+  const phSel = $('la-phase');
+  phSel.innerHTML = '<option value="">Select phase...</option>' + state.phases.map(ph=>`<option value="${ph.id}" ${ph.id===entry.phase_id?'selected':''}>${ph.phase_name}</option>`).join('');
+
+  $('la-week').value = entry.week_ending || '';
+  $('la-st').value = entry.st_hours || 0;
+  $('la-ot15').value = entry.ot15_hours || 0;
+  $('la-ot2').value = entry.ot2_hours || 0;
+
+  // Lock the historical rate — don't pull from employees table
+  $('modal-labor').dataset.projectId = projectId;
+  $('modal-labor').dataset.editId = entryId;
+  $('modal-labor').dataset.lockedRate = entry.st_rate || 0;
+
+  ['la-st','la-ot15','la-ot2'].forEach(id => $(id).oninput = updateLaborPreview);
+  updateLaborPreview();
+
+  // Update modal title to reflect edit mode
+  const titleEl = document.querySelector('#modal-labor .modal-title');
+  if (titleEl) titleEl.textContent = `Edit Hours (Rate locked at ${fmtD(entry.st_rate)}/hr from original entry)`;
+
+  openModal('modal-labor');
+}
+
+async function deleteLaborEntry(entryId, projectId) {
+  if (!confirm('Delete this labor entry? This cannot be undone.')) return;
+  const { error } = await db.from('labor_entries').delete().eq('id', entryId);
+  if (error) { toast('Error: '+error.message,'error'); return; }
+  toast('Labor entry deleted');
+  navigate('project', projectId, 'labor');
+}
+
 function updateLaborPreview() {
-  const sel = $('la-emp');
-  const opt = sel.options[sel.selectedIndex];
-  if (!opt || !opt.dataset.rate) { $('la-cost-preview').textContent = 'Select employee to see cost preview'; return; }
-  const rate = parseFloat(opt.dataset.rate)||0;
+  const lockedRate = $('modal-labor').dataset.lockedRate;
+  let rate, displayName;
+  if (lockedRate !== undefined && lockedRate !== '') {
+    // Edit mode — use the locked historical rate
+    rate = parseFloat(lockedRate) || 0;
+    const sel = $('la-emp');
+    const opt = sel.options[sel.selectedIndex];
+    displayName = opt ? opt.dataset.name : '';
+  } else {
+    // New entry — use current employee rate
+    const sel = $('la-emp');
+    const opt = sel.options[sel.selectedIndex];
+    if (!opt || !opt.dataset.rate) { $('la-cost-preview').textContent = 'Select employee to see cost preview'; return; }
+    rate = parseFloat(opt.dataset.rate)||0;
+    displayName = opt.dataset.name;
+  }
   const st = parseFloat($('la-st').value)||0;
   const ot15 = parseFloat($('la-ot15').value)||0;
   const ot2 = parseFloat($('la-ot2').value)||0;
   const stCost = st*rate, ot15Cost = ot15*rate*1.5, ot2Cost = ot2*rate*2;
   const total = stCost+ot15Cost+ot2Cost;
-  $('la-cost-preview').innerHTML = `<strong>${opt.dataset.name}</strong> @ ${fmtD(rate)}/hr &nbsp;|&nbsp; ST: ${fmt(stCost)} &nbsp;|&nbsp; OT 1.5x: ${fmt(ot15Cost)} &nbsp;|&nbsp; OT 2x: ${fmt(ot2Cost)} &nbsp;|&nbsp; <strong>Total: ${fmt(total)}</strong>`;
+  $('la-cost-preview').innerHTML = `<strong>${displayName}</strong> @ ${fmtD(rate)}/hr &nbsp;|&nbsp; ST: ${fmt(stCost)} &nbsp;|&nbsp; OT 1.5x: ${fmt(ot15Cost)} &nbsp;|&nbsp; OT 2x: ${fmt(ot2Cost)} &nbsp;|&nbsp; <strong>Total: ${fmt(total)}</strong>`;
 }
 
 async function saveLabor() {
   const projectId = $('modal-labor').dataset.projectId;
+  const editId = $('modal-labor').dataset.editId;
+  const lockedRate = $('modal-labor').dataset.lockedRate;
   const empSel = $('la-emp');
   const opt = empSel.options[empSel.selectedIndex];
   if (!opt.value) { toast('Select an employee','error'); return; }
-  const rate = parseFloat(opt.dataset.rate)||0;
-  const { error } = await db.from('labor_entries').insert({
+
+  // For edits, use the locked historical rate. For new entries, use current employee rate.
+  const rate = editId && lockedRate !== undefined && lockedRate !== ''
+    ? parseFloat(lockedRate) || 0
+    : parseFloat(opt.dataset.rate) || 0;
+
+  const entryData = {
     project_id: projectId,
     phase_id: $('la-phase').value || null,
     employee_id: opt.value,
@@ -1981,10 +2074,25 @@ async function saveLabor() {
     ot15_hours: parseFloat($('la-ot15').value)||0,
     ot2_hours: parseFloat($('la-ot2').value)||0,
     st_rate: rate,
-  });
+  };
+
+  let error;
+  if (editId) {
+    ({error} = await db.from('labor_entries').update(entryData).eq('id', editId));
+  } else {
+    ({error} = await db.from('labor_entries').insert(entryData));
+  }
   if (error) { toast('Error: '+error.message,'error'); return; }
+
+  // Clean up modal state
+  delete $('modal-labor').dataset.editId;
+  delete $('modal-labor').dataset.lockedRate;
+  empSel.disabled = false;
+  const titleEl = document.querySelector('#modal-labor .modal-title');
+  if (titleEl) titleEl.textContent = 'Log Hours';
+
   closeModal('modal-labor');
-  toast('Hours saved');
+  toast(editId ? 'Hours updated' : 'Hours saved');
   render();
 }
 

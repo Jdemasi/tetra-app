@@ -1473,56 +1473,75 @@ function parseInvoiceText(text, filename) {
   }
 
   // ── AMOUNT DUE ────────────────────────────────────────────────────
-  // Stacked-label layouts (Nefco): "SUBTOTAL SHIPPING SALES TAX AMOUNT DUE <n1> <n2> <n3> <n4>"
-  // The amount due is the LAST of the four numbers, not the first one after "AMOUNT DUE".
+  // Strategy in order:
+  //  1. Stacked 4-label block (Nefco): "SUBTOTAL SHIPPING SALES TAX AMOUNT DUE n1 n2 n3 n4" → n4
+  //  2. Stacked 3-label block: "SUBTOTAL TAX AMOUNT DUE n1 n2 n3" → n3
+  //  3. LAST occurrence of "AMOUNT DUE" / "Total Due" / "Balance Due" in the document
+  //     with a positive value. (NIS prints "AMOUNT DUE: 1,464.59" at the end of page 2.)
+  //  4. Amount Received fallback (payment receipts)
+  let amountDue = null;
   const stackedLabels4 = t.match(
     /SUBTOTAL\s+(?:SHIPPING(?:\s+CHARGES)?\s+)?(?:SALES\s+)?TAX\s+AMOUNT\s+DUE\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})/i
   );
-  const stackedLabels3 = t.match(
-    /SUBTOTAL\s+(?:SALES\s+)?TAX\s+AMOUNT\s+DUE\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})/i
-  );
-  if (stackedLabels4) {
-    inv.amount_due = parseFloat(stackedLabels4[4].replace(/,/g, ''));
-  } else if (stackedLabels3) {
-    inv.amount_due = parseFloat(stackedLabels3[3].replace(/,/g, ''));
-  } else {
-    const amtPatterns = [
-      /Total\s*Due[:\s]*\$?\s*([\d,]+\.?\d*)/i,
-      /AMOUNT\s*DUE[:\s]*\$?\s*([\d,]+\.?\d*)/i,
-      /Amount\s*Received[:\s]*\$?\s*([\d,]+\.?\d*)/i,
-      /TOTAL\s*SALE[:\s]*\$?\s*([\d,]+\.?\d*)/i,
-      /Balance\s*Due[:\s]*\$?\s*([\d,]+\.?\d*)/i,
-    ];
-    for (const pat of amtPatterns) {
-      const m = t.match(pat);
-      if (m) {
-        const amt = parseFloat(m[1].replace(/,/g, ''));
-        if (amt > 0) { inv.amount_due = amt; break; }
-      }
+  if (stackedLabels4) amountDue = parseFloat(stackedLabels4[4].replace(/,/g, ''));
+  if (amountDue === null) {
+    const stackedLabels3 = t.match(
+      /SUBTOTAL\s+(?:SALES\s+)?TAX\s+AMOUNT\s+DUE\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})/i
+    );
+    if (stackedLabels3) amountDue = parseFloat(stackedLabels3[3].replace(/,/g, ''));
+  }
+  if (amountDue === null) {
+    // Walk all "Amount Due"-style matches from LAST to first, pick first positive value.
+    // The last one is usually the real total — NIS shows discount $0.00 early and the
+    // real AMOUNT DUE $1,464.59 at the end.
+    const allMatches = [...t.matchAll(/(?:Total\s*Due|AMOUNT\s*DUE|Amount\s*Due|Balance\s*Due|TOTAL\s*SALE)[:\s]*\$?\s*([\d,]+\.\d{2})/gi)];
+    for (let i = allMatches.length - 1; i >= 0; i--) {
+      const v = parseFloat(allMatches[i][1].replace(/,/g, ''));
+      if (v > 0) { amountDue = v; break; }
     }
   }
+  if (amountDue === null) {
+    const m = t.match(/Amount\s*Received[:\s]*\$?\s*([\d,]+\.\d{2})/i);
+    if (m) amountDue = parseFloat(m[1].replace(/,/g, ''));
+  }
+  if (amountDue !== null && amountDue > 0) inv.amount_due = amountDue;
 
   // ── DATE ──────────────────────────────────────────────────────────
-  // Handles standard labels, stacked "INVOICE DATE INVOICE NUMBER <date> <inv#>"
-  // (Ideal), and falls back to first M/D/YYYY in the text (NIS top-of-page).
-  const datePatterns = [
-    /INVOICE\s*DATE\s+INVOICE\s*NUMBER\s+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i,
-    /Invoice\s*Date\s+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i,
-    /INVOICE\s*DATE\s+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i,
-    /(\d{4}-\d{2}-\d{2})/,
-  ];
-  for (const pat of datePatterns) {
-    const m = t.match(pat);
-    if (m) {
-      inv.invoice_date = formatDate(m[1]);
+  // Strategy in order:
+  //  1. Stacked layout "INVOICE DATE INVOICE NUMBER <date>" (Ideal)
+  //  2. Standard "Invoice Date <date>" label
+  //  3. First M/D/YYYY in the FIRST 200 chars (NIS top-of-page timestamp)
+  //  4. ISO date elsewhere, EXCLUDING the NIS template footer pattern
+  //     "2017.1 - 2017-07-25" which would otherwise match.
+  let foundDate = null;
+  const stackedDate = t.match(/INVOICE\s*DATE\s+INVOICE\s*NUMBER\s+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i);
+  if (stackedDate) foundDate = stackedDate[1];
+  if (!foundDate) {
+    const m = t.match(/Invoice\s*Date\s+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i);
+    if (m) foundDate = m[1];
+  }
+  if (!foundDate) {
+    const m = t.match(/INVOICE\s*DATE\s+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i);
+    if (m) foundDate = m[1];
+  }
+  if (!foundDate) {
+    // First M/D/YYYY in the first 200 chars — NIS prints the date at the very top
+    const top = t.substring(0, 200);
+    const m = top.match(/\b(\d{1,2}\/\d{1,2}\/\d{4})\b/);
+    if (m) foundDate = m[1];
+  }
+  if (!foundDate) {
+    // ISO date — but skip the NIS template version marker like "2017.1 - 2017-07-25"
+    const matches = [...t.matchAll(/\b(\d{4}-\d{2}-\d{2})\b/g)];
+    for (const m of matches) {
+      const idx = m.index;
+      const before = t.substring(Math.max(0, idx - 20), idx);
+      if (/\d+\.\d+\s*-\s*$/.test(before)) continue; // template version marker
+      foundDate = m[1];
       break;
     }
   }
-  // Last-resort fallback: first M/D/YYYY anywhere (NIS top-of-page timestamp)
-  if (!inv.invoice_date) {
-    const m = t.match(/\b(\d{1,2}\/\d{1,2}\/\d{4})\b/);
-    if (m) inv.invoice_date = formatDate(m[1]);
-  }
+  if (foundDate) inv.invoice_date = formatDate(foundDate);
 
   // ── PAYMENT TERMS ─────────────────────────────────────────────────
   if (/NET\s*30/i.test(t)) inv.payment_terms = 30;

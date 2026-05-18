@@ -920,7 +920,7 @@ async function renderJobSetup() {
   // Load and render SOV section
   const { data: sovItems } = await db.from('sov_line_items').select('*').eq('project_id', p.id).order('sort_order');
   const sovTotal = (sovItems||[]).reduce((s,li)=>s+parseFloat(li.scheduled_value||0),0);
-  const contractVal = parseFloat(p.base_contract||0);
+  const contractVal = parseFloat(p.base_contract||0) + parseFloat(p.approved_cos||0);
   const sovDiff = contractVal - sovTotal;
 
   $('content').innerHTML += `

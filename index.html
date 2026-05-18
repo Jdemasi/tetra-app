@@ -1383,7 +1383,12 @@ async function readInvoicePDF(input) {
     } else {
       status.style.background = '#FFF8E1';
       status.style.color = 'var(--amber)';
-      status.innerHTML = '⚠️ Could not auto-read all fields — please fill in manually';
+      // Stash extracted text on window for debugging and add a copy button
+      window._lastInvoiceText = fullText;
+      status.innerHTML = '⚠️ Could not auto-read all fields — please fill in manually ' +
+        '<button onclick="navigator.clipboard.writeText(window._lastInvoiceText).then(()=>{this.textContent=\'✓ Copied!\'});this.style.background=\'#FFD700\';" ' +
+        'style="margin-left:8px;padding:2px 8px;font-size:11px;border:1px solid var(--amber);background:#FFF;border-radius:4px;cursor:pointer">' +
+        '📋 Copy extracted text (for debugging)</button>';
     }
 
   } catch(e) {

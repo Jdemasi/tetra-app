@@ -1389,9 +1389,13 @@ async function renderPayApps() {
         <td class="text-right">${fmt(a.balance_to_finish)}</td>
         <td><span class="badge ${a.status==='Submitted'?'b-pending':a.status==='Paid'?'b-paid':'b-notstarted'}">${a.status}</span></td>
         <td>
-          <button class="btn btn-sm" onclick="openPayApp('${a.id}')">View</button>
-          <button class="btn btn-sm btn-red" onclick="generatePayAppPDF('${a.id}')">📄 PDF</button>
-          <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deletePayApp('${a.id}',${a.app_number},'${p.id}')">🗑</button>
+          <div style="display:flex;gap:4px;flex-wrap:wrap">
+            <button class="btn btn-sm btn-red" onclick="generatePayAppPDF('${a.id}')">📄 PDF</button>
+            ${a.status==='Draft'?`<button class="btn btn-sm" style="color:var(--amber);border-color:var(--amber)" onclick="updatePayAppStatus('${a.id}','Submitted','${p.id}')">📤 Submit</button>`:''}
+            ${a.status==='Submitted'?`<button class="btn btn-sm" style="color:var(--green);border-color:var(--green)" onclick="markPayAppPaid('${a.id}','${p.id}',${a.net_payment_due})">💰 Mark Paid</button>`:''}
+            ${a.status==='Paid'?`<span style="color:var(--green);font-size:11px;font-weight:600">✅ Paid</span>`:''}
+            <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deletePayApp('${a.id}',${a.app_number},'${p.id}')">🗑</button>
+          </div>
         </td>
       </tr>`;
     }).join('')}
@@ -1664,7 +1668,10 @@ async function generatePayAppPDF(payAppId) {
   const p = state.activeProject;
   if (!pa || !p) return;
 
-  const contract = parseFloat(p.base_contract||0) + parseFloat(p.approved_cos||0);
+  const baseContract = parseFloat(p.base_contract||0);
+  const approvedCOs = parseFloat(p.approved_cos||0);
+  const contract = baseContract;
+  const revisedContract = baseContract + approvedCOs;
   const retPct = parseFloat(pa.retainage_pct||5);
   const totalScheduled = (sovItems||[]).reduce((s,li)=>s+parseFloat(li.scheduled_value||0),0) || contract;
   const periodStr = pa.period_ending ? new Date(pa.period_ending+'T00:00:00').toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}) : '';
@@ -1737,9 +1744,9 @@ h1{font-size:16px;font-weight:bold;margin-bottom:4px}
   Period Ending: ${periodStr}
 </div>
 <table class="billing-summary">
-  <tr><td class="label">Original Contract Value:</td><td>${fmt(contract)}</td></tr>
-  <tr><td class="label">Approved Change Orders:</td><td>${fmt(parseFloat(p.approved_cos||0))}</td></tr>
-  <tr><td class="label">Revised Contract Value:</td><td>${fmt(contract)}</td></tr>
+  <tr><td class="label">Original Contract Value:</td><td>${fmt(baseContract)}</td></tr>
+  <tr><td class="label">Approved Change Orders:</td><td>${fmt(approvedCOs)}</td></tr>
+  <tr><td class="label">Revised Contract Value:</td><td>${fmt(revisedContract)}</td></tr>
   <tr><td class="label">Previous Billings:</td><td>${fmt(pa.previous_billed)}</td></tr>
   <tr><td class="label">Current Billing:</td><td>${fmt(pa.current_billed)}</td></tr>
   <tr><td class="label">Retainage %:</td><td>${retPct.toFixed(2)}%</td></tr>
@@ -1781,9 +1788,9 @@ h1{font-size:16px;font-weight:bold;margin-bottom:4px}
   </div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
     <div>
-      <div class="g702-field">1. ORIGINAL CONTRACT SUM &nbsp;&nbsp; $ <span>${fmt(contract)}</span></div>
-      <div class="g702-field">2. Net change by Change Orders &nbsp;&nbsp; $ <span>${fmt(parseFloat(p.approved_cos||0))}</span></div>
-      <div class="g702-field">3. SUBCONTRACT SUM TO DATE &nbsp;&nbsp; $ <span>${fmt(contract)}</span></div>
+      <div class="g702-field">1. ORIGINAL CONTRACT SUM &nbsp;&nbsp; $ <span>${fmt(baseContract)}</span></div>
+      <div class="g702-field">2. Net change by Change Orders &nbsp;&nbsp; $ <span>${fmt(approvedCOs)}</span></div>
+      <div class="g702-field">3. SUBCONTRACT SUM TO DATE &nbsp;&nbsp; $ <span>${fmt(revisedContract)}</span></div>
       <div class="g702-field">4. TOTAL COMPLETED & STORED TO DATE &nbsp;&nbsp; $ <span>${fmt(pa.total_completed)}</span></div>
       <div style="margin-top:6px">5. RETAINAGE:</div>
       <div class="g702-field" style="padding-left:16px">a. ${retPct}% of Completed Work &nbsp; $ <span>${fmt(pa.retainage_amount)}</span></div>
@@ -1799,9 +1806,10 @@ h1{font-size:16px;font-weight:bold;margin-bottom:4px}
         <strong>CHANGE ORDER SUMMARY</strong>
         <table style="width:100%;margin-top:6px;border-collapse:collapse">
           <tr><th style="text-align:left;font-size:10px">CHANGE ORDERS</th><th style="font-size:10px">ADDITIONS</th><th style="font-size:10px">DEDUCTIONS</th></tr>
-          <tr><td style="font-size:10px">Total approved this Month</td><td style="text-align:center;font-size:10px">$0.00</td><td style="text-align:center;font-size:10px">$0.00</td></tr>
-          <tr><td style="font-size:10px">TOTALS</td><td style="text-align:center;font-size:10px">$0.00</td><td style="text-align:center;font-size:10px">$0.00</td></tr>
+          <tr><td style="font-size:10px">Total approved this Month</td><td style="text-align:center;font-size:10px">${approvedCOs>0?fmt(approvedCOs):'$0.00'}</td><td style="text-align:center;font-size:10px">$0.00</td></tr>
+          <tr><td style="font-size:10px">TOTALS</td><td style="text-align:center;font-size:10px">${approvedCOs>0?fmt(approvedCOs):'$0.00'}</td><td style="text-align:center;font-size:10px">$0.00</td></tr>
         </table>
+        <div style="margin-top:4px;font-size:9px">NET CHANGES by Change Order: ${fmt(approvedCOs)}</div>
       </div>
       <div style="font-size:9px;margin-top:10px">
         I certify that this payment request represents an accurate and complete measure of all the Work performed to the date indicated, and that the amount of Work performed and the labor, materials, and permanent equipment installed as presented on this request for payment are correct and in full compliance with the terms of the referenced contract and all authorized changes thereto.
@@ -1907,7 +1915,7 @@ h1{font-size:16px;font-weight:bold;margin-bottom:4px}
 </div>
 
 </div>
-<div class="no-print" style="text-align:center;margin:20px">
+<div class="no-print" style="text-align:center;margin:20px;display:flex;gap:12px;justify-content:center">
   <button onclick="window.print()" style="padding:10px 30px;background:#1B2A5E;color:#fff;border:none;border-radius:6px;font-size:14px;cursor:pointer">🖨️ Print / Save as PDF</button>
 </div>
 </body></html>`;
@@ -1923,6 +1931,41 @@ async function deletePayApp(payAppId, appNum, projectId) {
   await db.from('pay_app_line_items').delete().eq('pay_app_id', payAppId);
   await db.from('pay_applications').delete().eq('id', payAppId);
   toast('Pay App #'+appNum+' deleted');
+  navigate('project', projectId, 'payapps');
+}
+
+async function updatePayAppStatus(payAppId, status, projectId) {
+  const { error } = await db.from('pay_applications').update({ status }).eq('id', payAppId);
+  if (error) { toast('Error: '+error.message, 'error'); return; }
+  toast('Pay App marked as ' + status);
+  navigate('project', projectId, 'payapps');
+}
+
+async function markPayAppPaid(payAppId, projectId, netDue) {
+  const payDate = prompt('Payment received date (YYYY-MM-DD):', today());
+  if (!payDate) return;
+  const amount = parseFloat(prompt('Amount received ($):', netDue)||netDue);
+  if (isNaN(amount)) return;
+  const { error } = await db.from('pay_applications').update({
+    status: 'Paid',
+    notes: 'Paid: $'+amount.toFixed(2)+' on '+payDate,
+  }).eq('id', payAppId);
+  if (error) { toast('Error: '+error.message, 'error'); return; }
+  // Also create an invoice record for AR tracking
+  const p = state.activeProject;
+  const { data: pa } = await db.from('pay_applications').select('app_number, current_billed, retainage_amount').eq('id', payAppId).single();
+  if (p && pa) {
+    await db.from('invoices').insert({
+      project_id: projectId,
+      invoice_number: 'PAY-APP-' + pa.app_number,
+      billed_amount: parseFloat(pa.current_billed||0),
+      paid_amount: amount,
+      payment_date: payDate,
+      status: 'Paid',
+      notes: 'Pay Application #' + pa.app_number,
+    });
+  }
+  toast('✅ Pay App marked as paid — $'+amount.toFixed(2)+' received');
   navigate('project', projectId, 'payapps');
 }
 
@@ -2244,27 +2287,61 @@ async function saveCO() {
   const desc = $('co-desc').value.trim();
   if (!desc) { toast('Enter a description','error'); return; }
   const status = $('co-status').value;
-  const { error } = await db.from('change_orders').insert({
+  const amount = parseFloat($('co-amount').value)||0;
+  const coNum = $('co-num').value;
+
+  const { data: savedCO, error } = await db.from('change_orders').insert({
     project_id: projectId,
-    co_number: $('co-num').value,
+    co_number: coNum,
     description: desc,
-    amount: parseFloat($('co-amount').value)||0,
+    amount,
     co_type: $('co-type').value,
     status,
     submitted_date: $('co-date').value||null,
     approved_date: $('co-approved').value||null,
-  });
+  }).select().single();
+
   if (error) { toast('Error: '+error.message,'error'); return; }
-  // If approved, update project approved_cos total
-  if (status === 'Approved') {
+
+  // If approved — update contract total AND offer to add SOV line item
+  if (status === 'Approved' && amount !== 0) {
     const proj = state.projects.find(p=>p.id===projectId);
     if (proj) {
-      const newTotal = parseFloat(proj.approved_cos||0) + (parseFloat($('co-amount').value)||0);
+      const newTotal = parseFloat(proj.approved_cos||0) + amount;
       await db.from('projects').update({approved_cos: newTotal}).eq('id', projectId);
+      // Update local state immediately so Job Setup reflects new value
+      proj.approved_cos = newTotal;
+      if (state.activeProject?.id === projectId) {
+        state.activeProject.approved_cos = newTotal;
+      }
     }
+
+    // Ask if they want to add a SOV line item for this CO
+    const addToSOV = confirm(
+      'CO #'+coNum+' approved for '+fmt(amount)+'.\n\n' +
+      'Add this to the Schedule of Values so it appears on the next Pay Application?\n\n' +
+      'Click OK to add to SOV, Cancel to skip.'
+    );
+    if (addToSOV) {
+      // Get next sort order
+      const { data: lastSOV } = await db.from('sov_line_items').select('sort_order').eq('project_id', projectId).order('sort_order', {ascending:false}).limit(1);
+      const nextSort = lastSOV?.length ? lastSOV[0].sort_order + 1 : 0;
+      await db.from('sov_line_items').insert({
+        project_id: projectId,
+        item_number: 'CO-' + coNum,
+        description: 'CO #' + coNum + ' — ' + desc,
+        scheduled_value: amount,
+        sort_order: nextSort,
+      });
+      toast('CO #'+coNum+' approved and added to SOV — will appear on next Pay App');
+    } else {
+      toast('CO #'+coNum+' approved — contract value updated');
+    }
+  } else {
+    toast('Change order saved');
   }
+
   closeModal('modal-co');
-  toast('Change order saved');
   render();
 }
 

@@ -1449,13 +1449,22 @@ function parseInvoiceText(text, filename) {
   }
 
   // ── AMOUNT DUE ────────────────────────────────────────────────────
+  // Priority order: Total Due > Amount Due > Amount Received > Total Sale > subtotal
+  // Must NOT match Pre Tax Total or Insurance Value
   const amtPatterns = [
-    /AMOUNT\s*DUE\s*\$?\s*([\d,]+\.?\d*)/i,
+    /Total\s*Due[:\s]*\$?\s*([\d,]+\.?\d*)/i,
+    /AMOUNT\s*DUE[:\s]*\$?\s*([\d,]+\.?\d*)/i,
     /Amount\s*Received\s*([\d,]+\.?\d*)/i,
-    /TOTAL\s*(?:DUE|SALE)\s*\$?\s*([\d,]+\.?\d*)/i,
-    /Amount\s*Due\s*\$?\s*([\d,]+\.?\d*)/i,
-    /TOTAL\s*\$?\s*([\d,]+\.?\d*)/i,
+    /TOTAL\s*SALE[:\s]*\$?\s*([\d,]+\.?\d*)/i,
+    /Amount\s*Due[:\s]*\$?\s*([\d,]+\.?\d*)/i,
   ];
+  for (const pat of amtPatterns) {
+    const m = t.match(pat);
+    if (m) {
+      const amt = parseFloat(m[1].replace(/,/g, ''));
+      if (amt > 0) { inv.amount_due = amt; break; }
+    }
+  }
   for (const pat of amtPatterns) {
     const m = t.match(pat);
     if (m) {

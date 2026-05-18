@@ -1391,6 +1391,7 @@ async function renderPayApps() {
         <td>
           <button class="btn btn-sm" onclick="openPayApp('${a.id}')">View</button>
           <button class="btn btn-sm btn-red" onclick="generatePayAppPDF('${a.id}')">📄 PDF</button>
+          <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deletePayApp('${a.id}',${a.app_number},'${p.id}')">🗑</button>
         </td>
       </tr>`;
     }).join('')}
@@ -1915,6 +1916,14 @@ h1{font-size:16px;font-weight:bold;margin-bottom:4px}
   win.document.write(html);
   win.document.close();
   setTimeout(() => win.focus(), 300);
+}
+
+async function deletePayApp(payAppId, appNum, projectId) {
+  if (!confirm(`Delete Pay Application #${appNum}?\n\nThis will permanently delete this pay app and all its line items. This cannot be undone.`)) return;
+  await db.from('pay_app_line_items').delete().eq('pay_app_id', payAppId);
+  await db.from('pay_applications').delete().eq('id', payAppId);
+  toast('Pay App #'+appNum+' deleted');
+  navigate('project', projectId, 'payapps');
 }
 
 async function openPayApp(payAppId) {

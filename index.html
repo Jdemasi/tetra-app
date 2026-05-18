@@ -255,6 +255,16 @@ select.finp{cursor:pointer}
 <div class="modal-bg" id="modal-purchase">
   <div class="modal" style="max-width:640px">
     <div class="modal-hd"><div class="modal-title">Log Invoice / Purchase</div><button class="modal-close" onclick="closeModal('modal-purchase')">×</button></div>
+
+    <!-- AI Upload Section -->
+    <div id="pu-upload-zone" style="border:2px dashed var(--border);border-radius:10px;padding:16px;margin-bottom:14px;text-align:center;cursor:pointer;transition:.2s" onclick="triggerInvoiceUpload()" onmouseenter="this.style.borderColor='var(--red)'" onmouseleave="this.style.borderColor='var(--border)'">
+      <div style="font-size:24px;margin-bottom:4px">📎</div>
+      <div style="font-size:13px;font-weight:600;color:var(--navy)">Upload Invoice PDF</div>
+      <div style="font-size:11px;color:var(--gray600);margin-top:2px">AI reads vendor, invoice #, amount, PO # automatically</div>
+      <input type="file" id="pu-pdf-input" accept=".pdf,.PDF" style="display:none" onchange="readInvoicePDF(this)">
+    </div>
+    <div id="pu-ai-status" style="display:none;padding:8px 12px;border-radius:7px;font-size:12px;margin-bottom:10px;background:var(--gray50)"></div>
+
     <div class="form-grid">
       <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Link to PO (optional — auto-fills vendor & cost code)</label>
         <select class="finp" id="pu-po-select"><option value="">No PO — direct invoice</option></select>
@@ -1278,6 +1288,125 @@ async function renderPurchases() {
     </table></div>`}
   </div>`;
   $('topbar-actions').innerHTML = `<button class="btn btn-sm btn-red" onclick="openNewPurchase('${p.id}')">+ Log Invoice</button>`;
+}
+
+// ── AI INVOICE READER ────────────────────────────────────────────────────
+function triggerInvoiceUpload() {
+  $('pu-pdf-input').click();
+}
+
+async function readInvoicePDF(input) {
+  const file = input.files[0];
+  if (!file) return;
+
+  const status = $('pu-ai-status');
+  status.style.display = 'block';
+  status.style.background = '#FFF8E1';
+  status.style.color = 'var(--gray800)';
+  status.innerHTML = '🤖 Reading invoice with AI...';
+
+  try {
+    // Convert PDF to base64
+    const base64 = await new Promise((res, rej) => {
+      const reader = new FileReader();
+      reader.onload = () => res(reader.result.split(',')[1]);
+      reader.onerror = rej;
+      reader.readAsDataURL(file);
+    });
+
+    // Send to Claude API
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'document',
+              source: { type: 'base64', media_type: 'application/pdf', data: base64 }
+            },
+            {
+              type: 'text',
+              text: `Extract the following from this invoice/receipt and return ONLY valid JSON, no other text:
+{
+  "vendor": "vendor company name",
+  "invoice_number": "invoice or receipt number",
+  "invoice_date": "YYYY-MM-DD format",
+  "amount_due": 0.00,
+  "amount_paid": 0.00,
+  "po_number": "PO number if present (just the numeric part e.g. 1997 from 1997-2601-210)",
+  "job_number": "job number if present (e.g. 2601 from 1997-2601-210)",
+  "cost_code": "cost code if present (e.g. 210 from 1997-2601-210)",
+  "payment_terms": 30,
+  "document_type": "invoice OR receipt OR purchase_order",
+  "is_paid": false
+}
+
+Notes:
+- PO numbers in format XXXX-YYYY-ZZZ: XXXX=PO#, YYYY=job#, ZZZ=cost code
+- If this is a payment receipt (already paid), set is_paid=true and amount_paid=total
+- If no PO reference, leave po_number blank
+- For amount_due use the final total/amount due (after tax)
+- For date use the invoice date not ship date`
+            }
+          ]
+        }]
+      })
+    });
+
+    const data = await response.json();
+    const text = data.content?.[0]?.text || '';
+    const clean = text.replace(/```json|```/g, '').trim();
+    const inv = JSON.parse(clean);
+
+    // Fill in the form fields
+    if (inv.vendor) $('pu-vendor').value = inv.vendor;
+    if (inv.invoice_number) $('pu-inv').value = inv.invoice_number;
+    if (inv.invoice_date) $('pu-date').value = inv.invoice_date;
+    if (inv.amount_due) $('pu-amount').value = inv.amount_due;
+    if (inv.payment_terms) $('pu-terms').value = inv.payment_terms;
+    if (inv.is_paid) {
+      $('pu-paid').value = inv.amount_paid || inv.amount_due;
+      $('pu-status').value = 'Paid';
+    }
+
+    // Try to match PO in the system
+    if (inv.po_number) {
+      const poSel = $('pu-po-select');
+      const matchingPO = Array.from(poSel.options).find(opt =>
+        opt.dataset.num === inv.po_number ||
+        opt.dataset.num === inv.po_number.toString()
+      );
+      if (matchingPO) {
+        poSel.value = matchingPO.value;
+        poSel.dispatchEvent(new Event('change'));
+      }
+    }
+
+    // Try to match cost code
+    if (inv.cost_code) {
+      const ccSel = $('pu-cost-code');
+      const matchCC = Array.from(ccSel.options).find(opt => opt.value === inv.cost_code);
+      if (matchCC) ccSel.value = inv.cost_code;
+    }
+
+    // Show success summary
+    status.style.background = '#F0FFF8';
+    status.style.color = 'var(--green)';
+    status.innerHTML = `✅ AI read: <strong>${inv.vendor}</strong> — Invoice <strong>${inv.invoice_number}</strong> — <strong>$${inv.amount_due}</strong> — ${inv.invoice_date}${inv.po_number ? ' — PO '+inv.po_number : ''}${inv.is_paid?' — <strong>ALREADY PAID</strong>':''}`;
+
+  } catch(e) {
+    status.style.background = '#FFF0F0';
+    status.style.color = 'var(--danger)';
+    status.innerHTML = '❌ Could not read invoice automatically. Please fill in manually. Error: ' + e.message;
+    console.error('Invoice AI error:', e);
+  }
+
+  // Reset file input
+  input.value = '';
 }
 
 async function openNewPurchase(projectId) {

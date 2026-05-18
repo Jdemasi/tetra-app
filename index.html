@@ -380,20 +380,41 @@ select.finp{cursor:pointer}
 </div>
 
 <div class="modal-bg" id="modal-po">
-  <div class="modal" style="max-width:620px">
-    <div class="modal-hd"><div class="modal-title">New Purchase Order</div><button class="modal-close" onclick="closeModal('modal-po')">×</button></div>
+  <div class="modal" style="max-width:640px">
+    <div class="modal-hd"><div class="modal-title" id="modal-po-title">New Purchase Order</div><button class="modal-close" onclick="closeModal('modal-po')">×</button></div>
     <div class="form-grid">
-      <div class="fgroup"><label class="flbl">PO Number</label><input class="finp" id="po-num" placeholder="e.g. PO-2601-001"></div>
-      <div class="fgroup"><label class="flbl">Vendor</label><input class="finp" id="po-vendor" placeholder="e.g. Ferguson"></div>
+      <div class="fgroup"><label class="flbl">PO Number</label><input class="finp" id="po-num" readonly style="background:var(--gray50);font-weight:600"></div>
+      <div class="fgroup"><label class="flbl">Date Issued</label><input class="finp" type="date" id="po-issue"></div>
+      <div class="fgroup" style="grid-column:1/-1">
+        <label class="flbl">Job Assignment</label>
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+            <input type="radio" name="po-job-type" value="job" checked onchange="togglePOJobType(this.value)"> Assign to Job
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+            <input type="radio" name="po-job-type" value="shop" onchange="togglePOJobType(this.value)"> Shop / Overhead (no job)
+          </label>
+        </div>
+        <select class="finp" id="po-job-select" style="display:block"><option value="">Select job...</option></select>
+        <div id="po-shop-label" style="display:none;padding:6px 10px;background:var(--gray50);border-radius:7px;border:1px solid var(--border);font-size:12px;color:var(--gray600)">🏪 Shop / Stock / Consumables — not tied to a job</div>
+      </div>
+      <div class="fgroup"><label class="flbl">Vendor</label>
+        <select class="finp" id="po-vendor-select"><option value="">Select vendor...</option></select>
+        <input class="finp" id="po-vendor" placeholder="Type vendor name" style="margin-top:4px;display:none">
+      </div>
+      <div class="fgroup"><label class="flbl">Cost Code</label><select class="finp" id="po-cost-code"><option value="">Select cost code...</option></select></div>
       <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Description</label><input class="finp" id="po-desc" placeholder="What is this PO for?"></div>
-      <div class="fgroup"><label class="flbl">Category</label><select class="finp" id="po-cat"><option value="">Select...</option><option>Materials</option><option>Subcontractors</option><option>Equipment</option><option>Rentals</option><option>Misc.</option></select></div>
-      <div class="fgroup"><label class="flbl">Phase</label><select class="finp" id="po-phase"><option value="">Select phase...</option></select></div>
-      <div class="fgroup"><label class="flbl">Committed Amount ($)</label><input class="finp" type="number" id="po-committed" placeholder="0.00"></div>
-      <div class="fgroup"><label class="flbl">Invoiced Amount ($)</label><input class="finp" type="number" id="po-invoiced" placeholder="0.00"></div>
-      <div class="fgroup"><label class="flbl">Paid Amount ($)</label><input class="finp" type="number" id="po-paid" placeholder="0.00"></div>
-      <div class="fgroup"><label class="flbl">Issue Date</label><input class="finp" type="date" id="po-issue"></div>
-      <div class="fgroup"><label class="flbl">Expected Date</label><input class="finp" type="date" id="po-expected"></div>
-      <div class="fgroup"><label class="flbl">Status</label><select class="finp" id="po-status"><option>Open</option><option>Partial</option><option>Closed</option><option>Cancelled</option></select></div>
+      <div class="fgroup"><label class="flbl">Phase (optional)</label><select class="finp" id="po-phase"><option value="">Select phase...</option></select></div>
+      <div class="fgroup"><label class="flbl">Required Date</label><input class="finp" type="date" id="po-expected"></div>
+      <div class="fgroup"><label class="flbl">Amount ($)</label><input class="finp" type="number" id="po-committed" placeholder="0.00 (leave blank if unknown)"></div>
+      <div class="fgroup"><label class="flbl">Amount Paid ($)</label><input class="finp" type="number" id="po-paid" placeholder="0.00"></div>
+      <div class="fgroup"><label class="flbl">Invoice #</label><input class="finp" id="po-invoice-num" placeholder="When received"></div>
+      <div class="fgroup"><label class="flbl">Status</label>
+        <select class="finp" id="po-status">
+          <option>Open</option><option>Ordered</option><option>Received</option>
+          <option>Invoiced</option><option>Closed</option><option>Cancelled</option><option>Draft</option>
+        </select>
+      </div>
     </div>
     <div class="form-actions">
       <button class="btn" onclick="closeModal('modal-po')">Cancel</button>
@@ -2479,78 +2500,281 @@ async function renderProfit() {
 // ── PURCHASE ORDERS ──────────────────────────────────────────────────
 async function renderPOs() {
   const p = state.activeProject;
-  const [{ data: pos }, { data: phases }] = await Promise.all([
-    db.from('purchase_orders').select('*').eq('project_id', p.id).order('created_at',{ascending:false}),
+  const [{ data: pos }, { data: phases }, { data: costCodes }, { data: vendors }] = await Promise.all([
+    db.from('purchase_orders').select('*').eq('project_id', p.id).order('po_number', {ascending:false}),
     db.from('phases').select('*').eq('project_id', p.id).order('sort_order'),
+    db.from('cost_codes').select('*').order('code'),
+    db.from('vendors').select('*').eq('approved', true).order('name'),
   ]);
   state.phases = phases || [];
+  state.costCodes = costCodes || [];
+  state.vendors = vendors || [];
+
   const totalCommitted = (pos||[]).reduce((s,po)=>s+parseFloat(po.committed_amount||0),0);
-  const totalInvoiced = (pos||[]).reduce((s,po)=>s+parseFloat(po.invoiced_amount||0),0);
   const totalPaid = (pos||[]).reduce((s,po)=>s+parseFloat(po.paid_amount||0),0);
+  const totalOpen = (pos||[]).filter(po=>po.status==='Open'||po.status==='Ordered').reduce((s,po)=>s+parseFloat(po.committed_amount||0),0);
+  const totalClosed = (pos||[]).filter(po=>po.status==='Closed').reduce((s,po)=>s+parseFloat(po.committed_amount||0),0);
+
+  // Status badge helper
+  const statusBadge = s => {
+    const map = { Open:'b-pending', Ordered:'b-partial', Received:'b-active', Invoiced:'b-active', Closed:'b-paid', Cancelled:'b-hold', Draft:'b-notstarted' };
+    return `<span class="badge ${map[s]||'b-pending'}">${s||'—'}</span>`;
+  };
+
   $('content').innerHTML = `
   <div class="kgrid">
-    <div class="kcard db"><div class="klbl">Committed (POs Issued)</div><div class="kval">${fmt(totalCommitted)}</div></div>
-    <div class="kcard amb"><div class="klbl">Invoiced Against POs</div><div class="kval">${fmt(totalInvoiced)}</div></div>
-    <div class="kcard grn"><div class="klbl">Paid</div><div class="kval">${fmt(totalPaid)}</div></div>
-    <div class="kcard red"><div class="klbl">Committed Not Invoiced</div><div class="kval">${fmt(totalCommitted-totalInvoiced)}</div><div class="ksub r">True cost exposure</div></div>
+    <div class="kcard db"><div class="klbl">Total Committed</div><div class="kval">${fmt(totalCommitted)}</div><div class="ksub m">${(pos||[]).length} POs</div></div>
+    <div class="kcard amb"><div class="klbl">Open / Ordered</div><div class="kval">${fmt(totalOpen)}</div><div class="ksub a">${(pos||[]).filter(po=>po.status==='Open'||po.status==='Ordered').length} POs</div></div>
+    <div class="kcard grn"><div class="klbl">Paid to Date</div><div class="kval">${fmt(totalPaid)}</div></div>
+    <div class="kcard red"><div class="klbl">Balance Remaining</div><div class="kval">${fmt(totalCommitted-totalPaid)}</div></div>
   </div>
   <div class="card">
-    <div class="card-hd"><div class="card-title">Purchase Order Log</div>
-      <button class="btn btn-sm btn-red" onclick="openNewPO('${p.id}')">+ New PO</button>
+    <div class="card-hd">
+      <div class="card-title">Purchase Order Log — ${p.job_number} ${p.job_name}</div>
+      <div style="display:flex;gap:8px">
+        <select class="fsel" id="po-filter-status" onchange="filterPOs()" style="font-size:11px;padding:4px 8px">
+          <option value="">All Status</option>
+          <option>Open</option><option>Ordered</option><option>Received</option>
+          <option>Invoiced</option><option>Closed</option><option>Cancelled</option>
+        </select>
+        <button class="btn btn-sm btn-red" onclick="openNewPO('${p.id}')">+ New PO</button>
+      </div>
     </div>
-    <p class="section-sub">Track committed costs before invoices arrive. Committed not invoiced = your true cost exposure.</p>
-    ${(pos||[]).length===0?'<div class="tbl-empty">No POs yet. Click "+ New PO" to add one.</div>':
-    `<div class="tbl-wrap"><table><thead><tr><th>PO #</th><th>Vendor</th><th>Category</th><th>Phase</th><th class="text-right">Committed</th><th class="text-right">Invoiced</th><th class="text-right">Paid</th><th>Expected</th><th>Status</th></tr></thead><tbody>
-    ${(pos||[]).map((po,i)=>{
-      const ph = state.phases.find(ph=>ph.id===po.phase_id);
-      const bg = i%2===0?'#FFF':'var(--gray50)';
-      return `<tr style="background:${bg}">
-        <td class="mono font-600">${po.po_number||'—'}</td>
-        <td>${po.vendor||'—'}</td>
-        <td>${po.category||'—'}</td>
-        <td style="font-size:11px;color:var(--gray600)">${ph?ph.phase_name:'—'}</td>
-        <td class="text-right font-600">${fmt(po.committed_amount)}</td>
-        <td class="text-right">${fmt(po.invoiced_amount)}</td>
-        <td class="text-right">${fmt(po.paid_amount)}</td>
-        <td style="font-size:11px">${po.expected_date||'—'}</td>
-        <td><span class="badge ${po.status==='Open'?'b-pending':po.status==='Closed'?'b-paid':po.status==='Partial'?'b-partial':'b-pending'}">${po.status}</span></td>
-      </tr>`;
-    }).join('')}
-    </tbody></table></div>`}
+    <div class="tbl-wrap">
+    <table id="po-table">
+      <thead><tr>
+        <th style="width:70px">PO #</th>
+        <th>Vendor</th>
+        <th style="width:80px">Cost Code</th>
+        <th>Description</th>
+        <th style="width:90px">Phase</th>
+        <th class="text-right" style="width:90px">Amount</th>
+        <th class="text-right" style="width:90px">Paid</th>
+        <th class="text-right" style="width:90px">Balance</th>
+        <th style="width:80px">Date</th>
+        <th style="width:80px">Status</th>
+        <th style="width:60px">Inv #</th>
+      </tr></thead>
+      <tbody id="po-tbody">
+      ${(pos||[]).length===0?'<tr><td colspan="11" class="tbl-empty">No POs yet. Click "+ New PO" to add one.</td></tr>':
+      (pos||[]).map((po,i)=>{
+        const ph = state.phases.find(ph=>ph.id===po.phase_id);
+        const cc = state.costCodes.find(c=>c.code===po.cost_code);
+        const bg = i%2===0?'#FFF':'var(--gray50)';
+        const balance = parseFloat(po.committed_amount||0) - parseFloat(po.paid_amount||0);
+        const isOverdue = po.expected_date && new Date(po.expected_date) < new Date() && po.status!=='Closed' && po.status!=='Cancelled';
+        return `<tr style="background:${bg}${isOverdue?';border-left:3px solid var(--danger)':''}" onclick="openEditPO('${po.id}')" style="cursor:pointer">
+          <td class="mono font-600" style="color:var(--navy)">${po.po_number||'—'}</td>
+          <td class="font-600">${po.vendor||'—'}</td>
+          <td style="font-size:11px"><span style="background:var(--gray100);padding:2px 6px;border-radius:4px">${po.cost_code||'—'}</span>${cc?'<br><span style="font-size:9px;color:var(--gray600)">'+cc.description+'</span>':''}</td>
+          <td style="font-size:11px">${po.description||'—'}</td>
+          <td style="font-size:10px;color:var(--gray600)">${ph?ph.phase_name:'—'}</td>
+          <td class="text-right font-600">${fmt(po.committed_amount)}</td>
+          <td class="text-right" style="color:var(--green)">${parseFloat(po.paid_amount||0)>0?fmt(po.paid_amount):'—'}</td>
+          <td class="text-right font-600" style="color:${balance>0?'var(--amber)':'var(--green)'}">${balance>0?fmt(balance):'—'}</td>
+          <td style="font-size:11px">${po.issue_date?po.issue_date.substring(0,10):'—'}</td>
+          <td>${statusBadge(po.status)}</td>
+          <td style="font-size:11px;color:var(--gray600)">${po.invoice_number||'—'}</td>
+        </tr>`;
+      }).join('')}
+      </tbody>
+    </table>
+    </div>
+    <div style="border-top:1px solid var(--border);margin-top:10px;padding-top:10px;display:flex;justify-content:space-between;font-size:12px">
+      <span style="color:var(--gray600)">${(pos||[]).length} purchase orders</span>
+      <div style="display:flex;gap:20px">
+        <span>Committed: <strong>${fmt(totalCommitted)}</strong></span>
+        <span>Paid: <strong style="color:var(--green)">${fmt(totalPaid)}</strong></span>
+        <span>Balance: <strong style="color:var(--amber)">${fmt(totalCommitted-totalPaid)}</strong></span>
+      </div>
+    </div>
   </div>`;
   $('topbar-actions').innerHTML = `<button class="btn btn-sm btn-red" onclick="openNewPO('${p.id}')">+ New PO</button>`;
 }
 
-function openNewPO(projectId) {
-  clearForm(['po-num','po-vendor','po-desc','po-committed','po-invoiced','po-paid','po-expected']);
+function filterPOs() {
+  const status = $('po-filter-status').value;
+  const rows = document.querySelectorAll('#po-tbody tr');
+  rows.forEach(row => {
+    if (!status) { row.style.display = ''; return; }
+    const badge = row.querySelector('.badge');
+    row.style.display = badge && badge.textContent === status ? '' : 'none';
+  });
+}
+
+function togglePOJobType(val) {
+  if (val === 'shop') {
+    $('po-job-select').style.display = 'none';
+    $('po-shop-label').style.display = 'block';
+    $('po-phase').closest('.fgroup').style.display = 'none';
+  } else {
+    $('po-job-select').style.display = 'block';
+    $('po-shop-label').style.display = 'none';
+    $('po-phase').closest('.fgroup').style.display = 'flex';
+  }
+}
+
+async function getNextPONumber() {
+  const { data } = await db.from('purchase_orders').select('po_number').order('po_number', {ascending:false}).limit(1);
+  if (data && data.length > 0) {
+    const last = parseInt(data[0].po_number) || 2019;
+    return String(last + 1);
+  }
+  return '2020';
+}
+
+async function openNewPO(projectId) {
+  // Auto-assign next PO number
+  const nextNum = await getNextPONumber();
+  $('po-num').value = nextNum;
+  clearForm(['po-desc','po-committed','po-paid','po-expected','po-invoice-num']);
   $('po-issue').value = today();
-  $('po-cat').value = '';
   $('po-status').value = 'Open';
-  const sel = $('po-phase');
-  sel.innerHTML = '<option value="">Select phase...</option>' + state.phases.map(ph=>`<option value="${ph.id}">${ph.phase_name}</option>`).join('');
-  $('modal-po').dataset.projectId = projectId;
+
+  // Reset job type toggle
+  document.querySelectorAll('input[name="po-job-type"]').forEach(r => r.checked = r.value === 'job');
+  togglePOJobType('job');
+
+  // Populate job dropdown
+  const jobSel = $('po-job-select');
+  jobSel.innerHTML = '<option value="">Select job...</option>' +
+    (state.projects||[]).map(p=>`<option value="${p.id}" ${p.id===projectId?'selected':''}>${p.job_number} — ${p.job_name}</option>`).join('');
+
+  // If opened from a specific job — pre-select it
+  if (projectId) {
+    jobSel.value = projectId;
+    // Load that job's phases
+    const { data: phases } = await db.from('phases').select('*').eq('project_id', projectId).order('sort_order');
+    state.phases = phases || [];
+  }
+
+  // Populate phase dropdown
+  const phSel = $('po-phase');
+  phSel.innerHTML = '<option value="">Select phase (optional)...</option>' +
+    (state.phases||[]).map(ph=>`<option value="${ph.id}">${ph.phase_name}</option>`).join('');
+
+  // Update phases when job changes
+  jobSel.onchange = async () => {
+    if (!jobSel.value) { phSel.innerHTML = '<option value="">Select phase (optional)...</option>'; return; }
+    const { data: phases } = await db.from('phases').select('*').eq('project_id', jobSel.value).order('sort_order');
+    phSel.innerHTML = '<option value="">Select phase (optional)...</option>' +
+      (phases||[]).map(ph=>`<option value="${ph.id}">${ph.phase_name}</option>`).join('');
+  };
+
+  // Populate cost code dropdown
+  const ccSel = $('po-cost-code');
+  ccSel.innerHTML = '<option value="">Select cost code...</option>' +
+    (state.costCodes||[]).map(cc=>`<option value="${cc.code}">${cc.code} — ${cc.description}</option>`).join('');
+
+  // Populate vendor dropdown
+  const vSel = $('po-vendor-select');
+  vSel.innerHTML = '<option value="">Select vendor...</option>' +
+    (state.vendors||[]).map(v=>`<option value="${v.name}">${v.name}</option>`).join('') +
+    '<option value="__other">Other (type below)</option>';
+  vSel.onchange = () => {
+    if (vSel.value === '__other') {
+      $('po-vendor').style.display = 'block';
+      $('po-vendor').focus();
+    } else {
+      $('po-vendor').style.display = 'none';
+      $('po-vendor').value = vSel.value;
+    }
+  };
+  $('po-vendor').style.display = 'none';
+  $('po-vendor').value = '';
+
+  $('modal-po').dataset.projectId = projectId||'';
+  $('modal-po').dataset.editId = '';
+  $('modal-po-title').textContent = 'New Purchase Order — ' + nextNum;
+  openModal('modal-po');
+}
+
+async function openEditPO(poId) {
+  const { data: po } = await db.from('purchase_orders').select('*').eq('id', poId).single();
+  if (!po) return;
+
+  $('po-num').value = po.po_number||'';
+  $('po-num').readOnly = true;
+  $('po-num').style.background = 'var(--gray50)';
+
+  // Populate dropdowns
+  const ccSel = $('po-cost-code');
+  ccSel.innerHTML = '<option value="">Select cost code...</option>' +
+    (state.costCodes||[]).map(cc=>`<option value="${cc.code}" ${cc.code===po.cost_code?'selected':''}>${cc.code} — ${cc.description}</option>`).join('');
+
+  const vSel = $('po-vendor-select');
+  const knownVendor = (state.vendors||[]).find(v=>v.name===po.vendor);
+  vSel.innerHTML = '<option value="">Select vendor...</option>' +
+    (state.vendors||[]).map(v=>`<option value="${v.name}" ${v.name===po.vendor?'selected':''}>${v.name}</option>`).join('') +
+    '<option value="__other">Other (type below)</option>';
+  if (!knownVendor) {
+    vSel.value = '__other';
+    $('po-vendor').style.display = 'block';
+    $('po-vendor').value = po.vendor||'';
+  } else {
+    $('po-vendor').style.display = 'none';
+    $('po-vendor').value = po.vendor||'';
+  }
+  vSel.onchange = () => {
+    if (vSel.value === '__other') {
+      $('po-vendor').style.display = 'block';
+    } else {
+      $('po-vendor').style.display = 'none';
+      $('po-vendor').value = vSel.value;
+    }
+  };
+
+  const phSel = $('po-phase');
+  phSel.innerHTML = '<option value="">Select phase (optional)...</option>' +
+    (state.phases||[]).map(ph=>`<option value="${ph.id}" ${ph.id===po.phase_id?'selected':''}>${ph.phase_name}</option>`).join('');
+
+  $('po-desc').value = po.description||'';
+  $('po-committed').value = po.committed_amount||'';
+  $('po-paid').value = po.paid_amount||'';
+  $('po-issue').value = po.issue_date?po.issue_date.substring(0,10):'';
+  $('po-expected').value = po.expected_date?po.expected_date.substring(0,10):'';
+  $('po-status').value = po.status||'Open';
+  $('po-invoice-num').value = po.invoice_number||'';
+
+  $('modal-po').dataset.projectId = po.project_id;
+  $('modal-po').dataset.editId = poId;
+  $('modal-po-title').textContent = 'Edit PO — ' + po.po_number;
   openModal('modal-po');
 }
 
 async function savePO() {
-  const projectId = $('modal-po').dataset.projectId;
-  const { error } = await db.from('purchase_orders').insert({
+  const editId = $('modal-po').dataset.editId;
+  const isShop = document.querySelector('input[name="po-job-type"]:checked')?.value === 'shop';
+  const projectId = isShop ? null : ($('po-job-select').value || $('modal-po').dataset.projectId || null);
+  const vendorSel = $('po-vendor-select');
+  const vendor = vendorSel.value === '__other' || !vendorSel.value ? $('po-vendor').value : vendorSel.value;
+  if (!vendor) { toast('Select a vendor', 'error'); return; }
+
+  const poData = {
     project_id: projectId,
     phase_id: $('po-phase').value||null,
     po_number: $('po-num').value,
-    vendor: $('po-vendor').value,
+    vendor: vendor,
     description: $('po-desc').value,
-    category: $('po-cat').value,
+    cost_code: $('po-cost-code').value,
     committed_amount: parseFloat($('po-committed').value)||0,
-    invoiced_amount: parseFloat($('po-invoiced').value)||0,
     paid_amount: parseFloat($('po-paid').value)||0,
     issue_date: $('po-issue').value||null,
     expected_date: $('po-expected').value||null,
     status: $('po-status').value,
-  });
-  if (error) { toast('Error: '+error.message,'error'); return; }
+    invoice_number: $('po-invoice-num').value||null,
+    notes: isShop ? 'Shop/Overhead' : null,
+  };
+
+  let error;
+  if (editId) {
+    ({error} = await db.from('purchase_orders').update(poData).eq('id', editId));
+  } else {
+    ({error} = await db.from('purchase_orders').insert(poData));
+  }
+  if (error) { toast('Error: '+error.message, 'error'); return; }
   closeModal('modal-po');
-  toast('PO saved');
+  toast(editId ? 'PO updated' : 'PO '+poData.po_number+' created');
   render();
 }
 
@@ -2759,39 +2983,106 @@ async function renderAPAging() {
 
 // ── MASTER PO LOG ────────────────────────────────────────────────────
 async function renderMasterPOs() {
-  const [{ data: pos }, { data: projects }] = await Promise.all([
-    db.from('purchase_orders').select('*').order('created_at',{ascending:false}),
+  const [{ data: pos }, { data: projects }, { data: costCodes }] = await Promise.all([
+    db.from('purchase_orders').select('*').order('po_number', {ascending:false}),
     db.from('projects').select('*'),
+    db.from('cost_codes').select('*').order('code'),
   ]);
   const projMap = {};
   (projects||[]).forEach(p=>projMap[p.id]=p);
+  const ccMap = {};
+  (costCodes||[]).forEach(c=>ccMap[c.code]=c.description);
+
   const totalCommitted = (pos||[]).reduce((s,po)=>s+parseFloat(po.committed_amount||0),0);
-  const totalInvoiced = (pos||[]).reduce((s,po)=>s+parseFloat(po.invoiced_amount||0),0);
+  const totalPaid = (pos||[]).reduce((s,po)=>s+parseFloat(po.paid_amount||0),0);
+  const openCount = (pos||[]).filter(po=>po.status==='Open'||po.status==='Ordered').length;
+
+  const statusBadge = s => {
+    const map = { Open:'b-pending', Ordered:'b-partial', Received:'b-active', Invoiced:'b-active', Closed:'b-paid', Cancelled:'b-hold', Draft:'b-notstarted' };
+    return `<span class="badge ${map[s]||'b-pending'}">${s||'—'}</span>`;
+  };
+
   $('content').innerHTML = `
   <div class="kgrid">
     <div class="kcard db"><div class="klbl">Total POs</div><div class="kval">${(pos||[]).length}</div></div>
     <div class="kcard red"><div class="klbl">Total Committed</div><div class="kval">${fmt(totalCommitted)}</div></div>
-    <div class="kcard amb"><div class="klbl">Total Invoiced</div><div class="kval">${fmt(totalInvoiced)}</div></div>
-    <div class="kcard grn"><div class="klbl">Committed Not Invoiced</div><div class="kval">${fmt(totalCommitted-totalInvoiced)}</div></div>
+    <div class="kcard amb"><div class="klbl">Open / Ordered</div><div class="kval">${openCount}</div></div>
+    <div class="kcard grn"><div class="klbl">Paid to Date</div><div class="kval">${fmt(totalPaid)}</div><div class="ksub g">${fmt(totalCommitted-totalPaid)} balance</div></div>
   </div>
   <div class="card">
-    <div class="card-hd"><div class="card-title">Master Purchase Order Log — All Jobs</div></div>
+    <div class="card-hd">
+      <div class="card-title">Master PO Log — All Jobs</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <select class="fsel" id="master-po-filter" onchange="filterMasterPOs()" style="font-size:11px;padding:4px 8px">
+          <option value="">All Jobs</option>
+          <option value="shop">🏪 Shop / Overhead</option>
+          ${(projects||[]).map(p=>`<option value="${p.id}">${p.job_number} — ${p.job_name}</option>`).join('')}
+        </select>
+        <select class="fsel" id="master-po-status" onchange="filterMasterPOs()" style="font-size:11px;padding:4px 8px">
+          <option value="">All Status</option>
+          <option>Open</option><option>Ordered</option><option>Received</option>
+          <option>Invoiced</option><option>Closed</option><option>Cancelled</option>
+        </select>
+      </div>
+    </div>
     ${(pos||[]).length===0?'<div class="tbl-empty">No POs yet across any job.</div>':
-    `<div class="tbl-wrap"><table><thead><tr><th>Job</th><th>PO #</th><th>Vendor</th><th>Category</th><th class="text-right">Committed</th><th class="text-right">Invoiced</th><th>Status</th></tr></thead><tbody>
-    ${(pos||[]).map((po,i)=>{
-      const proj = projMap[po.project_id];
-      return `<tr style="background:${i%2===0?'#FFF':'var(--gray50)'}">
-        <td style="font-size:11px;color:var(--gray600)">${proj?proj.job_number+' — '+proj.job_name:'—'}</td>
-        <td class="mono font-600">${po.po_number||'—'}</td>
-        <td>${po.vendor||'—'}</td>
-        <td>${po.category||'—'}</td>
-        <td class="text-right font-600">${fmt(po.committed_amount)}</td>
-        <td class="text-right">${fmt(po.invoiced_amount)}</td>
-        <td><span class="badge ${po.status==='Open'?'b-pending':po.status==='Closed'?'b-paid':'b-partial'}">${po.status}</span></td>
-      </tr>`;
-    }).join('')}
-    </tbody></table></div>`}
+    `<div class="tbl-wrap"><table>
+      <thead><tr>
+        <th style="width:70px">PO #</th>
+        <th style="width:60px">Job</th>
+        <th>Vendor</th>
+        <th style="width:80px">Cost Code</th>
+        <th>Description</th>
+        <th class="text-right" style="width:90px">Amount</th>
+        <th class="text-right" style="width:90px">Paid</th>
+        <th class="text-right" style="width:90px">Balance</th>
+        <th style="width:80px">Date</th>
+        <th style="width:80px">Status</th>
+        <th style="width:60px">Inv #</th>
+      </tr></thead>
+      <tbody id="master-po-tbody">
+      ${(pos||[]).map((po,i)=>{
+        const proj = projMap[po.project_id];
+        const bg = i%2===0?'#FFF':'var(--gray50)';
+        const balance = parseFloat(po.committed_amount||0) - parseFloat(po.paid_amount||0);
+        return `<tr style="background:${bg}" data-project="${po.project_id||''}" data-status="${po.status||''}">
+          <td class="mono font-600" style="color:var(--navy)">${po.po_number||'—'}</td>
+          <td style="font-size:11px;font-weight:600">${proj?proj.job_number:'🏪 Shop'}</td>
+          <td class="font-600">${po.vendor||'—'}</td>
+          <td style="font-size:11px"><span style="background:var(--gray100);padding:2px 6px;border-radius:4px">${po.cost_code||'—'}</span></td>
+          <td style="font-size:11px">${po.description||'—'}</td>
+          <td class="text-right font-600">${fmt(po.committed_amount)}</td>
+          <td class="text-right" style="color:var(--green)">${parseFloat(po.paid_amount||0)>0?fmt(po.paid_amount):'—'}</td>
+          <td class="text-right font-600" style="color:${balance>0?'var(--amber)':'var(--green)'}">${balance>0?fmt(balance):'—'}</td>
+          <td style="font-size:11px">${po.issue_date?po.issue_date.substring(0,10):'—'}</td>
+          <td>${statusBadge(po.status)}</td>
+          <td style="font-size:11px;color:var(--gray600)">${po.invoice_number||'—'}</td>
+        </tr>`;
+      }).join('')}
+      </tbody>
+    </table></div>`}
+    <div style="border-top:1px solid var(--border);margin-top:10px;padding-top:10px;display:flex;justify-content:space-between;font-size:12px">
+      <span style="color:var(--gray600)">${(pos||[]).length} total POs across all jobs</span>
+      <div style="display:flex;gap:20px">
+        <span>Committed: <strong>${fmt(totalCommitted)}</strong></span>
+        <span>Paid: <strong style="color:var(--green)">${fmt(totalPaid)}</strong></span>
+        <span>Balance: <strong style="color:var(--amber)">${fmt(totalCommitted-totalPaid)}</strong></span>
+      </div>
+    </div>
   </div>`;
+}
+
+function filterMasterPOs() {
+  const projectId = $('master-po-filter').value;
+  const status = $('master-po-status').value;
+  document.querySelectorAll('#master-po-tbody tr').forEach(row => {
+    const isShop = row.dataset.project === 'null' || row.dataset.project === '';
+    const matchProj = !projectId || 
+      (projectId === 'shop' && isShop) || 
+      (projectId !== 'shop' && row.dataset.project === projectId);
+    const matchStatus = !status || row.dataset.status === status;
+    row.style.display = matchProj && matchStatus ? '' : 'none';
+  });
 }
 
 // ── MASTER SUBS ──────────────────────────────────────────────────────

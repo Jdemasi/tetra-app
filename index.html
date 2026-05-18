@@ -580,6 +580,7 @@ async function render() {
     else if (state.activeModule === 'labor') await renderLabor();
     else if (state.activeModule === 'cos') await renderChangeOrders();
     else if (state.activeModule === 'invoices') await renderInvoices();
+    else if (state.activeModule === 'payapps') await renderPayApps();
     else if (state.activeModule === 'phases') await renderPhaseBreakdown();
     else if (state.activeModule === 'bva') await renderBVA();
     else if (state.activeModule === 'pos') await renderPOs();
@@ -597,7 +598,7 @@ function updateBreadcrumb() {
   else if (state.view === 'employees') html = '<span>Dashboard</span><span class="sep">/</span><span class="cur">Employees</span>';
   else if (state.view === 'project' && state.activeProject) {
     const p = state.activeProject;
-    const modNames = {setup:'Job Setup',purchases:'Purchases & AP',labor:'Time & Labor',cos:'Change Orders',invoices:'Invoices & AR',phases:'Phase Breakdown',bva:'Budget vs Actual',pos:'Purchase Orders',subs:'Subcontractors',liens:'Lien Waivers',profit:'Profit & Cost Report'};
+    const modNames = {setup:'Job Setup',purchases:'Purchases & AP',labor:'Time & Labor',cos:'Change Orders',invoices:'Invoices & AR',payapps:'Pay Applications',phases:'Phase Breakdown',bva:'Budget vs Actual',pos:'Purchase Orders',subs:'Subcontractors',liens:'Lien Waivers',profit:'Profit & Cost Report'};
     html = `<span onclick="navigate('dashboard')" style="cursor:pointer">Dashboard</span><span class="sep">/</span><span onclick="navigate('project','${p.id}','setup')" style="cursor:pointer">${p.job_number} — ${p.job_name}</span>`;
     if (state.activeModule) html += `<span class="sep">/</span><span class="cur">${modNames[state.activeModule]||''}</span>`;
   }
@@ -631,6 +632,9 @@ function renderSidebarProjects() {
     </button>
     <button class="sb-mod ${state.activeModule==='invoices'?'active':''}" data-module="invoices" onclick="navigate('project','${p.id}','invoices')">
       <svg viewBox="0 0 24 24"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>Invoices & AR
+    </button>
+    <button class="sb-mod ${state.activeModule==='payapps'?'active':''}" data-module="payapps" onclick="navigate('project','${p.id}','payapps')">
+      <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="15" y2="17"/></svg>Pay Applications
     </button>
     <button class="sb-mod ${state.activeModule==='phases'?'active':''}" data-module="phases" onclick="navigate('project','${p.id}','phases')">
       <svg viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>Phase Breakdown
@@ -912,6 +916,125 @@ async function renderJobSetup() {
     <button class="btn btn-sm" onclick="openImport('${p.id}')">📥 Import Estimate</button>
     <button class="btn btn-sm" onclick="editProject('${p.id}')">Edit Job</button>
     <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deleteProject('${p.id}','${p.job_number}','${p.job_name}')">🗑 Delete Job</button>`;
+
+  // Load and render SOV section
+  const { data: sovItems } = await db.from('sov_line_items').select('*').eq('project_id', p.id).order('sort_order');
+  const sovTotal = (sovItems||[]).reduce((s,li)=>s+parseFloat(li.scheduled_value||0),0);
+  const contractVal = parseFloat(p.base_contract||0);
+  const sovDiff = contractVal - sovTotal;
+
+  $('content').innerHTML += `
+  <div class="card" style="margin-top:12px">
+    <div class="card-hd">
+      <div class="card-title">📋 Schedule of Values (SOV)</div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-sm" onclick="openSOVImport('${p.id}')">📥 Import SOV Excel</button>
+        <button class="btn btn-sm btn-red" onclick="openAddSOVItem('${p.id}')">+ Add Line Item</button>
+      </div>
+    </div>
+    <p class="section-sub">Define your billing line items here. These are used to generate pay applications automatically.</p>
+    ${Math.abs(sovDiff) > 1 ? `<div style="padding:8px 12px;background:${sovDiff>0?'#FFF8E1':'#FFF0F0'};border:1px solid ${sovDiff>0?'var(--amber)':'var(--danger)'};border-radius:7px;margin-bottom:10px;font-size:12px">
+      ⚠️ SOV total (${fmt(sovTotal)}) ${sovDiff>0?'is short':'exceeds'} contract value (${fmt(contractVal)}) by ${fmt(Math.abs(sovDiff))}
+    </div>` : sovTotal > 0 ? `<div style="padding:8px 12px;background:#F0FFF8;border:1px solid var(--green);border-radius:7px;margin-bottom:10px;font-size:12px">
+      ✅ SOV total matches contract value — ${fmt(sovTotal)}
+    </div>` : ''}
+    ${(sovItems||[]).length===0?'<div class="tbl-empty">No SOV line items yet. Import from Excel or add manually.</div>':
+    `<div class="tbl-wrap"><table>
+      <thead><tr>
+        <th style="width:60px">Item #</th>
+        <th>Description</th>
+        <th class="text-right" style="width:120px">Scheduled Value</th>
+        <th style="width:80px"></th>
+      </tr></thead>
+      <tbody>
+      ${(sovItems||[]).map((li,i)=>{
+        const bg = i%2===0?'#fff':'var(--gray50)';
+        return `<tr style="background:${bg}">
+          <td style="font-size:11px;color:var(--gray600)">${li.item_number||i+1}</td>
+          <td class="font-600" style="font-size:12px">${li.description}</td>
+          <td class="text-right font-600">${fmt(li.scheduled_value)}</td>
+          <td style="text-align:right">
+            <button class="btn btn-sm" onclick="editSOVItem('${li.id}','${li.item_number}','${li.description.replace(/'/g,"\\'")}',${li.scheduled_value})">Edit</button>
+            <button class="btn btn-sm" style="color:var(--danger)" onclick="deleteSOVItem('${li.id}','${p.id}')">✕</button>
+          </td>
+        </tr>`;
+      }).join('')}
+      </tbody>
+      <tfoot><tr style="background:var(--navy)">
+        <td colspan="2" style="padding:8px 10px;color:#fff;font-weight:600">TOTAL</td>
+        <td class="text-right" style="padding:8px 10px;color:#fff;font-weight:600">${fmt(sovTotal)}</td>
+        <td></td>
+      </tr></tfoot>
+    </table></div>`}
+  </div>`;
+}
+
+// ── SOV MANAGEMENT ───────────────────────────────────────────────────────
+function openAddSOVItem(projectId) {
+  const itemNum = prompt('Item number (e.g. 1, 2, 3M):');
+  if (!itemNum) return;
+  const desc = prompt('Description:');
+  if (!desc) return;
+  const val = parseFloat(prompt('Scheduled Value ($):'));
+  if (isNaN(val)) return;
+  db.from('sov_line_items').select('sort_order').eq('project_id', projectId).order('sort_order', {ascending:false}).limit(1)
+    .then(({data}) => {
+      const nextSort = data?.length ? (data[0].sort_order + 1) : 0;
+      return db.from('sov_line_items').insert({ project_id: projectId, item_number: itemNum, description: desc, scheduled_value: val, sort_order: nextSort });
+    })
+    .then(() => { toast('SOV item added'); render(); });
+}
+
+function editSOVItem(id, itemNum, desc, val) {
+  const newDesc = prompt('Description:', desc);
+  if (newDesc === null) return;
+  const newVal = parseFloat(prompt('Scheduled Value ($):', val));
+  if (isNaN(newVal)) return;
+  db.from('sov_line_items').update({ description: newDesc, scheduled_value: newVal }).eq('id', id)
+    .then(() => { toast('SOV item updated'); render(); });
+}
+
+async function deleteSOVItem(id, projectId) {
+  if (!confirm('Delete this SOV line item?')) return;
+  await db.from('sov_line_items').delete().eq('id', id);
+  toast('SOV item deleted');
+  render();
+}
+
+function openSOVImport(projectId) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.xlsx';
+  input.onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    toast('Reading SOV file...');
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        const wb = XLSX.read(ev.target.result, {type:'array'});
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:''});
+        const items = [];
+        rows.forEach(row => {
+          const itemNum = row[1];
+          const desc = String(row[2]||'').trim();
+          const val = parseFloat(row[3])||0;
+          if (itemNum && desc && val > 0 && !String(desc).toLowerCase().includes('total') && !String(desc).toLowerCase().includes('description')) {
+            items.push({ project_id: projectId, item_number: String(itemNum), description: desc, scheduled_value: val, sort_order: items.length });
+          }
+        });
+        if (items.length === 0) { toast('No line items found in file', 'error'); return; }
+        if (!confirm('Found ' + items.length + ' SOV line items totaling ' + fmt(items.reduce((s,i)=>s+i.scheduled_value,0)) + '.\n\nThis will REPLACE the existing SOV. Continue?')) return;
+        await db.from('sov_line_items').delete().eq('project_id', projectId);
+        await db.from('sov_line_items').insert(items);
+        toast('SOV imported — ' + items.length + ' line items');
+        render();
+      } catch(err) { toast('Error reading file: '+err.message, 'error'); }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+  input.click();
 }
 
 async function deleteProject(projectId, jobNumber, jobName) {
@@ -926,6 +1049,7 @@ async function deleteProject(projectId, jobNumber, jobName) {
   // Delete all related data in order
   await db.from('pay_app_line_items').delete().eq('project_id', projectId);
   await db.from('pay_applications').delete().eq('project_id', projectId);
+  await db.from('sov_line_items').delete().eq('project_id', projectId);
   await db.from('lien_waivers').delete().eq('project_id', projectId);
   await db.from('change_orders').delete().eq('project_id', projectId);
   await db.from('labor_entries').delete().eq('project_id', projectId);
@@ -1218,6 +1342,577 @@ async function saveLabor() {
 }
 
 // ── INVOICES & AR ────────────────────────────────────────────────────
+// ── PAY APPLICATIONS ─────────────────────────────────────────────────────
+// SOV line items now stored in sov_line_items table per job
+// EDENWALD_G703 kept as fallback only
+const EDENWALD_G703_FALLBACK = [
+  { item: '1',  desc: 'Shop Drawings / Design',        val: 40000 },
+  { item: '2',  desc: 'Mobilization',                  val: 40000 },
+  { item: '27', desc: 'As Builts',                     val: 15000 },
+];
+
+async function renderPayApps() {
+  const p = state.activeProject;
+  const { data: payApps } = await db.from('pay_applications').select('*').eq('project_id', p.id).order('app_number');
+  const apps = payApps || [];
+  const contract = parseFloat(p.base_contract||0) + parseFloat(p.approved_cos||0);
+  const totalBilled = apps.reduce((s,a)=>s+parseFloat(a.current_billed||0),0);
+  const totalRetainage = apps.reduce((s,a)=>s+parseFloat(a.retainage_amount||0),0);
+  const totalNet = apps.reduce((s,a)=>s+parseFloat(a.net_payment_due||0),0);
+
+  $('content').innerHTML = `
+  <div class="kgrid">
+    <div class="kcard db"><div class="klbl">Contract Value</div><div class="kval">${fmt(contract)}</div></div>
+    <div class="kcard red"><div class="klbl">Total Billed</div><div class="kval">${fmt(totalBilled)}</div><div class="ksub m">${apps.length} applications</div></div>
+    <div class="kcard amb"><div class="klbl">Retainage Held</div><div class="kval">${fmt(totalRetainage)}</div></div>
+    <div class="kcard grn"><div class="klbl">Balance to Finish</div><div class="kval">${fmt(contract-totalBilled)}</div></div>
+  </div>
+  <div class="card">
+    <div class="card-hd">
+      <div class="card-title">Pay Applications — ${p.job_number} ${p.job_name}</div>
+      <button class="btn btn-sm btn-red" onclick="openNewPayApp('${p.id}')">+ New Pay App</button>
+    </div>
+    ${apps.length===0?'<div class="tbl-empty">No pay applications yet. Click "+ New Pay App" to create your first one.</div>':
+    `<div class="tbl-wrap"><table><thead><tr>
+      <th>App #</th><th>Period Ending</th><th class="text-right">Current Billing</th>
+      <th class="text-right">Retainage</th><th class="text-right">Net Due</th>
+      <th class="text-right">Balance to Finish</th><th>Status</th><th></th>
+    </tr></thead><tbody>
+    ${apps.map((a,i)=>{
+      const bg = i%2===0?'#fff':'var(--gray50)';
+      return `<tr style="background:${bg}">
+        <td class="font-600">App #${a.app_number}</td>
+        <td>${a.period_ending||'—'}</td>
+        <td class="text-right font-600">${fmt(a.current_billed)}</td>
+        <td class="text-right">${fmt(a.retainage_amount)}</td>
+        <td class="text-right font-600" style="color:var(--green)">${fmt(a.net_payment_due)}</td>
+        <td class="text-right">${fmt(a.balance_to_finish)}</td>
+        <td><span class="badge ${a.status==='Submitted'?'b-pending':a.status==='Paid'?'b-paid':'b-notstarted'}">${a.status}</span></td>
+        <td>
+          <button class="btn btn-sm" onclick="openPayApp('${a.id}')">View</button>
+          <button class="btn btn-sm btn-red" onclick="generatePayAppPDF('${a.id}')">📄 PDF</button>
+        </td>
+      </tr>`;
+    }).join('')}
+    </tbody></table></div>`}
+  </div>`;
+  $('topbar-actions').innerHTML = `<button class="btn btn-sm btn-red" onclick="openNewPayApp('${p.id}')">+ New Pay App</button>`;
+}
+
+async function openNewPayApp(projectId) {
+  const p = state.activeProject;
+  // Get last pay app to carry forward previous billings
+  const { data: lastApps } = await db.from('pay_applications').select('*').eq('project_id', projectId).order('app_number', {ascending:false}).limit(1);
+  const lastApp = lastApps?.[0];
+  const appNum = lastApp ? lastApp.app_number + 1 : 1;
+  const prevBilled = lastApp ? parseFloat(lastApp.total_completed||0) : 0;
+  const prevRetainage = lastApp ? parseFloat(lastApp.retainage_amount||0) : 0;
+  const retPct = parseFloat(p.retainage_pct || 5);
+  const contract = parseFloat(p.base_contract||0) + parseFloat(p.approved_cos||0);
+
+  // Get previous line item completions
+  const { data: prevItems } = lastApp ? await db.from('pay_app_line_items').select('*').eq('pay_app_id', lastApp.id) : { data: [] };
+  const prevMap = {};
+  (prevItems||[]).forEach(li => { prevMap[li.description] = li; });
+
+  // Get SOV line items from database
+  const { data: sovItems } = await db.from('sov_line_items').select('*').eq('project_id', projectId).order('sort_order');
+  if (!sovItems || sovItems.length === 0) {
+    toast('No Schedule of Values found. Please add SOV line items in Job Setup first.', 'error');
+    navigate('project', projectId, 'setup');
+    return;
+  }
+  const lineItems = sovItems.map(s => ({ item: s.item_number, desc: s.description, val: parseFloat(s.scheduled_value||0) }));
+  const totalScheduled = lineItems.reduce((s,li)=>s+li.val,0);
+
+  // Build the pay app entry screen
+  $('content').innerHTML = `
+  <div class="card" style="margin-bottom:12px">
+    <div class="card-hd"><div class="card-title">New Pay Application #${appNum} — ${p.job_name}</div></div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;padding:4px 0">
+      <div class="fgroup"><label class="flbl">Period Ending</label><input class="finp" type="date" id="pa-period" value="${today()}"></div>
+      <div class="fgroup"><label class="flbl">Retainage %</label><input class="finp" type="number" id="pa-ret-pct" value="${retPct}" step="0.5"></div>
+      <div class="fgroup"><label class="flbl">Contract Date</label><input class="finp" type="date" id="pa-contract-date" value="${p.contract_date||'2026-03-25'}"></div>
+      <div class="fgroup"><label class="flbl">Status</label>
+        <select class="finp" id="pa-status"><option>Draft</option><option>Submitted</option><option>Approved</option><option>Paid</option></select>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:8px;padding:10px;background:var(--gray50);border-radius:8px;font-size:12px">
+      <div><div style="color:var(--gray600);font-size:10px">ORIGINAL CONTRACT</div><div style="font-weight:600">${fmt(contract)}</div></div>
+      <div><div style="color:var(--gray600);font-size:10px">PREVIOUS BILLINGS</div><div style="font-weight:600">${fmt(prevBilled)}</div></div>
+      <div><div style="color:var(--gray600);font-size:10px">PREV RETAINAGE HELD</div><div style="font-weight:600">${fmt(prevRetainage)}</div></div>
+      <div><div style="color:var(--gray600);font-size:10px">BALANCE TO FINISH</div><div style="font-weight:600" id="pa-balance-display">${fmt(contract-prevBilled)}</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-hd"><div class="card-title">G703 Continuation Sheet — Enter % Complete This Period</div>
+      <div style="font-size:11px;color:var(--gray600)">Enter the % completed THIS PERIOD only (not cumulative)</div>
+    </div>
+    <div class="tbl-wrap">
+    <table id="pa-g703-table">
+      <thead><tr style="background:var(--navy);color:#fff">
+        <th style="padding:8px 6px;text-align:left;width:40px">Item</th>
+        <th style="padding:8px 6px;text-align:left">Description of Work</th>
+        <th style="padding:8px 6px;text-align:right;width:100px">Scheduled Value</th>
+        <th style="padding:8px 6px;text-align:right;width:80px">Prev %</th>
+        <th style="padding:8px 6px;text-align:right;width:100px">Prev Amount</th>
+        <th style="padding:8px 6px;text-align:center;width:90px">This Period %</th>
+        <th style="padding:8px 6px;text-align:right;width:100px">This Period $</th>
+        <th style="padding:8px 6px;text-align:right;width:90px">Total %</th>
+        <th style="padding:8px 6px;text-align:right;width:100px">Total Complete</th>
+        <th style="padding:8px 6px;text-align:right;width:90px">Balance</th>
+        <th style="padding:8px 6px;text-align:right;width:80px">Retainage</th>
+      </tr></thead>
+      <tbody>
+      ${lineItems.map((li,i)=>{
+        const prev = prevMap[li.desc];
+        const prevPct = prev ? parseFloat(prev.total_pct||0)*100 : 0;
+        const prevAmt = prev ? parseFloat(prev.total_completed||0) : 0;
+        const bg = i%2===0?'#fff':'#f8f9fa';
+        return `<tr style="background:${bg}" id="pa-row-${i}">
+          <td style="padding:5px 6px;font-size:11px;color:var(--gray600)">${li.item}</td>
+          <td style="padding:5px 6px;font-size:11px;font-weight:500">${li.desc}</td>
+          <td style="padding:5px 6px;text-align:right;font-size:11px">${fmt(li.val)}</td>
+          <td style="padding:5px 6px;text-align:right;font-size:11px;color:var(--gray600)">${prevPct.toFixed(2)}%</td>
+          <td style="padding:5px 6px;text-align:right;font-size:11px;color:var(--gray600)">${fmt(prevAmt)}</td>
+          <td style="padding:5px 6px;text-align:center">
+            <input type="number" min="0" max="100" step="0.01" value="0"
+              style="width:72px;padding:3px 5px;font-size:11px;border:1px solid var(--border);border-radius:5px;text-align:right"
+              id="pa-pct-${i}" onchange="updatePayAppRow(${i},${li.val},${prevPct},${prevAmt})" oninput="updatePayAppRow(${i},${li.val},${prevPct},${prevAmt})">
+          </td>
+          <td style="padding:5px 6px;text-align:right;font-size:11px;font-weight:600" id="pa-this-amt-${i}">$0.00</td>
+          <td style="padding:5px 6px;text-align:right;font-size:11px" id="pa-total-pct-${i}">${prevPct.toFixed(2)}%</td>
+          <td style="padding:5px 6px;text-align:right;font-size:11px;font-weight:600" id="pa-total-amt-${i}">${fmt(prevAmt)}</td>
+          <td style="padding:5px 6px;text-align:right;font-size:11px" id="pa-balance-${i}">${fmt(li.val-prevAmt)}</td>
+          <td style="padding:5px 6px;text-align:right;font-size:11px" id="pa-ret-${i}">$0.00</td>
+        </tr>`;
+      }).join('')}
+      </tbody>
+      <tfoot>
+        <tr style="background:var(--navy);color:#fff;font-weight:600">
+          <td colspan="2" style="padding:8px 6px">GRAND TOTALS</td>
+          <td style="padding:8px 6px;text-align:right">${fmt(totalScheduled)}</td>
+          <td colspan="2" style="padding:8px 6px;text-align:right" id="pa-total-prev">${fmt(prevBilled)}</td>
+          <td style="padding:8px 6px"></td>
+          <td style="padding:8px 6px;text-align:right" id="pa-total-this">$0.00</td>
+          <td style="padding:8px 6px;text-align:right" id="pa-total-pct-all">0.00%</td>
+          <td style="padding:8px 6px;text-align:right" id="pa-total-complete">${fmt(prevBilled)}</td>
+          <td style="padding:8px 6px;text-align:right" id="pa-total-balance">${fmt(contract-prevBilled)}</td>
+          <td style="padding:8px 6px;text-align:right" id="pa-total-ret">${fmt(prevRetainage)}</td>
+        </tr>
+      </tfoot>
+    </table>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:12px">
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+      <div style="text-align:center;padding:12px;background:var(--gray50);border-radius:8px">
+        <div style="font-size:10px;color:var(--gray600);margin-bottom:4px">CURRENT BILLING</div>
+        <div style="font-size:20px;font-weight:700;color:var(--navy)" id="pa-summary-current">$0.00</div>
+      </div>
+      <div style="text-align:center;padding:12px;background:var(--gray50);border-radius:8px">
+        <div style="font-size:10px;color:var(--gray600);margin-bottom:4px">RETAINAGE (${retPct}%)</div>
+        <div style="font-size:20px;font-weight:700;color:var(--amber)" id="pa-summary-ret">$0.00</div>
+      </div>
+      <div style="text-align:center;padding:12px;background:var(--gray50);border-radius:8px">
+        <div style="font-size:10px;color:var(--gray600);margin-bottom:4px">NET PAYMENT DUE</div>
+        <div style="font-size:20px;font-weight:700;color:var(--green)" id="pa-summary-net">$0.00</div>
+      </div>
+      <div style="text-align:center;padding:12px;background:var(--gray50);border-radius:8px">
+        <div style="font-size:10px;color:var(--gray600);margin-bottom:4px">BALANCE TO FINISH</div>
+        <div style="font-size:20px;font-weight:700;color:var(--navy)" id="pa-summary-balance">${fmt(contract-prevBilled)}</div>
+      </div>
+    </div>
+    <div class="form-actions" style="margin-top:14px">
+      <button class="btn" onclick="navigate('project','${projectId}','payapps')">Cancel</button>
+      <button class="btn" onclick="saveAndGeneratePayApp('${projectId}',${appNum},${prevBilled},${prevRetainage})">💾 Save Draft</button>
+      <button class="btn btn-red" onclick="saveAndGeneratePayApp('${projectId}',${appNum},${prevBilled},${prevRetainage},true)">📄 Save & Generate PDF Package</button>
+    </div>
+  </div>`;
+
+  // Store line items reference for save
+  window._paLineItems = lineItems;
+  window._paPrevBilled = prevBilled;
+  window._paContract = contract;
+  window._paTotalScheduled = totalScheduled;
+}
+
+function updatePayAppRow(idx, scheduledVal, prevPct, prevAmt) {
+  const thisPctInput = parseFloat(document.getElementById('pa-pct-'+idx).value)||0;
+  const thisAmt = Math.round((scheduledVal * thisPctInput / 100) * 100) / 100;
+  const totalPct = prevPct + thisPctInput;
+  const totalAmt = prevAmt + thisAmt;
+  const balance = scheduledVal - totalAmt;
+  const retPct = parseFloat($('pa-ret-pct').value)||5;
+  const retAmt = Math.round(thisAmt * retPct / 100 * 100) / 100;
+
+  document.getElementById('pa-this-amt-'+idx).textContent = fmt(thisAmt);
+  document.getElementById('pa-total-pct-'+idx).textContent = totalPct.toFixed(2)+'%';
+  document.getElementById('pa-total-amt-'+idx).textContent = fmt(totalAmt);
+  document.getElementById('pa-balance-'+idx).textContent = fmt(balance);
+  document.getElementById('pa-ret-'+idx).textContent = fmt(retAmt);
+
+  // Update totals
+  updatePayAppTotals();
+}
+
+function updatePayAppTotals() {
+  const lineItems = window._paLineItems || [];
+  const retPct = parseFloat($('pa-ret-pct').value)||5;
+  const prevBilled = window._paPrevBilled || 0;
+  const contract = window._paContract || 0;
+
+  let totalThis = 0, totalComplete = 0, totalRet = 0;
+  lineItems.forEach((li, idx) => {
+    const thisPct = parseFloat(document.getElementById('pa-pct-'+idx)?.value)||0;
+    const thisAmt = li.val * thisPct / 100;
+    totalThis += thisAmt;
+    totalComplete += parseFloat(document.getElementById('pa-total-amt-'+idx)?.textContent?.replace(/[$,]/g,'')||0);
+    totalRet += thisAmt * retPct / 100;
+  });
+
+  const netDue = totalThis - totalRet;
+  const balance = contract - prevBilled - totalThis;
+  const totalPct = contract > 0 ? (prevBilled + totalThis) / contract * 100 : 0;
+  const totalRetAll = (parseFloat(window._paPrevBilled||0) * 0) + totalRet; // just this period ret for simplicity
+
+  $('pa-total-this') && ($('pa-total-this').textContent = fmt(totalThis));
+  $('pa-total-pct-all') && ($('pa-total-pct-all').textContent = totalPct.toFixed(2)+'%');
+  $('pa-total-complete') && ($('pa-total-complete').textContent = fmt(prevBilled + totalThis));
+  $('pa-total-balance') && ($('pa-total-balance').textContent = fmt(balance));
+  $('pa-total-ret') && ($('pa-total-ret').textContent = fmt(totalRet));
+  $('pa-summary-current') && ($('pa-summary-current').textContent = fmt(totalThis));
+  $('pa-summary-ret') && ($('pa-summary-ret').textContent = fmt(totalRet));
+  $('pa-summary-net') && ($('pa-summary-net').textContent = fmt(netDue));
+  $('pa-summary-balance') && ($('pa-summary-balance').textContent = fmt(balance));
+}
+
+async function saveAndGeneratePayApp(projectId, appNum, prevBilled, prevRetainage, generatePDF) {
+  const p = state.activeProject;
+  const lineItems = window._paLineItems || [];
+  const retPct = parseFloat($('pa-ret-pct').value)||5;
+  const periodEnding = $('pa-period').value;
+  const status = $('pa-status').value;
+  const contract = window._paContract || 0;
+
+  let totalThis = 0;
+  const lineData = lineItems.map((li, idx) => {
+    const thisPct = parseFloat(document.getElementById('pa-pct-'+idx)?.value)||0;
+    const thisAmt = li.val * thisPct / 100;
+    totalThis += thisAmt;
+    const prevPct = parseFloat(document.getElementById('pa-total-pct-'+idx)?.textContent)||0;
+    const totalAmt = parseFloat(document.getElementById('pa-total-amt-'+idx)?.textContent?.replace(/[$,]/g,'')||0);
+    return {
+      item_number: idx+1,
+      description: li.desc,
+      scheduled_value: li.val,
+      previous_pct: (prevPct - thisPct) / 100,
+      previous_amount: totalAmt - thisAmt,
+      current_pct: thisPct / 100,
+      current_amount: thisAmt,
+      total_completed: totalAmt,
+      total_pct: prevPct / 100,
+      balance_to_finish: li.val - totalAmt,
+      retainage: thisAmt * retPct / 100,
+      sort_order: idx,
+    };
+  });
+
+  const retainageAmt = totalThis * retPct / 100;
+  const netPaymentDue = totalThis - retainageAmt;
+  const totalComplete = prevBilled + totalThis;
+  const balance = contract - totalComplete;
+
+  // Save pay application
+  const { data: savedApp, error } = await db.from('pay_applications').insert({
+    project_id: projectId,
+    app_number: appNum,
+    period_ending: periodEnding,
+    retainage_pct: retPct,
+    status: status,
+    total_scheduled_value: window._paTotalScheduled || contract,
+    previous_billed: prevBilled,
+    current_billed: totalThis,
+    total_completed: totalComplete,
+    retainage_amount: retainageAmt,
+    net_payment_due: netPaymentDue,
+    balance_to_finish: balance,
+  }).select().single();
+
+  if (error) { toast('Error saving pay app: '+error.message, 'error'); return; }
+
+  // Save line items
+  const lineItemsToSave = lineData.map(ld => ({ ...ld, pay_app_id: savedApp.id, project_id: projectId }));
+  await db.from('pay_app_line_items').insert(lineItemsToSave);
+
+  toast('Pay App #'+appNum+' saved!');
+
+  if (generatePDF) {
+    generatePayAppPDF(savedApp.id);
+  } else {
+    navigate('project', projectId, 'payapps');
+  }
+}
+
+async function generatePayAppPDF(payAppId) {
+  const { data: pa } = await db.from('pay_applications').select('*').eq('id', payAppId).single();
+  const { data: lineItems } = await db.from('pay_app_line_items').select('*').eq('pay_app_id', payAppId).order('sort_order');
+  const p = state.activeProject;
+  if (!pa || !p) return;
+
+  const contract = parseFloat(p.base_contract||0) + parseFloat(p.approved_cos||0);
+  const retPct = parseFloat(pa.retainage_pct||5);
+  const periodStr = pa.period_ending ? new Date(pa.period_ending).toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}) : '';
+  const contractDateStr = p.contract_date ? new Date(p.contract_date).toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}) : '';
+
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
+<style>
+*{box-sizing:border-box;margin:0;padding:0;font-family:Arial,sans-serif;font-size:11px}
+body{background:#fff;padding:20px}
+.page{max-width:900px;margin:0 auto}
+h1{font-size:16px;font-weight:bold;margin-bottom:4px}
+.logo-area{display:flex;align-items:flex-start;gap:20px;margin-bottom:16px}
+.company-info{font-size:11px;line-height:1.6}
+.billing-summary{width:100%;border-collapse:collapse;margin-bottom:20px}
+.billing-summary td{padding:4px 8px;border:1px solid #ccc}
+.billing-summary .label{font-weight:bold;background:#f0f0f0;width:200px}
+.section-title{background:#333;color:#fff;padding:5px 8px;font-weight:bold;font-size:11px;margin-bottom:8px}
+.g702{border:1px solid #999;padding:10px;margin-bottom:20px;font-size:10px}
+.g702-header{display:flex;justify-content:space-between;border-bottom:1px solid #999;margin-bottom:8px;padding-bottom:8px}
+.g702-field{margin-bottom:4px}
+.g702-field span{border-bottom:1px solid #999;display:inline-block;min-width:120px;padding-bottom:1px}
+.g703{width:100%;border-collapse:collapse;font-size:9px;margin-bottom:20px}
+.g703 th{background:#333;color:#fff;padding:3px 4px;border:1px solid #999;text-align:center}
+.g703 td{padding:3px 4px;border:1px solid #ccc}
+.g703 .money{text-align:right}
+.g703 .center{text-align:center}
+.g703 tfoot td{background:#f0f0f0;font-weight:bold}
+.lien-waiver{border:2px solid #333;padding:20px;margin-top:20px}
+.lien-title{text-align:center;font-size:14px;font-weight:bold;margin-bottom:16px;line-height:1.4}
+.lien-field{border-bottom:1px solid #333;margin-bottom:8px;padding-bottom:2px}
+.sig-block{margin-top:30px}
+.page-break{page-break-before:always}
+@media print{.no-print{display:none}.page-break{page-break-before:always}}
+</style></head><body>
+<div class="page">
+
+<!-- PAGE 1: BILLING SUMMARY -->
+<div style="text-align:center;margin-bottom:20px">
+  <div style="font-size:28px;font-weight:900;color:#1B2A5E;letter-spacing:2px">TETRA</div>
+  <div style="font-size:11px;letter-spacing:3px;color:#1B2A5E">MECHANICAL SERVICES</div>
+</div>
+<div class="company-info" style="margin-bottom:16px">
+  Tetra Mechanical Services LLC<br>
+  1 Plaza Road Suite 108<br>
+  Greenvale, NY 11548<br>
+  (516) 898-6894<br>
+  Jdemasi@Tetra-Mechanical.com
+</div>
+<div style="background:#333;color:#fff;padding:6px 10px;font-weight:bold;font-size:12px;margin-bottom:2px">
+  Billing Summary: Application for Payment #${pa.app_number} ${p.job_name}
+</div>
+<div style="background:#666;color:#fff;padding:4px 10px;font-size:11px;margin-bottom:12px">
+  Period Ending: ${periodStr}
+</div>
+<table class="billing-summary">
+  <tr><td class="label">Original Contract Value:</td><td>${fmt(contract)}</td></tr>
+  <tr><td class="label">Approved Change Orders:</td><td>${fmt(parseFloat(p.approved_cos||0))}</td></tr>
+  <tr><td class="label">Revised Contract Value:</td><td>${fmt(contract)}</td></tr>
+  <tr><td class="label">Previous Billings:</td><td>${fmt(pa.previous_billed)}</td></tr>
+  <tr><td class="label">Current Billing:</td><td>${fmt(pa.current_billed)}</td></tr>
+  <tr><td class="label">Retainage %:</td><td>${retPct.toFixed(2)}%</td></tr>
+  <tr><td class="label">Retainage Amount:</td><td>${fmt(pa.retainage_amount)}</td></tr>
+  <tr><td class="label">Net Payment Due:</td><td>${fmt(pa.net_payment_due)}</td></tr>
+  <tr><td class="label">Balance to Finish:</td><td>${fmt(pa.balance_to_finish)}</td></tr>
+</table>
+
+<!-- PAGE 2: G702 -->
+<div class="page-break"></div>
+<div class="g702">
+  <div style="font-weight:bold;font-size:12px;border-bottom:2px solid #333;padding-bottom:4px;margin-bottom:8px">
+    APPLICATION AND CERTIFICATION FOR PAYMENT &nbsp;&nbsp;&nbsp; AIA DOCUMENT G702 &nbsp;&nbsp;&nbsp; PAGE 1 OF 2
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:10px">
+    <div>
+      <div class="g702-field">TO: <span>${p.gc_name||'SNS Organization LTD'}</span></div>
+      <div class="g702-field" style="padding-left:20px">${p.gc_address||'266 Bangor Street'}</div>
+      <div class="g702-field" style="padding-left:20px">${p.gc_city||'Greenvale'} ${p.gc_state||'NY'} ${p.gc_zip||'11548'}</div>
+      <div class="g702-field" style="margin-top:8px">FROM SUBCONTRACTOR: <strong>Tetra Mechanical Services LLC</strong></div>
+      <div class="g702-field" style="padding-left:20px">1 Plaza Road Suite 108, Greenvale, NY 11548</div>
+      <div class="g702-field" style="margin-top:8px">CONTRACT FOR: <span>${p.contract_for||'Mechanical Piping Installation'}</span></div>
+    </div>
+    <div>
+      <div class="g702-field">PROJECT: <strong>${p.job_name}</strong></div>
+      <div class="g702-field">APPLICATION NO: <strong>${pa.app_number}</strong></div>
+      <div class="g702-field">PERIOD TO: <span>${periodStr}</span></div>
+      <div class="g702-field">PROJECT NOS: <span>${p.job_number}</span></div>
+      <div class="g702-field">CONTRACT DATE: <span>${contractDateStr}</span></div>
+      <div style="margin-top:8px;border:1px solid #999;padding:5px">
+        <strong>Distribution to:</strong><br>
+        ☐ OWNER &nbsp;&nbsp; ☐ ARCHITECT &nbsp;&nbsp; ☑ SUBCONTRACTOR
+      </div>
+    </div>
+  </div>
+  <div style="border-top:1px solid #999;padding-top:8px;margin-bottom:8px">
+    <strong>SUBCONTRACTOR'S APPLICATION FOR PAYMENT</strong><br>
+    Application is made for payment, as shown below, in connection with the Contract. Continuation Sheet, AIA Document G703, is attached.
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <div>
+      <div class="g702-field">1. ORIGINAL CONTRACT SUM &nbsp;&nbsp; $ <span>${fmt(contract)}</span></div>
+      <div class="g702-field">2. Net change by Change Orders &nbsp;&nbsp; $ <span>${fmt(parseFloat(p.approved_cos||0))}</span></div>
+      <div class="g702-field">3. SUBCONTRACT SUM TO DATE &nbsp;&nbsp; $ <span>${fmt(contract)}</span></div>
+      <div class="g702-field">4. TOTAL COMPLETED & STORED TO DATE &nbsp;&nbsp; $ <span>${fmt(pa.total_completed)}</span></div>
+      <div style="margin-top:6px">5. RETAINAGE:</div>
+      <div class="g702-field" style="padding-left:16px">a. ${retPct}% of Completed Work &nbsp; $ <span>${fmt(pa.retainage_amount)}</span></div>
+      <div class="g702-field" style="padding-left:16px">b. % of Stored Material &nbsp; $ <span>0.00</span></div>
+      <div class="g702-field" style="padding-left:16px">Total Retainage &nbsp; $ <span>${fmt(pa.retainage_amount)}</span></div>
+      <div class="g702-field">6. TOTAL EARNED LESS RETAINAGE &nbsp;&nbsp; $ <span>${fmt(pa.net_payment_due + parseFloat(pa.previous_billed||0))}</span></div>
+      <div class="g702-field">7. LESS PREVIOUS CERTIFICATES FOR PAYMENT &nbsp;&nbsp; $ <span>${fmt(pa.previous_billed)}</span></div>
+      <div class="g702-field" style="font-weight:bold">8. CURRENT PAYMENT DUE &nbsp;&nbsp; $ <span>${fmt(pa.net_payment_due)}</span></div>
+      <div class="g702-field">9. BALANCE TO FINISH, INC. RETAINAGE &nbsp;&nbsp; $ <span>${fmt(pa.balance_to_finish)}</span></div>
+    </div>
+    <div>
+      <div style="border:1px solid #999;padding:10px;margin-bottom:10px">
+        <strong>CHANGE ORDER SUMMARY</strong>
+        <table style="width:100%;margin-top:6px;border-collapse:collapse">
+          <tr><th style="text-align:left;font-size:10px">CHANGE ORDERS</th><th style="font-size:10px">ADDITIONS</th><th style="font-size:10px">DEDUCTIONS</th></tr>
+          <tr><td style="font-size:10px">Total approved this Month</td><td style="text-align:center;font-size:10px">$0.00</td><td style="text-align:center;font-size:10px">$0.00</td></tr>
+          <tr><td style="font-size:10px">TOTALS</td><td style="text-align:center;font-size:10px">$0.00</td><td style="text-align:center;font-size:10px">$0.00</td></tr>
+        </table>
+      </div>
+      <div style="font-size:9px;margin-top:10px">
+        I certify that this payment request represents an accurate and complete measure of all the Work performed to the date indicated, and that the amount of Work performed and the labor, materials, and permanent equipment installed as presented on this request for payment are correct and in full compliance with the terms of the referenced contract and all authorized changes thereto.
+      </div>
+      <div style="margin-top:16px">
+        SUBCONTRACTOR: <strong>Tetra Mechanical Services LLC</strong><br><br>
+        By: _________________________ Date: _____________<br><br>
+        State of: _____________ County of: _____________<br>
+        Subscribed and sworn before me this ___ day of ___________<br>
+        Notary Public: _________________________<br>
+        My Commission expires: _________________
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- PAGE 3: G703 -->
+<div class="page-break"></div>
+<div style="font-weight:bold;font-size:11px;border-bottom:2px solid #333;padding-bottom:4px;margin-bottom:8px">
+  CONTINUATION SHEET &nbsp;&nbsp;&nbsp; AIA DOCUMENT G703 &nbsp;&nbsp;&nbsp; PAGE 2 OF 2
+</div>
+<div style="font-size:9px;margin-bottom:6px">
+  APPLICATION NO: ${pa.app_number} &nbsp;&nbsp; APPLICATION DATE: ${periodStr} &nbsp;&nbsp; PERIOD TO: ${periodStr} &nbsp;&nbsp; ARCHITECT'S PROJECT NO: ${p.job_number}
+</div>
+<table class="g703">
+  <thead>
+    <tr>
+      <th rowspan="3" style="width:25px">A<br>ITEM</th>
+      <th rowspan="3">B<br>DESCRIPTION OF WORK</th>
+      <th rowspan="3" style="width:70px">C<br>SCHEDULED VALUE</th>
+      <th colspan="2" style="background:#555">D — WORK COMPLETED FROM PREVIOUS</th>
+      <th colspan="2" style="background:#555">E — WORK COMPLETED THIS PERIOD</th>
+      <th rowspan="3" style="width:60px">G<br>TOTAL COMPLETED TO DATE (D+E)</th>
+      <th rowspan="3" style="width:45px">H<br>TOTAL % (G/C)</th>
+      <th rowspan="3" style="width:70px">I<br>BALANCE TO FINISH (C-G)</th>
+      <th rowspan="3" style="width:60px">J<br>RETAINAGE (${retPct}%)</th>
+    </tr>
+    <tr>
+      <th style="width:45px">QTY COMP PREV APP</th>
+      <th style="width:70px">AMOUNT PREV APP</th>
+      <th style="width:45px">QTY COMP THIS PERIOD</th>
+      <th style="width:70px">AMOUNT THIS PERIOD</th>
+    </tr>
+  </thead>
+  <tbody>
+  ${(lineItems||[]).map((li,idx)=>{
+    const thisAmt = parseFloat(document.getElementById('pa-this-amt-'+idx)?.textContent?.replace(/[$,]/g,'')||0);
+    const totalAmt = parseFloat(document.getElementById('pa-total-amt-'+idx)?.textContent?.replace(/[$,]/g,'')||0);
+    const prevPct = parseFloat(document.getElementById('pa-total-pct-'+idx)?.textContent)||0;
+    const thisPct = parseFloat(document.getElementById('pa-pct-'+idx)?.value)||0;
+    const prevAmt = totalAmt - thisAmt;
+    const balance = li.val - totalAmt;
+    const ret = thisAmt * retPct / 100;
+    const totalPct = totalAmt / li.val * 100;
+    const bg = idx%2===0?'#fff':'#f9f9f9';
+    return `<tr style="background:${bg}">
+      <td class="center">${li.item}</td>
+      <td>${li.desc}</td>
+      <td class="money">${fmt(li.val)}</td>
+      <td class="center">${(prevPct-thisPct).toFixed(2)}%</td>
+      <td class="money">${fmt(prevAmt)}</td>
+      <td class="center">${thisPct.toFixed(2)}%</td>
+      <td class="money">${fmt(thisAmt)}</td>
+      <td class="money">${fmt(totalAmt)}</td>
+      <td class="center">${totalPct.toFixed(2)}%</td>
+      <td class="money">${fmt(balance)}</td>
+      <td class="money">${fmt(ret)}</td>
+    </tr>`;
+  }).join('')}
+  </tbody>
+  <tfoot>
+    <tr>
+      <td colspan="2" style="font-weight:bold;padding:4px">GRAND TOTALS</td>
+      <td class="money" style="font-weight:bold">${fmt(window._paTotalScheduled)}</td>
+      <td class="center">0.00%</td>
+      <td class="money" style="font-weight:bold">${fmt(pa.previous_billed)}</td>
+      <td class="center">${(pa.current_billed/(window._paTotalScheduled||1)*100).toFixed(2)}%</td>
+      <td class="money" style="font-weight:bold">${fmt(pa.current_billed)}</td>
+      <td class="money" style="font-weight:bold">${fmt(pa.total_completed)}</td>
+      <td class="center">${(pa.total_completed/(window._paTotalScheduled||1)*100).toFixed(2)}%</td>
+      <td class="money" style="font-weight:bold">${fmt(pa.balance_to_finish)}</td>
+      <td class="money" style="font-weight:bold">${fmt(pa.retainage_amount)}</td>
+    </tr>
+  </tfoot>
+</table>
+
+<!-- PAGE 4: LIEN WAIVER -->
+<div class="page-break"></div>
+<div class="lien-waiver">
+  <div class="lien-title">CONDITIONAL PARTIAL WAIVER AND RELEASE OF LIEN<br>UPON PROGRESS PAYMENT</div>
+  <div style="margin-bottom:10px">
+    <div class="lien-field">Project: <strong>${p.job_name}</strong></div>
+    <div class="lien-field">Owner: <strong>${p.owner_name||'NYCHA'}</strong></div>
+    <div class="lien-field">Contractor: <strong>Platinum Energy Group (SNS Organization Ltd.)</strong></div>
+    <div class="lien-field">Subcontractor: <strong>Tetra Mechanical Services LLC</strong></div>
+    <div class="lien-field">Application No.: <strong>${pa.app_number}</strong></div>
+    <div class="lien-field">Through Date: <strong>${periodStr}</strong></div>
+  </div>
+  <div style="margin:20px 0;font-size:11px;line-height:1.8">
+    This document waives and releases lien, stop payment notice, and bond rights the undersigned has for labor, services, equipment, or materials furnished to the above project <strong>through the Through Date listed above</strong>, but <strong>only to the extent of payment received</strong> in the amount of:<br><br>
+    <div style="text-align:center;font-size:16px;font-weight:bold;margin:16px 0">${fmt(pa.net_payment_due)}</div>
+    This waiver and release is <strong>conditional upon actual receipt of payment</strong> of the above amount. This waiver does not cover retention, pending change orders, or amounts not yet paid.
+  </div>
+  <div class="sig-block">
+    <div style="margin-bottom:8px">Subcontractor: <strong>Tetra Mechanical Services LLC</strong></div>
+    <div style="margin-bottom:20px">Signature: _________________________ &nbsp;&nbsp;&nbsp;&nbsp; Date: _____________</div>
+    <div style="margin-bottom:6px">By: <u>Joseph DeMasi</u></div>
+    <div style="margin-bottom:6px">Title: <u>Vice President</u></div>
+    <div>Date: _______________</div>
+  </div>
+</div>
+
+</div>
+<div class="no-print" style="text-align:center;margin:20px">
+  <button onclick="window.print()" style="padding:10px 30px;background:#1B2A5E;color:#fff;border:none;border-radius:6px;font-size:14px;cursor:pointer">🖨️ Print / Save as PDF</button>
+</div>
+</body></html>`;
+
+  const win = window.open('', '_blank');
+  win.document.write(html);
+  win.document.close();
+  setTimeout(() => win.focus(), 300);
+}
+
+async function openPayApp(payAppId) {
+  const { data: pa } = await db.from('pay_applications').select('*').eq('id', payAppId).single();
+  if (!pa) return;
+  // For now just show the PDF
+  generatePayAppPDF(payAppId);
+}
+
 async function renderInvoices() {
   const p = state.activeProject;
   const { data: invoices } = await db.from('invoices').select('*').eq('project_id', p.id).order('created_at', {ascending:false});

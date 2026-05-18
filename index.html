@@ -886,6 +886,12 @@ async function renderJobSetup() {
           '<td class="text-right" style="padding:8px 10px;border-bottom:1px solid var(--border);font-weight:600;color:'+(bHrs>0?'var(--navy)':'var(--gray400)')+'">'+( bHrs>0?bHrs.toFixed(1)+' hrs':'—')+'</td>' +
           '<td class="text-right" style="padding:8px 10px;border-bottom:1px solid var(--border);font-weight:600;color:'+(labBud>0?'var(--green)':'var(--gray400)')+'">'+( labBud>0?fmt(labBud):'—')+'</td>' +
           '<td class="text-right" style="padding:8px 10px;border-bottom:1px solid var(--border);font-weight:600">'+( phaseBud>0?fmt(phaseBud):'—')+'</td>' +
+          '<td style="padding:8px 10px;border-bottom:1px solid var(--border)">' +
+            '<div style="display:flex;gap:4px">' +
+              '<button class="btn btn-sm" onclick="editPhase(\''+ph.id+'\',\''+ph.phase_name+'\',\''+ph.status+'\','+bHrs+','+phaseBud+')">Edit</button>' +
+              '<button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deletePhase(\''+ph.id+'\',\''+p.id+'\')">✕</button>' +
+            '</div>' +
+          '</td>' +
           '</tr>';
       }).join('');
       return '<div class="tbl-wrap"><table><thead><tr>' +
@@ -893,6 +899,7 @@ async function renderJobSetup() {
         '<th class="text-right">Budgeted Hrs</th>' +
         '<th class="text-right">Labor Budget (hrs x $'+br+'/hr)</th>' +
         '<th class="text-right">Phase Budget</th>' +
+        '<th style="width:100px"></th>' +
         '</tr></thead><tbody>' + rows + '</tbody>' +
         '<tfoot><tr style="background:var(--navy)">' +
         '<td colspan="2" style="padding:8px 10px;color:#fff;font-weight:600">TOTALS</td>' +
@@ -1120,31 +1127,63 @@ function calcPhasebudget() {
   }
 }
 
+function editPhase(phaseId, name, status, hours, budget) {
+  $('ph-name').value = name;
+  $('ph-status').value = status;
+  $('ph-hours').value = hours || '';
+  $('ph-budget').value = budget || '';
+  $('ph-burden').value = state.activeProject?.burden_rate || 160;
+  updatePhasePreview();
+  $('modal-phase').dataset.editId = phaseId;
+  $('modal-phase').dataset.projectId = state.activeProject?.id;
+  openModal('modal-phase');
+}
+
+async function deletePhase(phaseId, projectId) {
+  if (!confirm('Delete this phase? Labor entries assigned to it will be unlinked. This cannot be undone.')) return;
+  await db.from('phases').delete().eq('id', phaseId);
+  toast('Phase deleted');
+  render();
+}
+
 function openAddPhase(projectId) {
   clearForm(['ph-name','ph-budget','ph-hours']);
   $('ph-status').value = 'Not Started';
   $('ph-burden').value = state.activeProject?.burden_rate || 160;
   $('ph-preview').style.display = 'none';
-  openModal('modal-phase');
+  delete $('modal-phase').dataset.editId;
   $('modal-phase').dataset.projectId = projectId;
+  openModal('modal-phase');
 }
 
 async function savePhase() {
   const projectId = $('modal-phase').dataset.projectId;
+  const editId = $('modal-phase').dataset.editId;
   const name = $('ph-name').value.trim();
   if (!name) { toast('Enter a phase name','error'); return; }
   const hours = parseFloat($('ph-hours').value)||0;
   const burden = parseFloat($('ph-burden').value)||160;
   const budget = parseFloat($('ph-budget').value)||(hours*burden);
-  const { error } = await db.from('phases').insert({
-    project_id: projectId,
+
+  const phData = {
     phase_name: name,
     status: $('ph-status').value,
     budgeted_hours: hours,
     phase_budget: budget,
-    sort_order: state.phases.length
-  });
+  };
+
+  let error;
+  if (editId) {
+    ({error} = await db.from('phases').update(phData).eq('id', editId));
+  } else {
+    ({error} = await db.from('phases').insert({
+      ...phData,
+      project_id: projectId,
+      sort_order: state.phases.length
+    }));
+  }
   if (error) { toast('Error: '+error.message,'error'); return; }
+  delete $('modal-phase').dataset.editId;
   closeModal('modal-phase');
   toast('Phase added');
   render();
@@ -1220,7 +1259,11 @@ async function renderPurchases() {
         <td style="font-size:11px">${daysStr}</td>
         <td>${statusBadge(pu.status)}</td>
         <td>
-          ${balance>0?`<button class="btn btn-sm" style="color:var(--green);border-color:var(--green)" onclick="markPurchasePaid('${pu.id}','${p.id}',${balance})">💰 Pay</button>`:''}
+          <div style="display:flex;gap:4px">
+            ${balance>0?`<button class="btn btn-sm" style="color:var(--green);border-color:var(--green)" onclick="markPurchasePaid('${pu.id}','${p.id}',${balance})">💰 Pay</button>`:''}
+            <button class="btn btn-sm" onclick="editPurchase('${pu.id}','${p.id}')">Edit</button>
+            <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deletePurchase('${pu.id}','${p.id}')">✕</button>
+          </div>
         </td>
       </tr>`;
     }).join('')}
@@ -1237,10 +1280,22 @@ async function renderPurchases() {
   $('topbar-actions').innerHTML = `<button class="btn btn-sm btn-red" onclick="openNewPurchase('${p.id}')">+ Log Invoice</button>`;
 }
 
-function openNewPurchase(projectId) {
+async function openNewPurchase(projectId) {
   clearForm(['pu-vendor','pu-inv','pu-amount','pu-paid','pu-notes']);
   $('pu-date').value = today();
   $('pu-status').value = 'Pending';
+
+  // Fetch fresh data if needed
+  if (!state.phases?.length || !state.projectPOs) {
+    const [{ data: phases }, { data: pos }, { data: costCodes }] = await Promise.all([
+      db.from('phases').select('*').eq('project_id', projectId).order('sort_order'),
+      db.from('purchase_orders').select('*').eq('project_id', projectId).order('po_number'),
+      db.from('cost_codes').select('*').order('code'),
+    ]);
+    state.phases = phases || [];
+    state.projectPOs = pos || [];
+    state.costCodes = costCodes || [];
+  }
 
   // Populate PO dropdown
   const poSel = $('pu-po-select');
@@ -1273,15 +1328,15 @@ function openNewPurchase(projectId) {
 
 async function savePurchase() {
   const projectId = $('modal-purchase').dataset.projectId;
+  const editId = $('modal-purchase').dataset.editId;
   const poSel = $('pu-po-select');
   const selectedPO = poSel.options[poSel.selectedIndex];
   const poId = poSel.value || null;
   const poNum = selectedPO?.dataset?.num || '';
-
   const amount = parseFloat($('pu-amount').value)||0;
   const paid = parseFloat($('pu-paid').value)||0;
 
-  const { error } = await db.from('purchases').insert({
+  const puData = {
     project_id: projectId,
     phase_id: $('pu-phase').value || null,
     vendor: $('pu-vendor').value,
@@ -1296,27 +1351,34 @@ async function savePurchase() {
     terms_days: parseInt($('pu-terms').value)||30,
     status: paid >= amount && amount > 0 ? 'Paid' : $('pu-status').value,
     notes: $('pu-notes').value,
-  });
-  if (error) { toast('Error: '+error.message,'error'); return; }
+  };
 
-  // Update PO invoiced amount if linked
-  if (poId && amount > 0) {
-    const po = (state.projectPOs||[]).find(p=>p.id===poId);
-    if (po) {
-      const newInvoiced = parseFloat(po.invoiced_amount||0) + amount;
-      const newPaid = parseFloat(po.paid_amount||0) + paid;
-      const newStatus = newPaid >= parseFloat(po.committed_amount||0) ? 'Closed' : newInvoiced > 0 ? 'Invoiced' : po.status;
-      await db.from('purchase_orders').update({
-        invoiced_amount: newInvoiced,
-        paid_amount: newPaid,
-        invoice_number: $('pu-inv').value || po.invoice_number,
-        status: newStatus,
-      }).eq('id', poId);
+  let error;
+  if (editId) {
+    ({error} = await db.from('purchases').update(puData).eq('id', editId));
+  } else {
+    ({error} = await db.from('purchases').insert(puData));
+    // Update PO invoiced amount if linked
+    if (!error && poId && amount > 0) {
+      const po = (state.projectPOs||[]).find(p=>p.id===poId);
+      if (po) {
+        const newInvoiced = parseFloat(po.invoiced_amount||0) + amount;
+        const newPaid = parseFloat(po.paid_amount||0) + paid;
+        const newStatus = newPaid >= parseFloat(po.committed_amount||0) ? 'Closed' : newInvoiced > 0 ? 'Invoiced' : po.status;
+        await db.from('purchase_orders').update({
+          invoiced_amount: newInvoiced,
+          paid_amount: newPaid,
+          invoice_number: $('pu-inv').value || po.invoice_number,
+          status: newStatus,
+        }).eq('id', poId);
+      }
     }
   }
 
+  if (error) { toast('Error: '+error.message,'error'); return; }
+  delete $('modal-purchase').dataset.editId;
   closeModal('modal-purchase');
-  toast('Invoice logged');
+  toast(editId ? 'Invoice updated' : 'Invoice logged');
   render();
 }
 
@@ -1329,6 +1391,59 @@ function getCategoryFromCode(code) {
   if (c >= 400 && c < 500) return 'Equipment';
   if (c >= 500 && c < 600) return 'Rentals';
   return 'Misc.';
+}
+
+async function editPurchase(purchaseId, projectId) {
+  const { data: pu } = await db.from('purchases').select('*').eq('id', purchaseId).single();
+  if (!pu) return;
+
+  // Ensure dropdowns are populated
+  if (!state.phases?.length || !state.projectPOs) {
+    const [{ data: phases }, { data: pos }, { data: costCodes }] = await Promise.all([
+      db.from('phases').select('*').eq('project_id', projectId).order('sort_order'),
+      db.from('purchase_orders').select('*').eq('project_id', projectId).order('po_number'),
+      db.from('cost_codes').select('*').order('code'),
+    ]);
+    state.phases = phases || [];
+    state.projectPOs = pos || [];
+    state.costCodes = costCodes || [];
+  }
+
+  // Populate PO dropdown
+  const poSel = $('pu-po-select');
+  poSel.innerHTML = '<option value="">No PO — direct invoice</option>' +
+    (state.projectPOs||[]).map(po=>`<option value="${po.id}" data-num="${po.po_number}" data-vendor="${po.vendor}" data-code="${po.cost_code||''}" data-amount="${po.committed_amount||0}">${po.po_number} — ${po.vendor}</option>`).join('');
+  poSel.value = pu.po_id || '';
+
+  // Populate cost code dropdown
+  const ccSel = $('pu-cost-code');
+  ccSel.innerHTML = '<option value="">Select cost code...</option>' +
+    (state.costCodes||[]).map(cc=>`<option value="${cc.code}" ${cc.code===pu.cost_code?'selected':''}>${cc.code} — ${cc.description}</option>`).join('');
+
+  // Populate phase dropdown
+  const phSel = $('pu-phase');
+  phSel.innerHTML = '<option value="">Select phase (optional)...</option>' +
+    (state.phases||[]).map(ph=>`<option value="${ph.id}" ${ph.id===pu.phase_id?'selected':''}>${ph.phase_name}</option>`).join('');
+
+  $('pu-vendor').value = pu.vendor||'';
+  $('pu-inv').value = pu.invoice_number||'';
+  $('pu-date').value = pu.invoice_date||'';
+  $('pu-amount').value = pu.po_amount||'';
+  $('pu-paid').value = pu.paid_amount||'';
+  $('pu-terms').value = pu.terms_days||30;
+  $('pu-status').value = pu.status||'Pending';
+  $('pu-notes').value = pu.notes||'';
+
+  $('modal-purchase').dataset.projectId = projectId;
+  $('modal-purchase').dataset.editId = purchaseId;
+  openModal('modal-purchase');
+}
+
+async function deletePurchase(purchaseId, projectId) {
+  if (!confirm('Delete this invoice entry? This cannot be undone.')) return;
+  await db.from('purchases').delete().eq('id', purchaseId);
+  toast('Invoice deleted');
+  navigate('project', projectId, 'purchases');
 }
 
 async function markPurchasePaid(purchaseId, projectId, balance) {
@@ -3577,6 +3692,10 @@ async function renderPOs() {
           <td style="font-size:11px">${po.issue_date?po.issue_date.substring(0,10):'—'}</td>
           <td>${statusBadge(po.status)}</td>
           <td style="font-size:11px;color:var(--gray600)">${po.invoice_number||'—'}</td>
+          <td><div style="display:flex;gap:4px">
+            <button class="btn btn-sm" onclick="openEditPO('${po.id}')">Edit</button>
+            <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deletePO('${po.id}','${p.id}')">✕</button>
+          </div></td>
         </tr>`;
       }).join('')}
       </tbody>
@@ -3592,6 +3711,17 @@ async function renderPOs() {
     </div>
   </div>`;
   $('topbar-actions').innerHTML = `<button class="btn btn-sm btn-red" onclick="openNewPO('${p.id}')">+ New PO</button>`;
+}
+
+async function deletePO(poId, projectId) {
+  if (!confirm('Delete this PO? This cannot be undone.')) return;
+  await db.from('purchase_orders').delete().eq('id', poId);
+  toast('PO deleted');
+  if (projectId) {
+    navigate('project', projectId, 'pos');
+  } else {
+    navigate('master-pos');
+  }
 }
 
 function filterPOs() {
@@ -4059,6 +4189,10 @@ async function renderMasterPOs() {
           <td style="font-size:11px">${po.issue_date?po.issue_date.substring(0,10):'—'}</td>
           <td>${statusBadge(po.status)}</td>
           <td style="font-size:11px;color:var(--gray600)">${po.invoice_number||'—'}</td>
+          <td><div style="display:flex;gap:4px">
+            <button class="btn btn-sm" onclick="openEditPO('${po.id}')">Edit</button>
+            <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deletePO('${po.id}',null)">✕</button>
+          </div></td>
         </tr>`;
       }).join('')}
       </tbody>

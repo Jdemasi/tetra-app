@@ -1250,10 +1250,11 @@ async function renderPurchases() {
     ${state.purchases.map((pu,i)=>{
       const phase = state.phases.find(ph=>ph.id===pu.phase_id);
       const cc = state.costCodes.find(c=>c.code===pu.cost_code);
+      const isPaid = pu.status === 'Paid' || (parseFloat(pu.po_amount||0) > 0 && parseFloat(pu.paid_amount||0) >= parseFloat(pu.po_amount||0));
       const invDate = pu.invoice_date ? new Date(pu.invoice_date+'T00:00:00') : null;
       const dueDate = invDate ? new Date(invDate.getTime()+(pu.terms_days||30)*86400000) : null;
       const daysLeft = dueDate ? Math.ceil((dueDate-new Date())/86400000) : null;
-      const daysStr = daysLeft===null?'—':daysLeft<0?`<span style="color:var(--danger);font-weight:600">${Math.abs(daysLeft)}d late</span>`:daysLeft<=7?`<span style="color:var(--amber);font-weight:600">${daysLeft}d</span>`:`${daysLeft}d`;
+      const daysStr = isPaid ? '—' : (daysLeft===null?'—':daysLeft<0?`<span style="color:var(--danger);font-weight:600">${Math.abs(daysLeft)}d late</span>`:daysLeft<=7?`<span style="color:var(--amber);font-weight:600">${daysLeft}d</span>`:`${daysLeft}d`);
       const balance = parseFloat(pu.po_amount||0) - parseFloat(pu.paid_amount||0);
       const bg = i%2===0?'#fff':'var(--gray50)';
       return `<tr style="background:${bg}">
@@ -2619,11 +2620,12 @@ async function renderInvoices() {
     ${state.invoices.map(i => {
       const ret = parseFloat(i.billed_amount||0)*(parseFloat(i.retainage_pct||0)/100);
       const net = parseFloat(i.billed_amount||0)-ret;
+      const isPaid = i.status === 'Paid' || (parseFloat(i.billed_amount||0) > 0 && parseFloat(i.paid_amount||0) >= net);
       const invDate = i.invoice_date ? new Date(i.invoice_date) : null;
       const dueDate = invDate ? new Date(invDate.getTime()+(i.terms_days||30)*86400000) : null;
       const daysLeft = dueDate ? Math.ceil((dueDate-new Date())/86400000) : null;
       const dueStr = dueDate ? dueDate.toISOString().split('T')[0] : '—';
-      const daysStr = daysLeft===null?'':daysLeft<0?` <span class="text-red">(${Math.abs(daysLeft)}d late)</span>`:daysLeft<=7?` <span class="text-amber">(${daysLeft}d)</span>`:'';
+      const daysStr = isPaid ? '' : (daysLeft===null?'':daysLeft<0?` <span class="text-red">(${Math.abs(daysLeft)}d late)</span>`:daysLeft<=7?` <span class="text-amber">(${daysLeft}d)</span>`:'');
       return `<tr>
         <td class="mono font-600">${i.invoice_number||'—'}</td>
         <td>${i.invoice_date||'—'}</td>
@@ -4432,7 +4434,11 @@ async function renderAPAging() {
   (projects||[]).forEach(p=>projMap[p.id]=p);
   const now = new Date();
   const buckets = {current:0,days30:0,days60:0,days90:0};
-  const rows = (purchases||[]).filter(p=>p.status!=='Paid').map(pu => {
+  const rows = (purchases||[]).filter(p=>{
+    if (p.status === 'Paid') return false;
+    const outstanding = parseFloat(p.po_amount||0) - parseFloat(p.paid_amount||0);
+    return outstanding > 0.01; // exclude effectively-zero balances even if status is wrong
+  }).map(pu => {
     const outstanding = parseFloat(pu.po_amount||0) - parseFloat(pu.paid_amount||0);
     const invDate = pu.invoice_date ? new Date(pu.invoice_date) : now;
     const dueDate = new Date(invDate.getTime()+(pu.terms_days||30)*86400000);

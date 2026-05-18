@@ -217,6 +217,15 @@ select.finp{cursor:pointer}
       <div class="fgroup"><label class="flbl">Status</label><select class="finp" id="p-status"><option>Active</option><option>Complete</option><option>On Hold</option><option>Bidding</option></select></div>
       <div class="fgroup"><label class="flbl">Date Started</label><input class="finp" type="date" id="p-date"></div>
       <div class="fgroup"><label class="flbl">Base Contract ($)</label><input class="finp" type="number" id="p-contract" placeholder="0"></div>
+      <div class="fgroup"><label class="flbl">Payment Terms</label>
+        <select class="finp" id="p-payment-terms">
+          <option value="30">Net 30</option>
+          <option value="45">Net 45</option>
+          <option value="60">Net 60</option>
+          <option value="90">Net 90</option>
+        </select>
+      </div>
+      <div class="fgroup"><label class="flbl">Retainage %</label><input class="finp" type="number" id="p-retainage" placeholder="5" value="5" step="0.5"></div>
     </div>
     <div class="form-actions">
       <button class="btn" onclick="closeModal('modal-project')">Cancel</button>
@@ -825,6 +834,8 @@ async function renderJobSetup() {
         <tr><td style="color:var(--gray600);font-size:11px">Base Contract</td><td class="font-600">${fmt(p.base_contract)}</td></tr>
         <tr><td style="color:var(--gray600);font-size:11px">Approved COs</td><td>${fmt(p.approved_cos)}</td></tr>
         <tr><td style="color:var(--gray600);font-size:11px">Adjusted Value</td><td class="font-600">${fmt(parseFloat(p.base_contract||0)+parseFloat(p.approved_cos||0))}</td></tr>
+        <tr><td style="color:var(--gray600);font-size:11px">Payment Terms</td><td>Net ${p.payment_terms||30}</td></tr>
+        <tr><td style="color:var(--gray600);font-size:11px">Retainage %</td><td>${parseFloat(p.retainage_pct||5).toFixed(1)}%</td></tr>
         <tr><td style="color:var(--gray600);font-size:11px">Burden Rate</td>
           <td><span style="display:inline-flex;align-items:center;gap:8px">
             <strong>$${parseFloat(p.burden_rate||160).toFixed(0)}/hr</strong>
@@ -1444,6 +1455,7 @@ async function openNewPayApp(projectId) {
     <div class="card-hd"><div class="card-title">New Pay Application #${appNum} — ${p.job_name}</div></div>
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;padding:4px 0">
       <div class="fgroup"><label class="flbl">Period Ending</label><input class="finp" type="date" id="pa-period" value="${today()}"></div>
+      <div class="fgroup"><label class="flbl">Submitted Date</label><input class="finp" type="date" id="pa-submitted" value="${today()}"></div>
       <div class="fgroup"><label class="flbl">Retainage %</label><input class="finp" type="number" id="pa-ret-pct" value="${retPct}" step="0.5"></div>
       <div class="fgroup"><label class="flbl">Contract Date</label><input class="finp" type="date" id="pa-contract-date" value="${p.contract_date||'2026-03-25'}"></div>
       <div class="fgroup"><label class="flbl">Status</label>
@@ -1607,6 +1619,8 @@ async function saveAndGeneratePayApp(projectId, appNum, prevBilled, prevRetainag
   const lineItems = window._paLineItems || [];
   const retPct = parseFloat($('pa-ret-pct').value)||5;
   const periodEnding = $('pa-period').value;
+  const submittedDate = $('pa-submitted').value;
+  const paymentTerms = parseInt(p.payment_terms||30);
   const status = $('pa-status').value;
   const contract = window._paContract || 0;
 
@@ -1645,6 +1659,8 @@ async function saveAndGeneratePayApp(projectId, appNum, prevBilled, prevRetainag
     period_ending: periodEnding,
     retainage_pct: retPct,
     status: status,
+    submitted_date: submittedDate||null,
+    payment_terms: paymentTerms,
     total_scheduled_value: window._paTotalScheduled || contract,
     previous_billed: prevBilled,
     current_billed: totalThis,
@@ -2393,17 +2409,50 @@ async function renderWIP() {
 
 // ── AR AGING ─────────────────────────────────────────────────────────
 async function renderARaging() {
-  const [{ data: invoices }, { data: projects }] = await Promise.all([
+  const [{ data: invoices }, { data: payApps }, { data: projects }] = await Promise.all([
     db.from('invoices').select('*'),
+    db.from('pay_applications').select('*').in('status',['Submitted','Approved','Paid']),
     db.from('projects').select('*'),
   ]);
   const projMap = {};
   (projects||[]).forEach(p=>projMap[p.id]=p);
   const now = new Date();
   const buckets = {current:0,days30:0,days60:0,days90:0};
-  const rows = (invoices||[]).filter(i=>i.status!=='Paid').map(i => {
-    const ret = parseFloat(i.billed_amount||0)*(parseFloat(i.retainage_pct||0)/100);
-    const outstanding = parseFloat(i.billed_amount||0)-ret-parseFloat(i.paid_amount||0);
+
+  // Build AR rows from pay applications (primary source)
+  const paRows = (payApps||[]).map(pa => {
+    const proj = projMap[pa.project_id];
+    const outstanding = parseFloat(pa.net_payment_due||0);
+    const isPaid = pa.status === 'Paid';
+    if (isPaid) return null;
+    // Use submitted_date + payment_terms for accurate aging
+    const submittedDate = pa.submitted_date ? new Date(pa.submitted_date+'T00:00:00') : 
+                          pa.period_ending ? new Date(pa.period_ending+'T00:00:00') : now;
+    const terms = parseInt(pa.payment_terms||30);
+    const dueDate = new Date(submittedDate.getTime() + terms*86400000);
+    const daysLate = Math.ceil((now-dueDate)/86400000);
+    if (daysLate<=0) buckets.current+=outstanding;
+    else if (daysLate<=30) buckets.days30+=outstanding;
+    else if (daysLate<=60) buckets.days60+=outstanding;
+    else buckets.days90+=outstanding;
+    return {
+      jobName: proj ? proj.job_number+' — '+proj.job_name : '—',
+      invoiceNum: 'Pay App #'+pa.app_number,
+      description: 'Net '+terms+' from submission',
+      billed: parseFloat(pa.current_billed||0),
+      retainage: parseFloat(pa.retainage_amount||0),
+      outstanding,
+      daysLate,
+      dueDate: dueDate.toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}),
+      status: pa.status,
+      periodEnding: pa.period_ending||'—',
+    };
+  }).filter(Boolean);
+
+  // Also include any manual invoices not from pay apps
+  const manualRows = (invoices||[]).filter(i=>i.status!=='Paid'&&!i.invoice_number?.startsWith('PAY-APP-')).map(i => {
+    const proj = projMap[i.project_id];
+    const outstanding = parseFloat(i.billed_amount||0)-parseFloat(i.paid_amount||0);
     const invDate = i.invoice_date ? new Date(i.invoice_date) : now;
     const dueDate = new Date(invDate.getTime()+(i.terms_days||30)*86400000);
     const daysLate = Math.ceil((now-dueDate)/86400000);
@@ -2411,27 +2460,51 @@ async function renderARaging() {
     else if (daysLate<=30) buckets.days30+=outstanding;
     else if (daysLate<=60) buckets.days60+=outstanding;
     else buckets.days90+=outstanding;
-    return {i,outstanding,daysLate,proj:projMap[i.project_id]};
+    return {
+      jobName: proj ? proj.job_number+' — '+proj.job_name : '—',
+      invoiceNum: i.invoice_number||'—',
+      description: i.description||'—',
+      billed: parseFloat(i.billed_amount||0),
+      retainage: 0,
+      outstanding,
+      daysLate,
+      status: i.status,
+      periodEnding: i.invoice_date||'—',
+    };
   });
+
+  const rows = [...paRows, ...manualRows];
   const total = Object.values(buckets).reduce((s,v)=>s+v,0);
+
   $('content').innerHTML = `
   <div class="kgrid">
-    <div class="kcard grn"><div class="klbl">Current</div><div class="kval">${fmt(buckets.current)}</div></div>
+    <div class="kcard grn"><div class="klbl">Current</div><div class="kval">${fmt(buckets.current)}</div><div class="ksub g">Not yet due</div></div>
     <div class="kcard amb"><div class="klbl">1–30 Days Late</div><div class="kval">${fmt(buckets.days30)}</div></div>
     <div class="kcard red"><div class="klbl">31–60 Days Late</div><div class="kval">${fmt(buckets.days60)}</div></div>
     <div class="kcard red"><div class="klbl">60+ Days Late</div><div class="kval">${fmt(buckets.days90)}</div></div>
   </div>
   <div class="card">
-    <div class="card-hd"><div class="card-title"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>AR Aging Detail</div></div>
-    ${rows.length===0?'<div class="tbl-empty">No outstanding invoices.</div>':
-    `<div class="tbl-wrap"><table><thead><tr><th>Job</th><th>Invoice #</th><th>Description</th><th class="text-right">Outstanding</th><th>Days Late</th><th>Status</th></tr></thead><tbody>
-    ${rows.map(({i,outstanding,daysLate,proj})=>`<tr>
-      <td class="font-600">${proj?proj.job_number+' — '+proj.job_name:'—'}</td>
-      <td class="mono">${i.invoice_number||'—'}</td>
-      <td>${i.description||'—'}</td>
-      <td class="text-right font-600">${fmt(outstanding)}</td>
-      <td class="${daysLate<=0?'text-green':daysLate<=30?'text-amber':'text-red'} font-600">${daysLate<=0?'Current':daysLate+'d late'}</td>
-      <td><span class="badge b-${(i.status||'pending').toLowerCase()}">${i.status}</span></td>
+    <div class="card-hd">
+      <div class="card-title">AR Aging — Outstanding Billings</div>
+      <div style="font-size:11px;color:var(--gray600)">Total Outstanding: <strong>${fmt(total)}</strong></div>
+    </div>
+    ${rows.length===0?'<div class="tbl-empty">No outstanding AR. All paid up!</div>':
+    `<div class="tbl-wrap"><table>
+      <thead><tr>
+        <th>Job</th><th>Invoice / Pay App</th><th>Period</th><th>Due Date</th>
+        <th class="text-right">Billed</th><th class="text-right">Retainage</th>
+        <th class="text-right">Outstanding</th><th>Age</th><th>Status</th>
+      </tr></thead><tbody>
+    ${rows.map(r=>`<tr>
+      <td class="font-600" style="font-size:11px">${r.jobName}</td>
+      <td class="mono font-600">${r.invoiceNum}</td>
+      <td style="font-size:11px">${r.periodEnding}</td>
+      <td style="font-size:11px;color:var(--gray600)">${r.dueDate||'—'}</td>
+      <td class="text-right">${fmt(r.billed)}</td>
+      <td class="text-right" style="color:var(--amber)">${r.retainage>0?fmt(r.retainage):'—'}</td>
+      <td class="text-right font-600" style="color:${r.daysLate<=0?'var(--green)':r.daysLate<=30?'var(--amber)':'var(--danger)'}">${fmt(r.outstanding)}</td>
+      <td class="${r.daysLate<=0?'text-green':r.daysLate<=30?'text-amber':'text-red'} font-600">${r.daysLate<=0?'Due in '+Math.abs(r.daysLate)+'d':r.daysLate+'d late'}</td>
+      <td><span class="badge b-${(r.status||'pending').toLowerCase()}">${r.status}</span></td>
     </tr>`).join('')}
     </tbody></table></div>`}
   </div>`;
@@ -2474,7 +2547,13 @@ async function saveProject() {
   const num = $('p-num').value.trim();
   const name = $('p-name').value.trim();
   if (!num || !name) { toast('Job number and name required','error'); return; }
-  const data = { job_number:num, job_name:name, client:$('p-client').value, status:$('p-status').value, date_started:$('p-date').value||null, base_contract:parseFloat($('p-contract').value)||0 };
+  const data = { 
+    job_number:num, job_name:name, client:$('p-client').value, 
+    status:$('p-status').value, date_started:$('p-date').value||null, 
+    base_contract:parseFloat($('p-contract').value)||0,
+    payment_terms: parseInt($('p-payment-terms').value)||30,
+    retainage_pct: parseFloat($('p-retainage').value)||5,
+  };
   const editId = $('modal-project').dataset.editId;
   let error;
   if (editId) {
@@ -2509,6 +2588,8 @@ function editProject(id) {
   $('p-status').value = p.status||'Active';
   $('p-date').value = p.date_started||'';
   $('p-contract').value = p.base_contract||0;
+  $('p-payment-terms').value = p.payment_terms||30;
+  $('p-retainage').value = p.retainage_pct||5;
   $('modal-project-title').textContent = 'Edit Project';
   $('modal-project').dataset.editId = id;
   openModal('modal-project');

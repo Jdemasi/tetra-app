@@ -256,20 +256,23 @@ select.finp{cursor:pointer}
   <div class="modal" style="max-width:640px">
     <div class="modal-hd"><div class="modal-title">Log Invoice / Purchase</div><button class="modal-close" onclick="closeModal('modal-purchase')">×</button></div>
     <div class="form-grid">
-      <div class="fgroup"><label class="flbl">Vendor</label><input class="finp" id="pu-vendor" placeholder="e.g. Ferguson"></div>
+      <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Link to PO (optional — auto-fills vendor & cost code)</label>
+        <select class="finp" id="pu-po-select"><option value="">No PO — direct invoice</option></select>
+      </div>
+      <div class="fgroup"><label class="flbl">Vendor</label><input class="finp" id="pu-vendor" placeholder="e.g. NIS"></div>
       <div class="fgroup"><label class="flbl">Invoice #</label><input class="finp" id="pu-inv" placeholder="e.g. INV-1234"></div>
       <div class="fgroup"><label class="flbl">Invoice Date</label><input class="finp" type="date" id="pu-date"></div>
-      <div class="fgroup"><label class="flbl">PO Number</label><input class="finp" id="pu-po" placeholder="Optional"></div>
-      <div class="fgroup"><label class="flbl">Category</label><select class="finp" id="pu-cat"><option value="">Select...</option><option>Materials</option><option>Labor</option><option>Subcontractors</option><option>Equipment</option><option>Rentals</option><option>Misc.</option></select></div>
-      <div class="fgroup"><label class="flbl">Phase</label><select class="finp" id="pu-phase"><option value="">Select phase...</option></select></div>
-      <div class="fgroup"><label class="flbl">PO Amount ($)</label><input class="finp" type="number" id="pu-amount" placeholder="0.00"></div>
-      <div class="fgroup"><label class="flbl">Paid Amount ($)</label><input class="finp" type="number" id="pu-paid" placeholder="0.00"></div>
       <div class="fgroup"><label class="flbl">Terms (Days)</label><input class="finp" type="number" id="pu-terms" value="30"></div>
-      <div class="fgroup"><label class="flbl">Status</label><select class="finp" id="pu-status"><option>Pending</option><option>Paid</option><option>Partial</option><option>Overdue</option></select></div>
+      <div class="fgroup"><label class="flbl">Cost Code</label><select class="finp" id="pu-cost-code"><option value="">Select cost code...</option></select></div>
+      <div class="fgroup"><label class="flbl">Phase (optional)</label><select class="finp" id="pu-phase"><option value="">Select phase...</option></select></div>
+      <div class="fgroup"><label class="flbl">Invoice Amount ($)</label><input class="finp" type="number" id="pu-amount" placeholder="0.00"></div>
+      <div class="fgroup"><label class="flbl">Paid Amount ($)</label><input class="finp" type="number" id="pu-paid" placeholder="0.00 (leave blank if unpaid)"></div>
+      <div class="fgroup"><label class="flbl">Status</label><select class="finp" id="pu-status"><option>Pending</option><option>Approved</option><option>Paid</option><option>Overdue</option></select></div>
+      <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Notes</label><input class="finp" id="pu-notes" placeholder="Optional notes"></div>
     </div>
     <div class="form-actions">
       <button class="btn" onclick="closeModal('modal-purchase')">Cancel</button>
-      <button class="btn btn-red" onclick="savePurchase()">Save</button>
+      <button class="btn btn-red" onclick="savePurchase()">Save Invoice</button>
     </div>
   </div>
 </div>
@@ -1150,83 +1153,204 @@ async function savePhase() {
 // ── PURCHASES & AP ───────────────────────────────────────────────────
 async function renderPurchases() {
   const p = state.activeProject;
-  const [{ data: purchases }, { data: phases }] = await Promise.all([
-    db.from('purchases').select('*').eq('project_id', p.id).order('created_at', {ascending:false}),
+  const [{ data: purchases }, { data: phases }, { data: pos }, { data: costCodes }] = await Promise.all([
+    db.from('purchases').select('*').eq('project_id', p.id).order('invoice_date', {ascending:false}),
     db.from('phases').select('*').eq('project_id', p.id).order('sort_order'),
+    db.from('purchase_orders').select('*').eq('project_id', p.id).order('po_number'),
+    db.from('cost_codes').select('*').order('code'),
   ]);
   state.purchases = purchases || [];
   state.phases = phases || [];
+  state.projectPOs = pos || [];
+  state.costCodes = costCodes || [];
+
   const totalInv = state.purchases.reduce((s,pu)=>s+parseFloat(pu.po_amount||0),0);
   const totalPaid = state.purchases.reduce((s,pu)=>s+parseFloat(pu.paid_amount||0),0);
+  const totalOutstanding = totalInv - totalPaid;
+  const overdue = state.purchases.filter(pu => {
+    if (pu.status === 'Paid') return false;
+    const due = pu.invoice_date ? new Date(new Date(pu.invoice_date).getTime() + (pu.terms_days||30)*86400000) : null;
+    return due && due < new Date();
+  }).reduce((s,pu)=>s+parseFloat(pu.po_amount||0)-parseFloat(pu.paid_amount||0),0);
+
+  const statusBadge = s => {
+    const map = { Paid:'b-paid', Pending:'b-pending', Approved:'b-active', Overdue:'b-hold' };
+    return `<span class="badge ${map[s]||'b-pending'}">${s}</span>`;
+  };
+
   $('content').innerHTML = `
   <div class="kgrid">
-    <div class="kcard db"><div class="klbl">Total Invoiced</div><div class="kval">${fmt(totalInv)}</div></div>
+    <div class="kcard db"><div class="klbl">Total Invoiced</div><div class="kval">${fmt(totalInv)}</div><div class="ksub m">${state.purchases.length} invoices</div></div>
     <div class="kcard grn"><div class="klbl">Total Paid</div><div class="kval">${fmt(totalPaid)}</div></div>
-    <div class="kcard amb"><div class="klbl">Outstanding</div><div class="kval">${fmt(totalInv-totalPaid)}</div></div>
-    <div class="kcard red"><div class="klbl">Entries</div><div class="kval">${state.purchases.length}</div></div>
+    <div class="kcard amb"><div class="klbl">Outstanding</div><div class="kval">${fmt(totalOutstanding)}</div></div>
+    <div class="kcard red"><div class="klbl">Overdue</div><div class="kval">${fmt(overdue)}</div></div>
   </div>
   <div class="card">
-    <div class="card-hd"><div class="card-title"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>Purchases & Accounts Payable</div>
+    <div class="card-hd">
+      <div class="card-title">Purchases & Accounts Payable — ${p.job_number} ${p.job_name}</div>
       <button class="btn btn-sm btn-red" onclick="openNewPurchase('${p.id}')">+ Log Invoice</button>
     </div>
-    <div class="tbl-wrap">
-    ${state.purchases.length === 0 ? '<div class="tbl-empty">No purchases logged yet. Click "Log Invoice" to add one.</div>' :
-    `<table><thead><tr><th>Vendor</th><th>Invoice #</th><th>Date</th><th>Category</th><th>Phase</th><th class="text-right">PO Amount</th><th class="text-right">Paid</th><th>Due</th><th>Status</th></tr></thead><tbody>
-    ${state.purchases.map(pu => {
+    ${state.purchases.length===0?'<div class="tbl-empty">No invoices logged yet. Click "+ Log Invoice" to add one.</div>':
+    `<div class="tbl-wrap"><table>
+      <thead><tr>
+        <th>Vendor</th><th>Invoice #</th><th>PO #</th><th>Cost Code</th>
+        <th>Phase</th><th>Date</th>
+        <th class="text-right">Amount</th><th class="text-right">Paid</th>
+        <th class="text-right">Balance</th><th>Due</th><th>Status</th><th></th>
+      </tr></thead><tbody>
+    ${state.purchases.map((pu,i)=>{
       const phase = state.phases.find(ph=>ph.id===pu.phase_id);
-      const invDate = pu.invoice_date ? new Date(pu.invoice_date) : null;
-      const dueDate = invDate ? new Date(invDate.getTime() + (pu.terms_days||30)*86400000) : null;
-      const daysLeft = dueDate ? Math.ceil((dueDate-new Date())/(86400000)) : null;
-      const daysStr = daysLeft===null?'—':daysLeft<0?`<span class="text-red">${Math.abs(daysLeft)}d late</span>`:daysLeft<=7?`<span class="text-amber">${daysLeft}d</span>`:`${daysLeft}d`;
-      return `<tr>
+      const cc = state.costCodes.find(c=>c.code===pu.cost_code);
+      const invDate = pu.invoice_date ? new Date(pu.invoice_date+'T00:00:00') : null;
+      const dueDate = invDate ? new Date(invDate.getTime()+(pu.terms_days||30)*86400000) : null;
+      const daysLeft = dueDate ? Math.ceil((dueDate-new Date())/86400000) : null;
+      const daysStr = daysLeft===null?'—':daysLeft<0?`<span style="color:var(--danger);font-weight:600">${Math.abs(daysLeft)}d late</span>`:daysLeft<=7?`<span style="color:var(--amber);font-weight:600">${daysLeft}d</span>`:`${daysLeft}d`;
+      const balance = parseFloat(pu.po_amount||0) - parseFloat(pu.paid_amount||0);
+      const bg = i%2===0?'#fff':'var(--gray50)';
+      return `<tr style="background:${bg}">
         <td class="font-600">${pu.vendor||'—'}</td>
-        <td class="mono">${pu.invoice_number||'—'}</td>
-        <td>${pu.invoice_date||'—'}</td>
-        <td>${pu.category||'—'}</td>
-        <td>${phase?phase.phase_name:'—'}</td>
+        <td class="mono" style="font-size:11px">${pu.invoice_number||'—'}</td>
+        <td class="mono" style="font-size:11px;color:var(--navy)">${pu.po_number||'—'}</td>
+        <td style="font-size:10px"><span style="background:var(--gray100);padding:2px 5px;border-radius:4px">${pu.cost_code||'—'}</span></td>
+        <td style="font-size:11px;color:var(--gray600)">${phase?phase.phase_name:'—'}</td>
+        <td style="font-size:11px">${pu.invoice_date||'—'}</td>
         <td class="text-right font-600">${fmt(pu.po_amount)}</td>
-        <td class="text-right">${fmt(pu.paid_amount)}</td>
-        <td>${daysStr}</td>
-        <td><span class="badge b-${(pu.status||'pending').toLowerCase()}">${pu.status}</span></td>
+        <td class="text-right" style="color:var(--green)">${parseFloat(pu.paid_amount||0)>0?fmt(pu.paid_amount):'—'}</td>
+        <td class="text-right font-600" style="color:${balance>0?'var(--amber)':'var(--green)'}">${balance>0?fmt(balance):'—'}</td>
+        <td style="font-size:11px">${daysStr}</td>
+        <td>${statusBadge(pu.status)}</td>
+        <td>
+          ${balance>0?`<button class="btn btn-sm" style="color:var(--green);border-color:var(--green)" onclick="markPurchasePaid('${pu.id}','${p.id}',${balance})">💰 Pay</button>`:''}
+        </td>
       </tr>`;
     }).join('')}
-    </tbody></table>`}
-    </div>
+    </tbody>
+    <tfoot><tr style="background:var(--navy)">
+      <td colspan="6" style="padding:8px 10px;color:#fff;font-weight:600">TOTALS</td>
+      <td class="text-right" style="padding:8px 10px;color:#fff;font-weight:600">${fmt(totalInv)}</td>
+      <td class="text-right" style="padding:8px 10px;color:#fff;font-weight:600">${fmt(totalPaid)}</td>
+      <td class="text-right" style="padding:8px 10px;color:#fff;font-weight:600">${fmt(totalOutstanding)}</td>
+      <td colspan="3" style="padding:8px 10px"></td>
+    </tr></tfoot>
+    </table></div>`}
   </div>`;
   $('topbar-actions').innerHTML = `<button class="btn btn-sm btn-red" onclick="openNewPurchase('${p.id}')">+ Log Invoice</button>`;
 }
 
 function openNewPurchase(projectId) {
-  clearForm(['pu-vendor','pu-inv','pu-po','pu-amount','pu-paid']);
+  clearForm(['pu-vendor','pu-inv','pu-amount','pu-paid','pu-notes']);
   $('pu-date').value = today();
-  $('pu-terms').value = 30;
-  $('pu-cat').value = '';
   $('pu-status').value = 'Pending';
-  const sel = $('pu-phase');
-  sel.innerHTML = '<option value="">Select phase...</option>' + state.phases.map(ph=>`<option value="${ph.id}">${ph.phase_name}</option>`).join('');
+
+  // Populate PO dropdown
+  const poSel = $('pu-po-select');
+  poSel.innerHTML = '<option value="">No PO (direct invoice)</option>' +
+    (state.projectPOs||[]).map(po=>`<option value="${po.id}" data-num="${po.po_number}" data-vendor="${po.vendor}" data-code="${po.cost_code||''}" data-amount="${po.committed_amount||0}">${po.po_number} — ${po.vendor} ${po.description?'('+po.description.substring(0,30)+')':''}</option>`).join('');
+
+  // Auto-fill from PO selection
+  poSel.onchange = () => {
+    const opt = poSel.options[poSel.selectedIndex];
+    if (opt.value) {
+      $('pu-vendor').value = opt.dataset.vendor || '';
+      $('pu-cost-code').value = opt.dataset.code || '';
+      if (!$('pu-amount').value) $('pu-amount').value = opt.dataset.amount || '';
+    }
+  };
+
+  // Populate cost code dropdown
+  const ccSel = $('pu-cost-code');
+  ccSel.innerHTML = '<option value="">Select cost code...</option>' +
+    (state.costCodes||[]).map(cc=>`<option value="${cc.code}">${cc.code} — ${cc.description}</option>`).join('');
+
+  // Populate phase dropdown
+  const phSel = $('pu-phase');
+  phSel.innerHTML = '<option value="">Select phase (optional)...</option>' +
+    (state.phases||[]).map(ph=>`<option value="${ph.id}">${ph.phase_name}</option>`).join('');
+
   $('modal-purchase').dataset.projectId = projectId;
   openModal('modal-purchase');
 }
 
 async function savePurchase() {
   const projectId = $('modal-purchase').dataset.projectId;
+  const poSel = $('pu-po-select');
+  const selectedPO = poSel.options[poSel.selectedIndex];
+  const poId = poSel.value || null;
+  const poNum = selectedPO?.dataset?.num || '';
+
+  const amount = parseFloat($('pu-amount').value)||0;
+  const paid = parseFloat($('pu-paid').value)||0;
+
   const { error } = await db.from('purchases').insert({
     project_id: projectId,
     phase_id: $('pu-phase').value || null,
     vendor: $('pu-vendor').value,
     invoice_number: $('pu-inv').value,
     invoice_date: $('pu-date').value,
-    po_number: $('pu-po').value,
-    category: $('pu-cat').value,
-    po_amount: parseFloat($('pu-amount').value)||0,
-    paid_amount: parseFloat($('pu-paid').value)||0,
+    po_number: poNum,
+    po_id: poId,
+    cost_code: $('pu-cost-code').value,
+    category: getCategoryFromCode($('pu-cost-code').value),
+    po_amount: amount,
+    paid_amount: paid,
     terms_days: parseInt($('pu-terms').value)||30,
-    status: $('pu-status').value,
+    status: paid >= amount && amount > 0 ? 'Paid' : $('pu-status').value,
+    notes: $('pu-notes').value,
   });
   if (error) { toast('Error: '+error.message,'error'); return; }
+
+  // Update PO invoiced amount if linked
+  if (poId && amount > 0) {
+    const po = (state.projectPOs||[]).find(p=>p.id===poId);
+    if (po) {
+      const newInvoiced = parseFloat(po.invoiced_amount||0) + amount;
+      const newPaid = parseFloat(po.paid_amount||0) + paid;
+      const newStatus = newPaid >= parseFloat(po.committed_amount||0) ? 'Closed' : newInvoiced > 0 ? 'Invoiced' : po.status;
+      await db.from('purchase_orders').update({
+        invoiced_amount: newInvoiced,
+        paid_amount: newPaid,
+        invoice_number: $('pu-inv').value || po.invoice_number,
+        status: newStatus,
+      }).eq('id', poId);
+    }
+  }
+
   closeModal('modal-purchase');
-  toast('Purchase saved');
+  toast('Invoice logged');
   render();
+}
+
+function getCategoryFromCode(code) {
+  if (!code) return 'Misc.';
+  const c = parseInt(code);
+  if (c >= 100 && c < 200) return 'Labor';
+  if (c >= 200 && c < 300) return 'Materials';
+  if (c >= 300 && c < 400) return 'Subcontractors';
+  if (c >= 400 && c < 500) return 'Equipment';
+  if (c >= 500 && c < 600) return 'Rentals';
+  return 'Misc.';
+}
+
+async function markPurchasePaid(purchaseId, projectId, balance) {
+  const payDate = prompt('Payment date (YYYY-MM-DD):', today());
+  if (!payDate) return;
+  const { data: pu } = await db.from('purchases').select('*').eq('id', purchaseId).single();
+  if (!pu) return;
+  const newPaid = parseFloat(pu.paid_amount||0) + balance;
+  await db.from('purchases').update({ paid_amount: newPaid, status: 'Paid' }).eq('id', purchaseId);
+  // Update linked PO
+  if (pu.po_id) {
+    const { data: po } = await db.from('purchase_orders').select('*').eq('id', pu.po_id).single();
+    if (po) {
+      const newPOPaid = parseFloat(po.paid_amount||0) + balance;
+      await db.from('purchase_orders').update({
+        paid_amount: newPOPaid,
+        status: newPOPaid >= parseFloat(po.committed_amount||0) ? 'Closed' : 'Invoiced',
+      }).eq('id', pu.po_id);
+    }
+  }
+  toast('Payment recorded');
+  navigate('project', projectId, 'purchases');
 }
 
 // ── TIME & LABOR ─────────────────────────────────────────────────────

@@ -1474,16 +1474,47 @@ function parseInvoiceText(text, filename) {
 
   // ── AMOUNT DUE ────────────────────────────────────────────────────
   // Strategy in order:
+  //  0. VENDOR-SPECIFIC (NIS): NIS invoices always end with "AMOUNT DUE: <total>"
+  //     somewhere. Find every "AMOUNT DUE" occurrence regardless of what follows
+  //     (which may be split across whitespace differently per PDF.js extraction)
+  //     and pick the LAST one with a positive value. As a safety net, also scan
+  //     for all currency-style numbers and pick the largest, since NIS totals are
+  //     always >= any single line item.
   //  1. Stacked 4-label block (Nefco): "SUBTOTAL SHIPPING SALES TAX AMOUNT DUE n1 n2 n3 n4" → n4
   //  2. Stacked 3-label block: "SUBTOTAL TAX AMOUNT DUE n1 n2 n3" → n3
-  //  3. LAST occurrence of "AMOUNT DUE" / "Total Due" / "Balance Due" in the document
-  //     with a positive value. (NIS prints "AMOUNT DUE: 1,464.59" at the end of page 2.)
+  //  3. LAST "AMOUNT DUE" / "Total Due" / "Balance Due" with a positive value
   //  4. Amount Received fallback (payment receipts)
   let amountDue = null;
+
+  // NIS-specific path: NIS prints "AMOUNT DUE:" followed by the total amount.
+  // Multi-page invoices may have the value extracted with extra whitespace
+  // or even slight reordering by PDF.js. Be very permissive: match AMOUNT DUE
+  // followed by ANY whitespace then a currency number.
+  if (inv.vendor === 'National Industrial Supply') {
+    // Find all "AMOUNT DUE" matches and the very next currency-looking number
+    const nisMatches = [...t.matchAll(/AMOUNT\s*DUE[:\s]*\$?\s*([\d,]+\.\d{2})/gi)];
+    for (let i = nisMatches.length - 1; i >= 0; i--) {
+      const v = parseFloat(nisMatches[i][1].replace(/,/g, ''));
+      if (v > 0) { amountDue = v; break; }
+    }
+    // Safety net: if AMOUNT DUE didn't yield a value, grab the largest
+    // comma-formatted currency value in the doc. NIS totals are always >=
+    // any individual line item.
+    if (amountDue === null) {
+      const allNums = [...t.matchAll(/\b([\d]{1,3}(?:,\d{3})*\.\d{2})\b/g)];
+      let max = 0;
+      for (const m of allNums) {
+        const v = parseFloat(m[1].replace(/,/g, ''));
+        if (v > max) max = v;
+      }
+      if (max > 0) amountDue = max;
+    }
+  }
+
   const stackedLabels4 = t.match(
     /SUBTOTAL\s+(?:SHIPPING(?:\s+CHARGES)?\s+)?(?:SALES\s+)?TAX\s+AMOUNT\s+DUE\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})/i
   );
-  if (stackedLabels4) amountDue = parseFloat(stackedLabels4[4].replace(/,/g, ''));
+  if (amountDue === null && stackedLabels4) amountDue = parseFloat(stackedLabels4[4].replace(/,/g, ''));
   if (amountDue === null) {
     const stackedLabels3 = t.match(
       /SUBTOTAL\s+(?:SALES\s+)?TAX\s+AMOUNT\s+DUE\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})/i
@@ -1492,8 +1523,6 @@ function parseInvoiceText(text, filename) {
   }
   if (amountDue === null) {
     // Walk all "Amount Due"-style matches from LAST to first, pick first positive value.
-    // The last one is usually the real total — NIS shows discount $0.00 early and the
-    // real AMOUNT DUE $1,464.59 at the end.
     const allMatches = [...t.matchAll(/(?:Total\s*Due|AMOUNT\s*DUE|Amount\s*Due|Balance\s*Due|TOTAL\s*SALE)[:\s]*\$?\s*([\d,]+\.\d{2})/gi)];
     for (let i = allMatches.length - 1; i >= 0; i--) {
       const v = parseFloat(allMatches[i][1].replace(/,/g, ''));

@@ -1425,66 +1425,91 @@ function parseInvoiceText(text, filename) {
     }
   }
 
-  // ── PO NUMBER (from vendor's customer order field) ────────────────
-  // Format variations: 1997-2601-210 or 1998 - 2601- 240 or 2002-2601-210
-  const poPattern = /(\d{4})\s*[- ]\s*(\d{4})\s*[- ]\s*(\d{2,3})/;
-  const poMatch = t.match(poPattern);
-  if (poMatch) {
-    inv.po_number = poMatch[1];
-    inv.job_number = poMatch[2];
-    inv.cost_code = poMatch[3];
+  // ── PO NUMBER — anchored to a PO/Customer Order header ────────────
+  // PO format is NNNN-NNNN-NN[N] where middle group is the job number (2600-2699).
+  // We anchor to "Customer Order Number" or "PO Number" labels first so we don't
+  // grab addresses (1173-229-XXX) or customer numbers like 53095.
+  const poAnchors = [
+    /customer\s*order\s*number[^\d]{0,40}(\d{4}\s*[- ]\s*\d{4}\s*[- ]\s*\d{2,3})/i,
+    /\bpo\s*number[^\d]{0,40}(\d{4}\s*[- ]\s*\d{4}\s*[- ]\s*\d{2,3})/i,
+  ];
+  let poRaw = null;
+  for (const pat of poAnchors) {
+    const m = t.match(pat);
+    if (m) { poRaw = m[1]; break; }
+  }
+  // Fallback: any NNNN-NNNN-NNN where middle group looks like a job number (2600-2699)
+  if (!poRaw) {
+    const fallback = t.match(/\d{4}\s*[- ]\s*26\d{2}\s*[- ]\s*\d{2,3}/);
+    if (fallback) poRaw = fallback[0];
+  }
+  if (poRaw) {
+    const parts = poRaw.match(/(\d{4})\s*[- ]\s*(\d{4})\s*[- ]\s*(\d{2,3})/);
+    if (parts) {
+      inv.po_number = parts[1];
+      inv.job_number = parts[2];
+      inv.cost_code = parts[3];
+    }
   }
 
   // ── INVOICE NUMBER ────────────────────────────────────────────────
+  // S-prefix (Nefco S6085145.003, Ideal S2173362.001) is the strongest signal.
+  // NIS-style "INVOICE <ordernum> ... INVOICE <invnum> ORDER NUMBER" — we want
+  // the digits immediately followed by "ORDER NUMBER".
+  // Ideal-style "INVOICE NUMBER" header with date sitting between label and value.
   const invPatterns = [
-    /INVOICE\s*(?:NUMBER|NO\.?|#)?\s*[:\s]+([A-Z]?\d{5,}(?:[.\-]\d+)?)/i,
-    /Invoice\s*[:\s]+([A-Z]\d{7}(?:\.\d+)?)/i,   // S2173362.001, S6085145.003
-    /INV(?:OICE)?[#\s:]+([A-Z]?\d{5,}(?:[.\-]\d+)?)/i,
+    /\b(S\d{7}(?:\.\d{2,3})?)\b/,
+    /INVOICE\s*NUMBER\s+(?:\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\s+)?([A-Z]?\d{5,}(?:[.\-]\d+)?)/i,
+    /INVOICE\s+(\d{6,8})\s+ORDER\s+NUMBER/i,
+    /INV(?:OICE)?\s*(?:NO\.?|#)\s*[:\s]+([A-Z]?\d{5,}(?:[.\-]\d+)?)/i,
     /Receipt\s*#\s*(\d+)/i,
-    /^(\d{6,8})$/m,  // Plain number on its own line (NIS: 5196867)
   ];
-  // Don't overwrite if already found
-  if (!inv.invoice_number) {
-    for (const pat of invPatterns) {
-      const m = t.match(pat);
-      if (m && m[1] && !m[1].match(/^(20\d{2}|26\d{2})$/)) { // exclude years
-        inv.invoice_number = m[1];
-        break;
-      }
+  for (const pat of invPatterns) {
+    const m = t.match(pat);
+    if (m && m[1] && !m[1].match(/^(19|20|26)\d{2}$/)) { // exclude years
+      inv.invoice_number = m[1];
+      break;
     }
   }
 
   // ── AMOUNT DUE ────────────────────────────────────────────────────
-  // Priority order: Total Due > Amount Due > Amount Received > Total Sale > subtotal
-  // Must NOT match Pre Tax Total or Insurance Value
-  const amtPatterns = [
-    /Total\s*Due[:\s]*\$?\s*([\d,]+\.?\d*)/i,
-    /AMOUNT\s*DUE[:\s]*\$?\s*([\d,]+\.?\d*)/i,
-    /Amount\s*Received\s*([\d,]+\.?\d*)/i,
-    /TOTAL\s*SALE[:\s]*\$?\s*([\d,]+\.?\d*)/i,
-    /Amount\s*Due[:\s]*\$?\s*([\d,]+\.?\d*)/i,
-  ];
-  for (const pat of amtPatterns) {
-    const m = t.match(pat);
-    if (m) {
-      const amt = parseFloat(m[1].replace(/,/g, ''));
-      if (amt > 0) { inv.amount_due = amt; break; }
-    }
-  }
-  for (const pat of amtPatterns) {
-    const m = t.match(pat);
-    if (m) {
-      const amt = parseFloat(m[1].replace(/,/g, ''));
-      if (amt > 0) { inv.amount_due = amt; break; }
+  // Stacked-label layouts (Nefco): "SUBTOTAL SHIPPING SALES TAX AMOUNT DUE <n1> <n2> <n3> <n4>"
+  // The amount due is the LAST of the four numbers, not the first one after "AMOUNT DUE".
+  const stackedLabels4 = t.match(
+    /SUBTOTAL\s+(?:SHIPPING(?:\s+CHARGES)?\s+)?(?:SALES\s+)?TAX\s+AMOUNT\s+DUE\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})/i
+  );
+  const stackedLabels3 = t.match(
+    /SUBTOTAL\s+(?:SALES\s+)?TAX\s+AMOUNT\s+DUE\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})/i
+  );
+  if (stackedLabels4) {
+    inv.amount_due = parseFloat(stackedLabels4[4].replace(/,/g, ''));
+  } else if (stackedLabels3) {
+    inv.amount_due = parseFloat(stackedLabels3[3].replace(/,/g, ''));
+  } else {
+    const amtPatterns = [
+      /Total\s*Due[:\s]*\$?\s*([\d,]+\.?\d*)/i,
+      /AMOUNT\s*DUE[:\s]*\$?\s*([\d,]+\.?\d*)/i,
+      /Amount\s*Received[:\s]*\$?\s*([\d,]+\.?\d*)/i,
+      /TOTAL\s*SALE[:\s]*\$?\s*([\d,]+\.?\d*)/i,
+      /Balance\s*Due[:\s]*\$?\s*([\d,]+\.?\d*)/i,
+    ];
+    for (const pat of amtPatterns) {
+      const m = t.match(pat);
+      if (m) {
+        const amt = parseFloat(m[1].replace(/,/g, ''));
+        if (amt > 0) { inv.amount_due = amt; break; }
+      }
     }
   }
 
   // ── DATE ──────────────────────────────────────────────────────────
+  // Handles standard labels, stacked "INVOICE DATE INVOICE NUMBER <date> <inv#>"
+  // (Ideal), and falls back to first M/D/YYYY in the text (NIS top-of-page).
   const datePatterns = [
-    /Invoice\s*Date\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i,
-    /INVOICE\s*DATE\s*(\d{2}\/\d{2}\/\d{2,4})/i,
-    /(\d{2}\/\d{2}\/26)/,  // MM/DD/26 format
-    /(\d{4}-\d{2}-\d{2})/,  // YYYY-MM-DD
+    /INVOICE\s*DATE\s+INVOICE\s*NUMBER\s+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i,
+    /Invoice\s*Date\s+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i,
+    /INVOICE\s*DATE\s+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i,
+    /(\d{4}-\d{2}-\d{2})/,
   ];
   for (const pat of datePatterns) {
     const m = t.match(pat);
@@ -1492,6 +1517,11 @@ function parseInvoiceText(text, filename) {
       inv.invoice_date = formatDate(m[1]);
       break;
     }
+  }
+  // Last-resort fallback: first M/D/YYYY anywhere (NIS top-of-page timestamp)
+  if (!inv.invoice_date) {
+    const m = t.match(/\b(\d{1,2}\/\d{1,2}\/\d{4})\b/);
+    if (m) inv.invoice_date = formatDate(m[1]);
   }
 
   // ── PAYMENT TERMS ─────────────────────────────────────────────────

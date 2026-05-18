@@ -687,15 +687,9 @@ async function renderDashboard() {
   const activeJobs = state.projects.filter(p=>p.status==='Active').length;
 
   // Estimated profit across all jobs
-  // Labor comes from phases (hours x burden rate) — exclude Labor from category budgets to avoid double counting
-  const totalEstCost = (budgets||[]).filter(b=>b.category!=='Labor').reduce((s,b)=>s+parseFloat(b.budgeted_amount||0),0)
-    + (phases||[]).reduce((s,ph)=>{
-      const proj = state.projects.find(p=>p.id===ph.project_id);
-      const laborCost = parseFloat(ph.budgeted_hours||0) * parseFloat(proj?.burden_rate||160);
-      const phaseBudget = parseFloat(ph.phase_budget||0);
-      // For sub/equipment phases (no hours) use phase_budget, for labor phases use hours x rate
-      return s + (parseFloat(ph.budgeted_hours||0) > 0 ? laborCost : phaseBudget);
-    },0)
+  // Use project_budgets (Materials + Labor + Subs + Equipment) + cost_line_items (Tooling/Bond/Contingency/Design)
+  // Do NOT add phases - they would double count labor
+  const totalEstCost = (budgets||[]).reduce((s,b)=>s+parseFloat(b.budgeted_amount||0),0)
     + (lineItems||[]).reduce((s,li)=>s+parseFloat(li.budgeted_amount||0),0);
   const estProfit = totalContract - totalEstCost;
   const actProfit = totalContract - totalCost;
@@ -726,12 +720,7 @@ async function renderDashboard() {
           const pCost = (purchases||[]).filter(pu=>pu.project_id===p.id).reduce((s,pu)=>s+parseFloat(pu.po_amount||0),0)
             + (labor||[]).filter(l=>l.project_id===p.id).reduce((s,l)=>s+lc(l),0);
           const contract = parseFloat(p.base_contract||0)+parseFloat(p.approved_cos||0);
-          const pEst = (budgets||[]).filter(b=>b.project_id===p.id&&b.category!=='Labor').reduce((s,b)=>s+parseFloat(b.budgeted_amount||0),0)
-            + (phases||[]).filter(ph=>ph.project_id===p.id).reduce((s,ph)=>{
-              const laborCost = parseFloat(ph.budgeted_hours||0)*parseFloat(p.burden_rate||160);
-              const phaseBudget = parseFloat(ph.phase_budget||0);
-              return s + (parseFloat(ph.budgeted_hours||0)>0 ? laborCost : phaseBudget);
-            },0)
+          const pEst = (budgets||[]).filter(b=>b.project_id===p.id).reduce((s,b)=>s+parseFloat(b.budgeted_amount||0),0)
             + (lineItems||[]).filter(li=>li.project_id===p.id).reduce((s,li)=>s+parseFloat(li.budgeted_amount||0),0);
           const pProfit = contract - pEst;
           const pct = contract>0 ? pBilled/contract : 0;

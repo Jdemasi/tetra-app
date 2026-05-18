@@ -521,6 +521,23 @@ select.finp{cursor:pointer}
   </div>
 </div>
 
+<div class="modal-bg" id="modal-sov">
+  <div class="modal" style="max-width:480px">
+    <div class="modal-hd"><div class="modal-title" id="modal-sov-title">Add SOV Line Item</div><button class="modal-close" onclick="closeModal('modal-sov')">×</button></div>
+    <input type="hidden" id="sov-id">
+    <input type="hidden" id="sov-project-id">
+    <div class="form-grid">
+      <div class="fgroup"><label class="flbl">Item #</label><input class="finp" id="sov-item-num" placeholder="e.g. 1, 2, 3M, CO-1"></div>
+      <div class="fgroup" style="grid-column:span 2"><label class="flbl">Scheduled Value ($)</label><input class="finp" type="number" step="0.01" id="sov-value" placeholder="0.00"></div>
+      <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Description</label><input class="finp" id="sov-desc" placeholder="e.g. Mobilization, Buildings 14 & 15"></div>
+    </div>
+    <div class="form-actions">
+      <button class="btn" onclick="closeModal('modal-sov')">Cancel</button>
+      <button class="btn btn-red" onclick="saveSOVItem()">Save Line Item</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-bg" id="modal-pay">
   <div class="modal" style="max-width:480px">
     <div class="modal-hd"><div class="modal-title">💰 Record Payment</div><button class="modal-close" onclick="closeModal('modal-pay')">×</button></div>
@@ -1043,32 +1060,75 @@ async function renderJobSetup() {
 
 // ── SOV MANAGEMENT ───────────────────────────────────────────────────────
 function openAddSOVItem(projectId) {
-  const itemNum = prompt('Item number (e.g. 1, 2, 3M):');
-  if (!itemNum) return;
-  const desc = prompt('Description:');
-  if (!desc) return;
-  const val = parseFloat(prompt('Scheduled Value ($):'));
-  if (isNaN(val)) return;
-  db.from('sov_line_items').select('sort_order').eq('project_id', projectId).order('sort_order', {ascending:false}).limit(1)
-    .then(({data}) => {
-      const nextSort = data?.length ? (data[0].sort_order + 1) : 0;
-      return db.from('sov_line_items').insert({ project_id: projectId, item_number: itemNum, description: desc, scheduled_value: val, sort_order: nextSort });
-    })
-    .then(() => { toast('SOV item added'); render(); });
+  $('sov-id').value = '';
+  $('sov-project-id').value = projectId;
+  $('sov-item-num').value = '';
+  $('sov-desc').value = '';
+  $('sov-value').value = '';
+  $('modal-sov-title').textContent = 'Add SOV Line Item';
+  openModal('modal-sov');
+  // Focus the first input after the modal opens
+  setTimeout(() => $('sov-item-num').focus(), 50);
 }
 
 function editSOVItem(id, itemNum, desc, val) {
-  const newDesc = prompt('Description:', desc);
-  if (newDesc === null) return;
-  const newVal = parseFloat(prompt('Scheduled Value ($):', val));
-  if (isNaN(newVal)) return;
-  db.from('sov_line_items').update({ description: newDesc, scheduled_value: newVal }).eq('id', id)
-    .then(() => { toast('SOV item updated'); render(); });
+  const projectId = state.activeProject?.id || '';
+  $('sov-id').value = id;
+  $('sov-project-id').value = projectId;
+  $('sov-item-num').value = itemNum || '';
+  $('sov-desc').value = desc || '';
+  $('sov-value').value = val || '';
+  $('modal-sov-title').textContent = 'Edit SOV Line Item';
+  openModal('modal-sov');
+  setTimeout(() => $('sov-desc').focus(), 50);
+}
+
+async function saveSOVItem() {
+  const id = $('sov-id').value;
+  const projectId = $('sov-project-id').value;
+  const itemNum = $('sov-item-num').value.trim();
+  const desc = $('sov-desc').value.trim();
+  const val = parseFloat($('sov-value').value);
+
+  if (!itemNum) { toast('Item number is required', 'error'); $('sov-item-num').focus(); return; }
+  if (!desc)    { toast('Description is required', 'error');  $('sov-desc').focus(); return; }
+  if (isNaN(val) || val < 0) { toast('Enter a valid scheduled value', 'error'); $('sov-value').focus(); return; }
+
+  let error;
+  if (id) {
+    // Edit existing
+    ({error} = await db.from('sov_line_items').update({
+      item_number: itemNum,
+      description: desc,
+      scheduled_value: val,
+    }).eq('id', id));
+  } else {
+    // Insert new — figure out next sort_order
+    const { data: lastItem } = await db.from('sov_line_items')
+      .select('sort_order')
+      .eq('project_id', projectId)
+      .order('sort_order', {ascending:false})
+      .limit(1);
+    const nextSort = lastItem?.length ? (lastItem[0].sort_order + 1) : 0;
+    ({error} = await db.from('sov_line_items').insert({
+      project_id: projectId,
+      item_number: itemNum,
+      description: desc,
+      scheduled_value: val,
+      sort_order: nextSort,
+    }));
+  }
+
+  if (error) { toast('Error: ' + error.message, 'error'); return; }
+  closeModal('modal-sov');
+  toast(id ? 'SOV item updated' : 'SOV item added');
+  render();
 }
 
 async function deleteSOVItem(id, projectId) {
-  if (!confirm('Delete this SOV line item?')) return;
-  await db.from('sov_line_items').delete().eq('id', id);
+  if (!confirm('Delete this SOV line item? This cannot be undone.')) return;
+  const { error } = await db.from('sov_line_items').delete().eq('id', id);
+  if (error) { toast('Error: ' + error.message, 'error'); return; }
   toast('SOV item deleted');
   render();
 }

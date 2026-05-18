@@ -521,6 +521,39 @@ select.finp{cursor:pointer}
   </div>
 </div>
 
+<div class="modal-bg" id="modal-pay">
+  <div class="modal" style="max-width:480px">
+    <div class="modal-hd"><div class="modal-title">💰 Record Payment</div><button class="modal-close" onclick="closeModal('modal-pay')">×</button></div>
+    <input type="hidden" id="pay-pu-id">
+    <div style="background:var(--gray50);border-radius:8px;padding:12px;margin-bottom:14px;font-size:12px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+        <div><span style="color:var(--gray600)">Vendor:</span> <strong id="pay-pu-vendor">—</strong></div>
+        <div><span style="color:var(--gray600)">Invoice:</span> <strong id="pay-pu-invnum">—</strong></div>
+        <div><span style="color:var(--gray600)">Invoice amount:</span> <strong id="pay-pu-amount">—</strong></div>
+        <div><span style="color:var(--gray600)">Already paid:</span> <strong id="pay-pu-prevpaid">—</strong></div>
+        <div style="grid-column:1/-1;border-top:1px solid var(--border);padding-top:6px;margin-top:2px">
+          <span style="color:var(--gray600)">Balance due:</span> <strong id="pay-pu-balance" style="color:var(--amber);font-size:14px">—</strong>
+        </div>
+      </div>
+    </div>
+    <div class="form-grid">
+      <div class="fgroup"><label class="flbl">Payment Date</label><input class="finp" type="date" id="pay-date"></div>
+      <div class="fgroup"><label class="flbl">Amount ($)</label><input class="finp" type="number" id="pay-amount" step="0.01" placeholder="0.00"></div>
+      <div class="fgroup"><label class="flbl">Method</label>
+        <select class="finp" id="pay-method">
+          <option>Check</option><option>ACH</option><option>Wire</option><option>Zelle</option><option>Credit Card</option><option>Cash</option><option>Other</option>
+        </select>
+      </div>
+      <div class="fgroup"><label class="flbl">Reference (Check# / Confirmation)</label><input class="finp" id="pay-ref" placeholder="e.g. 4521 or ACH-XXX"></div>
+    </div>
+    <div style="font-size:11px;color:var(--gray600);margin-bottom:10px">💡 Partial payments are allowed — adjust the Amount field. Aging continues on the remaining balance.</div>
+    <div class="form-actions">
+      <button class="btn" onclick="closeModal('modal-pay')">Cancel</button>
+      <button class="btn btn-red" onclick="savePayPurchase()">Save Payment</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -1271,7 +1304,7 @@ async function renderPurchases() {
         <td>${statusBadge(pu.status)}</td>
         <td>
           <div style="display:flex;gap:4px">
-            ${balance>0?`<button class="btn btn-sm" style="color:var(--green);border-color:var(--green)" onclick="markPurchasePaid('${pu.id}','${p.id}',${balance})">💰 Pay</button>`:''}
+            ${balance>0?`<button class="btn btn-sm" style="color:var(--green);border-color:var(--green)" onclick="openPayPurchase('${pu.id}',${balance})">💰 Pay</button>`:''}
             <button class="btn btn-sm" onclick="editPurchase('${pu.id}','${p.id}')">Edit</button>
             <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deletePurchase('${pu.id}','${p.id}')">✕</button>
           </div>
@@ -4426,52 +4459,316 @@ async function saveLien() {
 
 // ── AP AGING ─────────────────────────────────────────────────────────
 async function renderAPAging() {
-  const [{ data: purchases }, { data: projects }] = await Promise.all([
+  const [{ data: purchases }, { data: projects }, { data: costCodes }] = await Promise.all([
     db.from('purchases').select('*'),
     db.from('projects').select('*'),
+    db.from('cost_codes').select('*'),
   ]);
   const projMap = {};
   (projects||[]).forEach(p=>projMap[p.id]=p);
+  const ccMap = {};
+  (costCodes||[]).forEach(c=>ccMap[c.code]=c.description);
   const now = new Date();
-  const buckets = {current:0,days30:0,days60:0,days90:0};
-  const rows = (purchases||[]).filter(p=>{
+
+  // Filter: only unpaid invoices with real outstanding balance
+  const allRows = (purchases||[]).filter(p=>{
     if (p.status === 'Paid') return false;
     const outstanding = parseFloat(p.po_amount||0) - parseFloat(p.paid_amount||0);
-    return outstanding > 0.01; // exclude effectively-zero balances even if status is wrong
+    return outstanding > 0.01;
   }).map(pu => {
     const outstanding = parseFloat(pu.po_amount||0) - parseFloat(pu.paid_amount||0);
-    const invDate = pu.invoice_date ? new Date(pu.invoice_date) : now;
+    const invDate = pu.invoice_date ? new Date(pu.invoice_date+'T00:00:00') : now;
     const dueDate = new Date(invDate.getTime()+(pu.terms_days||30)*86400000);
-    const daysLate = Math.ceil((now-dueDate)/86400000);
-    if (daysLate<=0) buckets.current+=outstanding;
-    else if (daysLate<=30) buckets.days30+=outstanding;
-    else if (daysLate<=60) buckets.days60+=outstanding;
-    else buckets.days90+=outstanding;
-    return {pu,outstanding,daysLate,proj:projMap[pu.project_id]};
+    const daysAging = Math.max(0, Math.floor((now-invDate)/86400000));
+    const daysToDue = Math.ceil((dueDate-now)/86400000); // positive=days until due, negative=days late
+    return {
+      pu, outstanding, daysAging, daysToDue, invDate, dueDate,
+      proj: projMap[pu.project_id],
+      ccDesc: ccMap[pu.cost_code] || '',
+    };
+  });
+
+  // Save full data set globally so filter functions can access it
+  window._apRows = allRows;
+  window._apProjMap = projMap;
+
+  renderAPAgingView();
+}
+
+function renderAPAgingView() {
+  const rows = window._apRows || [];
+  const projMap = window._apProjMap || {};
+  const jobFilter = ($('ap-filter-job') || {}).value || '';
+  const vendorFilter = ($('ap-filter-vendor') || {}).value || '';
+  const sortBy = ($('ap-sort') || {}).value || 'aging-desc';
+
+  // Apply filters
+  let filtered = rows.filter(r => {
+    if (jobFilter && r.pu.project_id !== jobFilter) return false;
+    if (vendorFilter && r.pu.vendor !== vendorFilter) return false;
+    return true;
+  });
+
+  // Sort
+  if (sortBy === 'aging-desc') filtered.sort((a,b)=>b.daysAging - a.daysAging);
+  else if (sortBy === 'aging-asc') filtered.sort((a,b)=>a.daysAging - b.daysAging);
+  else if (sortBy === 'amount-desc') filtered.sort((a,b)=>b.outstanding - a.outstanding);
+  else if (sortBy === 'vendor') filtered.sort((a,b)=>(a.pu.vendor||'').localeCompare(b.pu.vendor||''));
+
+  // Aging buckets (standard accounting buckets, based on days since invoice date)
+  const buckets = {current:0, b3160:0, b6190:0, b90plus:0};
+  filtered.forEach(r => {
+    const d = r.daysAging;
+    if (d <= 30) buckets.current += r.outstanding;
+    else if (d <= 60) buckets.b3160 += r.outstanding;
+    else if (d <= 90) buckets.b6190 += r.outstanding;
+    else buckets.b90plus += r.outstanding;
   });
   const total = Object.values(buckets).reduce((s,v)=>s+v,0);
+
+  // Vendor summary (top 5 vendors by outstanding)
+  const vendorTotals = {};
+  filtered.forEach(r => {
+    const v = r.pu.vendor || '(unknown)';
+    if (!vendorTotals[v]) vendorTotals[v] = { total: 0, count: 0 };
+    vendorTotals[v].total += r.outstanding;
+    vendorTotals[v].count += 1;
+  });
+  const topVendors = Object.entries(vendorTotals)
+    .sort((a,b) => b[1].total - a[1].total)
+    .slice(0, 5);
+
+  // All vendors for dropdown
+  const allVendors = [...new Set(rows.map(r => r.pu.vendor).filter(Boolean))].sort();
+  // All jobs for dropdown (only ones with AP)
+  const allJobIds = [...new Set(rows.map(r => r.pu.project_id).filter(Boolean))];
+
+  const ageBadge = (d) => {
+    if (d <= 30) return `<span style="color:var(--green);font-weight:600">${d}d</span>`;
+    if (d <= 60) return `<span style="color:var(--amber);font-weight:600">${d}d</span>`;
+    if (d <= 90) return `<span style="color:#E07810;font-weight:600">${d}d</span>`;
+    return `<span style="color:var(--danger);font-weight:700">${d}d</span>`;
+  };
+  const dueBadge = (n) => {
+    if (n === null) return '—';
+    if (n < 0) return `<span style="color:var(--danger);font-weight:600">${Math.abs(n)}d late</span>`;
+    if (n <= 7) return `<span style="color:var(--amber);font-weight:600">${n}d</span>`;
+    return `${n}d`;
+  };
+  const rowHighlight = (r) => {
+    if (r.daysToDue < 0) return 'background:#FFF0F0';
+    if (r.daysToDue <= 7) return 'background:#FFFCE7';
+    return '';
+  };
+
   $('content').innerHTML = `
   <div class="kgrid">
-    <div class="kcard grn"><div class="klbl">Current</div><div class="kval">${fmt(buckets.current)}</div></div>
-    <div class="kcard amb"><div class="klbl">1–30 Days Late</div><div class="kval">${fmt(buckets.days30)}</div></div>
-    <div class="kcard red"><div class="klbl">31–60 Days Late</div><div class="kval">${fmt(buckets.days60)}</div></div>
-    <div class="kcard red"><div class="klbl">60+ Days Late</div><div class="kval">${fmt(buckets.days90)}</div></div>
+    <div class="kcard grn"><div class="klbl">Current (0–30 days)</div><div class="kval">${fmt(buckets.current)}</div></div>
+    <div class="kcard amb"><div class="klbl">31–60 days</div><div class="kval">${fmt(buckets.b3160)}</div></div>
+    <div class="kcard red"><div class="klbl">61–90 days</div><div class="kval">${fmt(buckets.b6190)}</div></div>
+    <div class="kcard red"><div class="klbl">90+ days</div><div class="kval">${fmt(buckets.b90plus)}</div></div>
   </div>
+
+  ${topVendors.length > 0 ? `
+  <div class="card" style="margin-bottom:14px">
+    <div class="card-hd">
+      <div class="card-title">Top Vendors Owed</div>
+      <div style="font-size:11px;color:var(--gray600)">Click a vendor to filter the list below</div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px">
+      ${topVendors.map(([vendor, info]) => `
+        <div onclick="$('ap-filter-vendor').value='${vendor.replace(/'/g,"\\'")}'; renderAPAgingView();"
+             style="border:1px solid var(--border);border-radius:8px;padding:10px;cursor:pointer;transition:.12s"
+             onmouseover="this.style.borderColor='var(--navy)';this.style.background='var(--gray50)'"
+             onmouseout="this.style.borderColor='var(--border)';this.style.background='#fff'">
+          <div style="font-size:11px;font-weight:600;color:var(--gray800);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${vendor}</div>
+          <div style="font-size:18px;font-weight:700;color:var(--navy);margin-top:3px">${fmt(info.total)}</div>
+          <div style="font-size:10px;color:var(--gray600);margin-top:1px">${info.count} invoice${info.count===1?'':'s'}</div>
+        </div>
+      `).join('')}
+    </div>
+  </div>` : ''}
+
   <div class="card">
-    <div class="card-hd"><div class="card-title">AP Aging — What You Owe Vendors</div></div>
-    ${rows.length===0?'<div class="tbl-empty">No outstanding AP.</div>':
-    `<div class="tbl-wrap"><table><thead><tr><th>Job</th><th>Vendor</th><th>Invoice #</th><th>Category</th><th class="text-right">Outstanding</th><th>Days Late</th><th>Status</th></tr></thead><tbody>
-    ${rows.map(({pu,outstanding,daysLate,proj})=>`<tr>
-      <td style="font-size:11px;color:var(--gray600)">${proj?proj.job_number+' — '+proj.job_name:'—'}</td>
-      <td class="font-600">${pu.vendor||'—'}</td>
-      <td class="mono">${pu.invoice_number||'—'}</td>
-      <td>${pu.category||'—'}</td>
-      <td class="text-right font-600">${fmt(outstanding)}</td>
-      <td class="${daysLate<=0?'text-green':daysLate<=30?'text-amber':'text-red'} font-600">${daysLate<=0?'Current':daysLate+'d late'}</td>
-      <td><span class="badge b-${(pu.status||'pending').toLowerCase()}">${pu.status}</span></td>
-    </tr>`).join('')}
-    </tbody></table></div>`}
+    <div class="card-hd">
+      <div class="card-title">AP Aging — What You Owe Vendors</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select class="finp" id="ap-filter-job" onchange="renderAPAgingView()" style="font-size:11px;padding:4px 8px;width:auto">
+          <option value="">All Jobs</option>
+          ${allJobIds.map(jid => {
+            const proj = projMap[jid];
+            const sel = jid === jobFilter ? 'selected' : '';
+            return `<option value="${jid}" ${sel}>${proj ? proj.job_number+' — '+proj.job_name : '(unknown)'}</option>`;
+          }).join('')}
+        </select>
+        <select class="finp" id="ap-filter-vendor" onchange="renderAPAgingView()" style="font-size:11px;padding:4px 8px;width:auto">
+          <option value="">All Vendors</option>
+          ${allVendors.map(v => `<option value="${v}" ${v===vendorFilter?'selected':''}>${v}</option>`).join('')}
+        </select>
+        <select class="finp" id="ap-sort" onchange="renderAPAgingView()" style="font-size:11px;padding:4px 8px;width:auto">
+          <option value="aging-desc" ${sortBy==='aging-desc'?'selected':''}>Sort: Oldest first</option>
+          <option value="aging-asc" ${sortBy==='aging-asc'?'selected':''}>Sort: Newest first</option>
+          <option value="amount-desc" ${sortBy==='amount-desc'?'selected':''}>Sort: Largest amount</option>
+          <option value="vendor" ${sortBy==='vendor'?'selected':''}>Sort: Vendor A–Z</option>
+        </select>
+        ${(jobFilter || vendorFilter) ? `<button class="btn btn-sm" onclick="$('ap-filter-job').value='';$('ap-filter-vendor').value='';renderAPAgingView()">Clear Filters</button>` : ''}
+        <button class="btn btn-sm" onclick="exportAPAgingCSV()">📥 CSV</button>
+      </div>
+    </div>
+    ${filtered.length===0?'<div class="tbl-empty">No outstanding AP matching the current filters.</div>':
+    `<div class="tbl-wrap"><table>
+      <thead><tr>
+        <th>Job</th>
+        <th>Vendor</th>
+        <th>Invoice #</th>
+        <th>PO #</th>
+        <th>Cost Code</th>
+        <th>Inv Date</th>
+        <th>Due</th>
+        <th class="text-right">Outstanding</th>
+        <th>Aging</th>
+        <th>Due In</th>
+        <th>Status</th>
+        <th style="width:80px"></th>
+      </tr></thead><tbody>
+    ${filtered.map(r=>{
+      const pu = r.pu;
+      const invDateStr = pu.invoice_date || '—';
+      const dueDateStr = r.dueDate ? r.dueDate.toISOString().split('T')[0] : '—';
+      return `<tr style="${rowHighlight(r)};cursor:pointer" onclick="if(event.target.tagName!=='BUTTON')editPurchase('${pu.id}','${pu.project_id||''}')">
+        <td style="font-size:11px;color:var(--gray600)">${r.proj?r.proj.job_number+' — '+r.proj.job_name:'—'}</td>
+        <td class="font-600">${pu.vendor||'—'}</td>
+        <td class="mono" style="font-size:11px">${pu.invoice_number||'—'}</td>
+        <td class="mono" style="font-size:11px;color:var(--navy)">${pu.po_number||'—'}</td>
+        <td style="font-size:10px"><span style="background:var(--gray100);padding:2px 5px;border-radius:4px">${pu.cost_code||'—'}</span>${r.ccDesc?`<div style="font-size:9px;color:var(--gray600);margin-top:1px">${r.ccDesc}</div>`:''}</td>
+        <td style="font-size:11px">${invDateStr}</td>
+        <td style="font-size:11px">${dueDateStr}</td>
+        <td class="text-right font-600">${fmt(r.outstanding)}</td>
+        <td>${ageBadge(r.daysAging)}</td>
+        <td style="font-size:11px">${dueBadge(r.daysToDue)}</td>
+        <td><span class="badge b-${(pu.status||'pending').toLowerCase()}">${pu.status}</span></td>
+        <td>
+          <button class="btn btn-sm" style="color:var(--green);border-color:var(--green)" onclick="event.stopPropagation();openPayPurchase('${pu.id}',${r.outstanding})">💰 Pay</button>
+        </td>
+      </tr>`;
+    }).join('')}
+    </tbody>
+    <tfoot>
+      <tr style="background:var(--navy)">
+        <td colspan="7" style="padding:8px 10px;color:#fff;font-weight:600">TOTAL OUTSTANDING (${filtered.length} invoices)</td>
+        <td class="text-right" style="padding:8px 10px;color:#fff;font-weight:600">${fmt(total)}</td>
+        <td colspan="4"></td>
+      </tr>
+    </tfoot>
+    </table></div>`}
   </div>`;
+}
+
+function exportAPAgingCSV() {
+  const rows = window._apRows || [];
+  const projMap = window._apProjMap || {};
+  const jobFilter = ($('ap-filter-job') || {}).value || '';
+  const vendorFilter = ($('ap-filter-vendor') || {}).value || '';
+  const filtered = rows.filter(r => {
+    if (jobFilter && r.pu.project_id !== jobFilter) return false;
+    if (vendorFilter && r.pu.vendor !== vendorFilter) return false;
+    return true;
+  });
+  const headers = ['Job','Vendor','Invoice #','PO #','Cost Code','Invoice Date','Due Date','Amount','Paid','Outstanding','Aging (days)','Days to Due','Status'];
+  const csvEsc = s => {
+    if (s == null) return '';
+    const str = String(s);
+    if (str.includes(',') || str.includes('"') || str.includes('\n')) return '"' + str.replace(/"/g, '""') + '"';
+    return str;
+  };
+  const csvRows = filtered.map(r => {
+    const pu = r.pu;
+    return [
+      r.proj ? r.proj.job_number+' — '+r.proj.job_name : '',
+      pu.vendor || '',
+      pu.invoice_number || '',
+      pu.po_number || '',
+      pu.cost_code || '',
+      pu.invoice_date || '',
+      r.dueDate ? r.dueDate.toISOString().split('T')[0] : '',
+      parseFloat(pu.po_amount||0).toFixed(2),
+      parseFloat(pu.paid_amount||0).toFixed(2),
+      r.outstanding.toFixed(2),
+      r.daysAging,
+      r.daysToDue,
+      pu.status || '',
+    ].map(csvEsc).join(',');
+  });
+  const csv = [headers.join(','), ...csvRows].join('\n');
+  const blob = new Blob([csv], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `ap-aging-${today()}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  toast('CSV exported');
+}
+
+// ── PAY PURCHASE MODAL ───────────────────────────────────────────────
+async function openPayPurchase(purchaseId, defaultAmount) {
+  const { data: pu } = await db.from('purchases').select('*').eq('id', purchaseId).single();
+  if (!pu) { toast('Could not load invoice','error'); return; }
+  $('pay-pu-id').value = purchaseId;
+  $('pay-pu-vendor').textContent = pu.vendor || '—';
+  $('pay-pu-invnum').textContent = pu.invoice_number || '—';
+  $('pay-pu-amount').textContent = fmt(pu.po_amount);
+  $('pay-pu-prevpaid').textContent = fmt(pu.paid_amount);
+  $('pay-pu-balance').textContent = fmt(defaultAmount);
+  $('pay-date').value = today();
+  $('pay-amount').value = defaultAmount.toFixed(2);
+  $('pay-amount').dataset.balance = defaultAmount;
+  $('pay-ref').value = '';
+  $('pay-method').value = 'Check';
+  openModal('modal-pay');
+}
+
+async function savePayPurchase() {
+  const purchaseId = $('pay-pu-id').value;
+  const payDate = $('pay-date').value;
+  const payAmount = parseFloat($('pay-amount').value) || 0;
+  const ref = $('pay-ref').value.trim();
+  const method = $('pay-method').value;
+  if (!payDate) { toast('Enter a payment date','error'); return; }
+  if (payAmount <= 0) { toast('Enter a payment amount','error'); return; }
+
+  const { data: pu } = await db.from('purchases').select('*').eq('id', purchaseId).single();
+  if (!pu) { toast('Could not load invoice','error'); return; }
+
+  const newPaid = parseFloat(pu.paid_amount||0) + payAmount;
+  const isFullyPaid = newPaid >= parseFloat(pu.po_amount||0) - 0.01;
+
+  // Append a payment line to notes (audit trail)
+  const noteLine = `[Paid ${payAmount.toFixed(2)} on ${payDate} via ${method}${ref?' ref '+ref:''}]`;
+  const newNotes = pu.notes ? pu.notes + ' ' + noteLine : noteLine;
+
+  await db.from('purchases').update({
+    paid_amount: newPaid,
+    status: isFullyPaid ? 'Paid' : pu.status,
+    payment_reference: ref || pu.payment_reference,
+    notes: newNotes,
+  }).eq('id', purchaseId);
+
+  // Cascade to PO if linked
+  if (pu.po_id) {
+    const { data: po } = await db.from('purchase_orders').select('*').eq('id', pu.po_id).single();
+    if (po) {
+      const newPOPaid = parseFloat(po.paid_amount||0) + payAmount;
+      await db.from('purchase_orders').update({
+        paid_amount: newPOPaid,
+        status: newPOPaid >= parseFloat(po.committed_amount||0)-0.01 ? 'Closed' : 'Invoiced',
+      }).eq('id', pu.po_id);
+    }
+  }
+
+  closeModal('modal-pay');
+  toast(`Payment of ${fmt(payAmount)} recorded`);
+  render();
 }
 
 // ── MASTER PO LOG ────────────────────────────────────────────────────

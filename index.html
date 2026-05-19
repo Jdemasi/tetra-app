@@ -1580,35 +1580,43 @@ async function readInvoiceFile(input) {
     // Parse the extracted text
     const inv = parseInvoiceText(fullText, file.name);
 
-    // Fill in form fields
-    if (inv.vendor) $('pu-vendor').value = inv.vendor;
-    if (inv.invoice_number) $('pu-inv').value = inv.invoice_number;
-    if (inv.invoice_date) $('pu-date').value = inv.invoice_date;
-    if (inv.amount_due) $('pu-amount').value = inv.amount_due;
-    if (inv.payment_terms) $('pu-terms').value = inv.payment_terms;
-    if (inv.is_paid) {
-      $('pu-paid').value = inv.amount_paid || inv.amount_due;
-      $('pu-status').value = 'Paid';
-    }
+    // Are we editing an existing invoice? If so, DO NOT overwrite the user's
+    // existing field values — the parser might be wrong (especially for OCR'd
+    // scans like Ideal). The upload is for attaching a file, not re-importing
+    // data. Show a different banner reflecting this.
+    const isEditMode = !!$('modal-purchase').dataset.editId;
 
-    // Try to match PO in dropdown
-    if (inv.po_number) {
-      const poSel = $('pu-po-select');
-      const matchingPO = Array.from(poSel.options).find(opt =>
-        opt.dataset.num === String(inv.po_number)
-      );
-      if (matchingPO) {
-        poSel.value = matchingPO.value;
-        if (matchingPO.dataset.vendor && !inv.vendor) $('pu-vendor').value = matchingPO.dataset.vendor;
-        if (matchingPO.dataset.code) {
-          $('pu-cost-code').value = matchingPO.dataset.code;
+    if (!isEditMode) {
+      // New invoice — auto-fill from parser
+      if (inv.vendor) $('pu-vendor').value = inv.vendor;
+      if (inv.invoice_number) $('pu-inv').value = inv.invoice_number;
+      if (inv.invoice_date) $('pu-date').value = inv.invoice_date;
+      if (inv.amount_due) $('pu-amount').value = inv.amount_due;
+      if (inv.payment_terms) $('pu-terms').value = inv.payment_terms;
+      if (inv.is_paid) {
+        $('pu-paid').value = inv.amount_paid || inv.amount_due;
+        $('pu-status').value = 'Paid';
+      }
+
+      // Try to match PO in dropdown
+      if (inv.po_number) {
+        const poSel = $('pu-po-select');
+        const matchingPO = Array.from(poSel.options).find(opt =>
+          opt.dataset.num === String(inv.po_number)
+        );
+        if (matchingPO) {
+          poSel.value = matchingPO.value;
+          if (matchingPO.dataset.vendor && !inv.vendor) $('pu-vendor').value = matchingPO.dataset.vendor;
+          if (matchingPO.dataset.code) {
+            $('pu-cost-code').value = matchingPO.dataset.code;
+          }
         }
       }
-    }
 
-    // Try to match cost code
-    if (inv.cost_code && !inv.po_number) {
-      $('pu-cost-code').value = inv.cost_code;
+      // Try to match cost code
+      if (inv.cost_code && !inv.po_number) {
+        $('pu-cost-code').value = inv.cost_code;
+      }
     }
 
     // Show result
@@ -1621,7 +1629,13 @@ async function readInvoiceFile(input) {
       inv.is_paid && `<strong>PAID</strong>`,
     ].filter(Boolean).join(' — ');
 
-    if (fields) {
+    if (isEditMode) {
+      // Edit mode — file attaching only, fields preserved
+      status.style.background = '#F0F7FF';
+      status.style.color = 'var(--navy)';
+      const previewText = fields ? ` — Parser saw: ${fields}` : '';
+      status.innerHTML = `📎 <strong>File ready to attach</strong> — existing field values preserved.${previewText} <em>Click Save Invoice to save the attachment.</em>`;
+    } else if (fields) {
       if (usedOCR) {
         // OCR-based read — flag for extra review since accuracy is ~95% not 100%
         status.style.background = '#FFF8E1';

@@ -322,6 +322,7 @@ select.finp{cursor:pointer}
       <div class="fgroup"><label class="flbl">Terms (Days)</label><input class="finp" type="number" id="inv-terms" value="30"></div>
       <div class="fgroup"><label class="flbl">Status</label><select class="finp" id="inv-status"><option>Pending</option><option>Paid</option><option>Partial</option><option>Overdue</option></select></div>
     </div>
+    <div id="inv-attach-container"></div>
     <div class="form-actions">
       <button class="btn" onclick="closeModal('modal-invoice')">Cancel</button>
       <button class="btn btn-red" onclick="saveInvoice()">Save Invoice</button>
@@ -439,6 +440,7 @@ select.finp{cursor:pointer}
         </select>
       </div>
     </div>
+    <div id="po-attach-container"></div>
     <div class="form-actions">
       <button class="btn" onclick="closeModal('modal-po')">Cancel</button>
       <button class="btn btn-red" onclick="savePO()">Save PO</button>
@@ -515,6 +517,7 @@ select.finp{cursor:pointer}
       <div class="fgroup"><label class="flbl">Status</label><select class="finp" id="co-status"><option>Pending</option><option>Submitted</option><option>Approved</option><option>Rejected</option></select></div>
       <div class="fgroup"><label class="flbl">Date Approved</label><input class="finp" type="date" id="co-approved"></div>
     </div>
+    <div id="co-attach-container"></div>
     <div class="form-actions">
       <button class="btn" onclick="closeModal('modal-co')">Cancel</button>
       <button class="btn btn-red" onclick="saveCO()">Save Change Order</button>
@@ -607,18 +610,25 @@ function jobFolderName(project) {
   return name ? `${num}-${name}` : num;
 }
 
-// Build a path for an invoice file:
-//   "<job-folder>/invoices/<vendor>_<invnum>_<timestamp>.<ext>"
-// Timestamp prevents collisions if you upload the same invoice twice.
-function buildInvoicePath(project, vendor, invoiceNumber, originalFilename) {
+// Build a path for a stored file. Used by all categories:
+//   "<job-folder>/<category>/<key>_<timestamp>.<ext>"
+// Example: "2601-Edenwald/purchase_orders/PO-2002_Nefco_1715812345.pdf"
+//
+// category: "invoices", "purchase_orders", "contracts", "pay_apps", "change_orders"
+// keyParts: array of strings to use in the filename (e.g. [vendor, invnum])
+function buildFilePath(project, category, keyParts, originalFilename) {
   const folder = jobFolderName(project);
-  const v = sanitizeForPath(vendor || 'vendor');
-  const inv = sanitizeForPath(invoiceNumber || 'noinv');
+  const cat = sanitizeForPath(category || 'misc');
+  const key = (keyParts || []).filter(Boolean).map(sanitizeForPath).join('_') || 'file';
   const ts = Date.now();
-  // Preserve original extension
   const extMatch = (originalFilename||'').match(/\.([a-zA-Z0-9]+)$/);
   const ext = extMatch ? extMatch[1].toLowerCase() : 'pdf';
-  return `${folder}/invoices/${v}_${inv}_${ts}.${ext}`;
+  return `${folder}/${cat}/${key}_${ts}.${ext}`;
+}
+
+// Keep the old name as a backward-compat wrapper for the invoice flow
+function buildInvoicePath(project, vendor, invoiceNumber, originalFilename) {
+  return buildFilePath(project, 'invoices', [vendor, invoiceNumber], originalFilename);
 }
 
 // Upload a file (Blob or File) to a given path. Returns the path on success.
@@ -654,6 +664,142 @@ async function openStoredFile(path) {
   const url = await getFileURL(path);
   if (!url) { toast('Could not open file','error'); return; }
   window.open(url, '_blank');
+}
+
+// ── REUSABLE FILE ATTACHMENT UI ─────────────────────────────────────
+// Builds an upload zone + indicator HTML that any modal can embed.
+// fieldId: a unique ID prefix (e.g. "po-attach", "pa-attach")
+//
+// The component manages:
+//   - File input (hidden, clicked via upload zone)
+//   - Pending file state on the modal element
+//   - Indicator showing currently-attached file (if any)
+//
+// The modal's save function reads the pending file via getPendingAttachFile(modalEl)
+// and uploads it before/after the DB save.
+function renderAttachUI(fieldId, options = {}) {
+  const label = options.label || 'Attach Document — PDF, JPG, or PNG';
+  const sublabel = options.sublabel || 'File is saved with the record';
+  return `
+    <div id="${fieldId}-zone" style="border:2px dashed var(--border);border-radius:10px;padding:12px;margin-bottom:8px;text-align:center;cursor:pointer;transition:.2s"
+         onclick="document.getElementById('${fieldId}-input').click()"
+         onmouseenter="this.style.borderColor='var(--red)'"
+         onmouseleave="this.style.borderColor='var(--border)'">
+      <div style="font-size:20px;margin-bottom:2px">📎</div>
+      <div style="font-size:12px;font-weight:600;color:var(--navy)">${label}</div>
+      <div style="font-size:10px;color:var(--gray600);margin-top:2px">${sublabel}</div>
+      <input type="file" id="${fieldId}-input" accept=".pdf,.PDF,.jpg,.jpeg,.JPG,.JPEG,.png,.PNG" style="display:none"
+             onchange="handleAttachUpload(this, '${fieldId}')">
+    </div>
+    <div id="${fieldId}-indicator" style="display:none;padding:6px 10px;border-radius:6px;font-size:11px;margin-bottom:10px"></div>
+  `;
+}
+
+// Called when user picks a file in any of the generic attach zones
+function handleAttachUpload(input, fieldId) {
+  const file = input.files[0];
+  if (!file) return;
+  // Find the parent modal so we can stash the pending file on it
+  const modal = input.closest('.modal-bg');
+  if (!modal) return;
+  modal._pendingAttachFile = file;
+  modal._pendingAttachFileName = file.name;
+  // Show selected file in the indicator
+  const indicator = document.getElementById(fieldId + '-indicator');
+  if (indicator) {
+    indicator.style.display = 'block';
+    indicator.style.background = '#F0F7FF';
+    indicator.style.color = 'var(--navy)';
+    indicator.style.border = '1px solid #D0E1F5';
+    indicator.innerHTML = `📎 <strong>Ready to attach:</strong> ${file.name} <em>(saved when you click Save)</em>`;
+  }
+}
+
+// Set the indicator to "currently attached" mode (called when opening a modal with an existing file)
+function setAttachIndicatorAttached(fieldId, pdfPath) {
+  const indicator = document.getElementById(fieldId + '-indicator');
+  if (!indicator) return;
+  indicator.style.display = 'block';
+  indicator.style.background = '#F0F7FF';
+  indicator.style.color = 'var(--navy)';
+  indicator.style.border = '1px solid #D0E1F5';
+  indicator.innerHTML = `📎 <strong>File attached.</strong> <a href="#" onclick="event.preventDefault();openStoredFile('${pdfPath}')" style="color:var(--navy);text-decoration:underline">View file</a> &nbsp;|&nbsp; Upload a new file above to replace it.`;
+}
+
+// Set the indicator to "no file" mode
+function setAttachIndicatorEmpty(fieldId) {
+  const indicator = document.getElementById(fieldId + '-indicator');
+  if (!indicator) return;
+  indicator.style.display = 'block';
+  indicator.style.background = 'var(--gray50)';
+  indicator.style.color = 'var(--gray600)';
+  indicator.style.border = '1px solid var(--border)';
+  indicator.innerHTML = '📎 No file attached. Upload one above to attach.';
+}
+
+// Hide the indicator entirely (for fresh new-entry modals)
+function resetAttachIndicator(fieldId) {
+  const indicator = document.getElementById(fieldId + '-indicator');
+  if (indicator) indicator.style.display = 'none';
+  const input = document.getElementById(fieldId + '-input');
+  if (input) input.value = '';
+}
+
+// Get the pending file from a modal element (for save functions)
+function getPendingAttachFile(modal) {
+  return {
+    file: modal._pendingAttachFile,
+    name: modal._pendingAttachFileName,
+  };
+}
+
+// Clear pending file state (call after save or cancel)
+function clearPendingAttachFile(modal) {
+  delete modal._pendingAttachFile;
+  delete modal._pendingAttachFileName;
+}
+
+// ── CONTRACT DOCUMENT (one per project) ─────────────────────────────
+async function uploadContractPDF(input, projectId) {
+  const file = input.files[0];
+  if (!file) return;
+  try {
+    toast('Uploading contract...');
+    const project = state.projects?.find(p => p.id === projectId);
+    const path = buildFilePath(project, 'contracts', ['Contract'], file.name);
+    const uploadedPath = await uploadFile(file, path);
+    // Delete old contract if present
+    const { data: existing } = await db.from('projects').select('contract_pdf_url').eq('id', projectId).single();
+    if (existing?.contract_pdf_url) await deleteFile(existing.contract_pdf_url);
+    // Save new path
+    const { error } = await db.from('projects').update({ contract_pdf_url: uploadedPath }).eq('id', projectId);
+    if (error) {
+      await deleteFile(uploadedPath);
+      throw error;
+    }
+    // Update local state
+    const proj = state.projects.find(p=>p.id===projectId);
+    if (proj) proj.contract_pdf_url = uploadedPath;
+    if (state.activeProject?.id === projectId) state.activeProject.contract_pdf_url = uploadedPath;
+    toast('Contract uploaded');
+    render();
+  } catch (e) {
+    console.error('Contract upload failed:', e);
+    toast('Upload failed: '+(e.message||'unknown'), 'error');
+  } finally {
+    input.value = '';
+  }
+}
+
+async function removeContractPDF(projectId, pdfUrl) {
+  if (!confirm('Remove the contract document from this project? The file will be deleted from storage.')) return;
+  if (pdfUrl) await deleteFile(pdfUrl);
+  await db.from('projects').update({ contract_pdf_url: null }).eq('id', projectId);
+  const proj = state.projects.find(p=>p.id===projectId);
+  if (proj) proj.contract_pdf_url = null;
+  if (state.activeProject?.id === projectId) state.activeProject.contract_pdf_url = null;
+  toast('Contract removed');
+  render();
 }
 
 let state = {
@@ -997,6 +1143,23 @@ async function renderJobSetup() {
         <span style="color:var(--gray600);font-weight:600">Total Budget</span>
         <span class="font-600">${fmt(Object.values(budMap).reduce((s,v)=>s+parseFloat(v||0),0))}</span>
       </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-hd">
+      <div class="card-title"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>Contract Documents</div>
+    </div>
+    <p class="section-sub">Upload a combined PDF of the prime contract, GC PO, and SOV submitted to the client. One file per job.</p>
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      ${p.contract_pdf_url ? `
+        <button class="btn" onclick="openStoredFile('${p.contract_pdf_url}')">📎 View Contract Package</button>
+        <button class="btn btn-sm" onclick="document.getElementById('contract-file-input').click()">Replace</button>
+        <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="removeContractPDF('${p.id}','${p.contract_pdf_url}')">Remove</button>
+      ` : `
+        <button class="btn btn-red" onclick="document.getElementById('contract-file-input').click()">📎 Upload Contract Package</button>
+        <span style="font-size:11px;color:var(--gray600)">No contract attached yet</span>
+      `}
+      <input type="file" id="contract-file-input" accept=".pdf,.PDF,.jpg,.jpeg,.JPG,.JPEG,.png,.PNG" style="display:none" onchange="uploadContractPDF(this,'${p.id}')">
     </div>
   </div>
   <div class="card">
@@ -3076,7 +3239,7 @@ async function renderInvoices() {
     </div>
     <div class="tbl-wrap">
     ${state.invoices.length === 0 ? '<div class="tbl-empty">No invoices yet. Click "New Invoice" to create one.</div>' :
-    `<table><thead><tr><th>Invoice #</th><th>Date</th><th>Description</th><th class="text-right">Billed</th><th class="text-right">Retainage</th><th class="text-right">Net Due</th><th class="text-right">Paid</th><th>Due Date</th><th>Status</th></tr></thead><tbody>
+    `<table><thead><tr><th>Invoice #</th><th>Date</th><th>Description</th><th class="text-right">Billed</th><th class="text-right">Retainage</th><th class="text-right">Net Due</th><th class="text-right">Paid</th><th>Due Date</th><th>Status</th><th style="width:110px"></th></tr></thead><tbody>
     ${state.invoices.map(i => {
       const ret = parseFloat(i.billed_amount||0)*(parseFloat(i.retainage_pct||0)/100);
       const net = parseFloat(i.billed_amount||0)-ret;
@@ -3096,6 +3259,11 @@ async function renderInvoices() {
         <td class="text-right">${fmt(i.paid_amount)}</td>
         <td>${dueStr}${daysStr}</td>
         <td><span class="badge b-${(i.status||'pending').toLowerCase()}">${i.status}</span></td>
+        <td><div style="display:flex;gap:4px">
+          ${i.pdf_url?`<button class="btn btn-sm" title="View attached pay app" onclick="openStoredFile('${i.pdf_url}')">📎</button>`:''}
+          <button class="btn btn-sm" onclick="openEditInvoice('${i.id}','${p.id}')">Edit</button>
+          <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deleteClientInvoice('${i.id}','${p.id}')">✕</button>
+        </div></td>
       </tr>`;
     }).join('')}
     </tbody></table>`}
@@ -3125,12 +3293,53 @@ function openNewInvoice(projectId) {
   $('inv-terms').value = 30;
   $('inv-status').value = 'Pending';
   $('modal-invoice').dataset.projectId = projectId;
+  $('modal-invoice').dataset.editId = '';
+  document.querySelector('#modal-invoice .modal-title').textContent = 'New Invoice to Client';
+  // Attach UI
+  $('inv-attach-container').innerHTML = renderAttachUI('inv-attach', { label: 'Attach Pay App PDF (G702/G703 + backup, combined)' });
+  clearPendingAttachFile($('modal-invoice'));
+  resetAttachIndicator('inv-attach');
   openModal('modal-invoice');
+}
+
+async function openEditInvoice(invoiceId, projectId) {
+  const { data: i } = await db.from('invoices').select('*').eq('id', invoiceId).single();
+  if (!i) { toast('Could not load invoice','error'); return; }
+  $('inv-num').value = i.invoice_number||'';
+  $('inv-date').value = i.invoice_date||'';
+  $('inv-desc').value = i.description||'';
+  $('inv-billed').value = i.billed_amount||'';
+  $('inv-ret-pct').value = i.retainage_pct ?? 10;
+  $('inv-paid').value = i.paid_amount||'';
+  $('inv-terms').value = i.terms_days||30;
+  $('inv-status').value = i.status||'Pending';
+  calcInvPreview();
+  $('modal-invoice').dataset.projectId = projectId;
+  $('modal-invoice').dataset.editId = invoiceId;
+  document.querySelector('#modal-invoice .modal-title').textContent = 'Edit Invoice — ' + (i.invoice_number||'');
+  // Attach UI
+  $('inv-attach-container').innerHTML = renderAttachUI('inv-attach', { label: 'Attach Pay App PDF (G702/G703 + backup, combined)' });
+  clearPendingAttachFile($('modal-invoice'));
+  if (i.pdf_url) setAttachIndicatorAttached('inv-attach', i.pdf_url);
+  else setAttachIndicatorEmpty('inv-attach');
+  openModal('modal-invoice');
+}
+
+async function deleteClientInvoice(invoiceId, projectId) {
+  if (!confirm('Delete this client invoice / pay app? This cannot be undone.')) return;
+  // Delete file too if attached
+  const { data: i } = await db.from('invoices').select('pdf_url').eq('id', invoiceId).single();
+  if (i?.pdf_url) await deleteFile(i.pdf_url);
+  const { error } = await db.from('invoices').delete().eq('id', invoiceId);
+  if (error) { toast('Error: '+error.message,'error'); return; }
+  toast('Invoice deleted');
+  render();
 }
 
 async function saveInvoice() {
   const projectId = $('modal-invoice').dataset.projectId;
-  const { error } = await db.from('invoices').insert({
+  const editId = $('modal-invoice').dataset.editId;
+  const invData = {
     project_id: projectId,
     invoice_number: $('inv-num').value,
     invoice_date: $('inv-date').value,
@@ -3140,10 +3349,43 @@ async function saveInvoice() {
     paid_amount: parseFloat($('inv-paid').value)||0,
     terms_days: parseInt($('inv-terms').value)||30,
     status: $('inv-status').value,
-  });
-  if (error) { toast('Error: '+error.message,'error'); return; }
+  };
+
+  // Pending file upload
+  const { file: pendingFile, name: pendingName } = getPendingAttachFile($('modal-invoice'));
+  let pdfPath = null;
+  if (pendingFile) {
+    try {
+      const project = state.projects?.find(p => p.id === projectId);
+      const path = buildFilePath(project, 'pay_apps', [invData.invoice_number || 'PayApp'], pendingName);
+      pdfPath = await uploadFile(pendingFile, path);
+      invData.pdf_url = pdfPath;
+    } catch (e) {
+      console.error('Pay app file upload failed:', e);
+      toast('Invoice will save, but file upload failed: '+(e.message||'unknown'), 'error');
+    }
+  }
+
+  let error;
+  if (editId) {
+    if (pdfPath) {
+      const { data: oldRow } = await db.from('invoices').select('pdf_url').eq('id', editId).single();
+      if (oldRow?.pdf_url) await deleteFile(oldRow.pdf_url);
+    } else {
+      delete invData.pdf_url;
+    }
+    ({error} = await db.from('invoices').update(invData).eq('id', editId));
+  } else {
+    ({error} = await db.from('invoices').insert(invData));
+  }
+  if (error) {
+    if (pdfPath) await deleteFile(pdfPath);
+    toast('Error: '+error.message,'error');
+    return;
+  }
+  clearPendingAttachFile($('modal-invoice'));
   closeModal('modal-invoice');
-  toast('Invoice saved');
+  toast(editId ? 'Invoice updated' : 'Invoice saved');
   render();
 }
 
@@ -3336,7 +3578,7 @@ async function renderChangeOrders() {
     <p class="section-sub">Track all change orders — approved COs update the adjusted contract value.</p>
     <div class="tbl-wrap">
     ${(cos||[]).length === 0 ? '<div class="tbl-empty">No change orders yet. Click "+ New CO" to add one.</div>' :
-    `<table><thead><tr><th>CO #</th><th>Description</th><th>Type</th><th class="text-right">Amount</th><th>Submitted</th><th>Approved</th><th>Status</th></tr></thead><tbody>
+    `<table><thead><tr><th>CO #</th><th>Description</th><th>Type</th><th class="text-right">Amount</th><th>Submitted</th><th>Approved</th><th>Status</th><th style="width:110px"></th></tr></thead><tbody>
     ${(cos||[]).map(c=>`<tr>
       <td class="mono font-600">${c.co_number||'—'}</td>
       <td>${c.description||'—'}</td>
@@ -3346,6 +3588,11 @@ async function renderChangeOrders() {
       <td>${c.approved_date||'—'}</td>
       <td><span class="badge b-${(c.status||'pending').toLowerCase().replace('/','').replace(' ','')}
         ${c.status==='Approved'?'b-paid':c.status==='Rejected'?'b-overdue':c.status==='Submitted'?'b-partial':'b-pending'}">${c.status}</span></td>
+      <td><div style="display:flex;gap:4px">
+        ${c.pdf_url?`<button class="btn btn-sm" title="View CO doc" onclick="openStoredFile('${c.pdf_url}')">📎</button>`:''}
+        <button class="btn btn-sm" onclick="openEditCO('${c.id}','${p.id}')">Edit</button>
+        <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deleteCO('${c.id}','${p.id}')">✕</button>
+      </div></td>
     </tr>`).join('')}
     </tbody></table>`}
     </div>
@@ -3359,18 +3606,66 @@ function openNewCO(projectId) {
   $('co-status').value = 'Pending';
   $('co-type').value = '';
   $('modal-co').dataset.projectId = projectId;
+  $('modal-co').dataset.editId = '';
+  document.querySelector('#modal-co .modal-title').textContent = 'Log Change Order';
+  // Attach UI
+  $('co-attach-container').innerHTML = renderAttachUI('co-attach', { label: 'Attach CO documents (optional)' });
+  clearPendingAttachFile($('modal-co'));
+  resetAttachIndicator('co-attach');
   openModal('modal-co');
+}
+
+async function openEditCO(coId, projectId) {
+  const { data: c } = await db.from('change_orders').select('*').eq('id', coId).single();
+  if (!c) { toast('Could not load CO','error'); return; }
+  $('co-num').value = c.co_number||'';
+  $('co-date').value = c.submitted_date||'';
+  $('co-desc').value = c.description||'';
+  $('co-amount').value = c.amount||'';
+  $('co-type').value = c.co_type||'';
+  $('co-status').value = c.status||'Pending';
+  $('co-approved').value = c.approved_date||'';
+  $('modal-co').dataset.projectId = projectId;
+  $('modal-co').dataset.editId = coId;
+  document.querySelector('#modal-co .modal-title').textContent = 'Edit Change Order — ' + (c.co_number||'');
+  // Attach UI
+  $('co-attach-container').innerHTML = renderAttachUI('co-attach', { label: 'Attach CO documents (optional)' });
+  clearPendingAttachFile($('modal-co'));
+  if (c.pdf_url) setAttachIndicatorAttached('co-attach', c.pdf_url);
+  else setAttachIndicatorEmpty('co-attach');
+  openModal('modal-co');
+}
+
+async function deleteCO(coId, projectId) {
+  if (!confirm('Delete this change order? This cannot be undone.')) return;
+  const { data: c } = await db.from('change_orders').select('pdf_url, status, amount').eq('id', coId).single();
+  if (c?.pdf_url) await deleteFile(c.pdf_url);
+  // If this CO was approved, subtract its amount from the project's approved_cos
+  if (c?.status === 'Approved' && c.amount) {
+    const proj = state.projects.find(p=>p.id===projectId);
+    if (proj) {
+      const newTotal = parseFloat(proj.approved_cos||0) - parseFloat(c.amount);
+      await db.from('projects').update({approved_cos: newTotal}).eq('id', projectId);
+      proj.approved_cos = newTotal;
+      if (state.activeProject?.id === projectId) state.activeProject.approved_cos = newTotal;
+    }
+  }
+  const { error } = await db.from('change_orders').delete().eq('id', coId);
+  if (error) { toast('Error: '+error.message,'error'); return; }
+  toast('Change order deleted');
+  render();
 }
 
 async function saveCO() {
   const projectId = $('modal-co').dataset.projectId;
+  const editId = $('modal-co').dataset.editId;
   const desc = $('co-desc').value.trim();
   if (!desc) { toast('Enter a description','error'); return; }
   const status = $('co-status').value;
   const amount = parseFloat($('co-amount').value)||0;
   const coNum = $('co-num').value;
 
-  const { data: savedCO, error } = await db.from('change_orders').insert({
+  const coData = {
     project_id: projectId,
     co_number: coNum,
     description: desc,
@@ -3379,49 +3674,94 @@ async function saveCO() {
     status,
     submitted_date: $('co-date').value||null,
     approved_date: $('co-approved').value||null,
-  }).select().single();
+  };
 
-  if (error) { toast('Error: '+error.message,'error'); return; }
-
-  // If approved — update contract total AND offer to add SOV line item
-  if (status === 'Approved' && amount !== 0) {
-    const proj = state.projects.find(p=>p.id===projectId);
-    if (proj) {
-      const newTotal = parseFloat(proj.approved_cos||0) + amount;
-      await db.from('projects').update({approved_cos: newTotal}).eq('id', projectId);
-      // Update local state immediately so Job Setup reflects new value
-      proj.approved_cos = newTotal;
-      if (state.activeProject?.id === projectId) {
-        state.activeProject.approved_cos = newTotal;
-      }
+  // Pending file upload
+  const { file: pendingFile, name: pendingName } = getPendingAttachFile($('modal-co'));
+  let pdfPath = null;
+  if (pendingFile) {
+    try {
+      const project = state.projects?.find(p => p.id === projectId);
+      const path = buildFilePath(project, 'change_orders', ['CO-'+coNum], pendingName);
+      pdfPath = await uploadFile(pendingFile, path);
+      coData.pdf_url = pdfPath;
+    } catch (e) {
+      console.error('CO file upload failed:', e);
+      toast('CO will save, but file upload failed: '+(e.message||'unknown'), 'error');
     }
-
-    // Ask if they want to add a SOV line item for this CO
-    const addToSOV = confirm(
-      'CO #'+coNum+' approved for '+fmt(amount)+'.\n\n' +
-      'Add this to the Schedule of Values so it appears on the next Pay Application?\n\n' +
-      'Click OK to add to SOV, Cancel to skip.'
-    );
-    if (addToSOV) {
-      // Get next sort order
-      const { data: lastSOV } = await db.from('sov_line_items').select('sort_order').eq('project_id', projectId).order('sort_order', {ascending:false}).limit(1);
-      const nextSort = lastSOV?.length ? lastSOV[0].sort_order + 1 : 0;
-      await db.from('sov_line_items').insert({
-        project_id: projectId,
-        item_number: 'CO-' + coNum,
-        description: 'CO #' + coNum + ' — ' + desc,
-        scheduled_value: amount,
-        sort_order: nextSort,
-      });
-      toast('CO #'+coNum+' approved and added to SOV — will appear on next Pay App');
-    } else {
-      toast('CO #'+coNum+' approved — contract value updated');
-    }
-  } else {
-    toast('Change order saved');
   }
 
+  let savedCO = null, error = null;
+  if (editId) {
+    // For edits: get the old CO first so we can track status changes
+    const { data: oldCO } = await db.from('change_orders').select('*').eq('id', editId).single();
+    // If replacing file
+    if (pdfPath && oldCO?.pdf_url) await deleteFile(oldCO.pdf_url);
+    if (!pdfPath) delete coData.pdf_url;
+    ({error} = await db.from('change_orders').update(coData).eq('id', editId));
+
+    if (!error) {
+      // Handle status transitions that affect contract value:
+      // - was not Approved, now Approved → add amount
+      // - was Approved, now not Approved → subtract amount
+      // - both Approved but amount changed → adjust difference
+      const oldAmt = parseFloat(oldCO?.amount||0);
+      const oldStatus = oldCO?.status;
+      const newAmt = amount;
+      let delta = 0;
+      if (oldStatus !== 'Approved' && status === 'Approved') delta = newAmt;
+      else if (oldStatus === 'Approved' && status !== 'Approved') delta = -oldAmt;
+      else if (oldStatus === 'Approved' && status === 'Approved') delta = newAmt - oldAmt;
+      if (delta !== 0) {
+        const proj = state.projects.find(p=>p.id===projectId);
+        if (proj) {
+          const newTotal = parseFloat(proj.approved_cos||0) + delta;
+          await db.from('projects').update({approved_cos: newTotal}).eq('id', projectId);
+          proj.approved_cos = newTotal;
+          if (state.activeProject?.id === projectId) state.activeProject.approved_cos = newTotal;
+        }
+      }
+    }
+  } else {
+    ({data: savedCO, error} = await db.from('change_orders').insert(coData).select().single());
+
+    // First-time approved CO — update contract total AND offer to add SOV
+    if (!error && status === 'Approved' && amount !== 0) {
+      const proj = state.projects.find(p=>p.id===projectId);
+      if (proj) {
+        const newTotal = parseFloat(proj.approved_cos||0) + amount;
+        await db.from('projects').update({approved_cos: newTotal}).eq('id', projectId);
+        proj.approved_cos = newTotal;
+        if (state.activeProject?.id === projectId) state.activeProject.approved_cos = newTotal;
+      }
+      const addToSOV = confirm(
+        'CO #'+coNum+' approved for '+fmt(amount)+'.\n\n' +
+        'Add this to the Schedule of Values so it appears on the next Pay Application?\n\n' +
+        'Click OK to add to SOV, Cancel to skip.'
+      );
+      if (addToSOV) {
+        const { data: lastSOV } = await db.from('sov_line_items').select('sort_order').eq('project_id', projectId).order('sort_order', {ascending:false}).limit(1);
+        const nextSort = lastSOV?.length ? lastSOV[0].sort_order + 1 : 0;
+        await db.from('sov_line_items').insert({
+          project_id: projectId,
+          item_number: 'CO-' + coNum,
+          description: 'CO #' + coNum + ' — ' + desc,
+          scheduled_value: amount,
+          sort_order: nextSort,
+        });
+      }
+    }
+  }
+
+  if (error) {
+    if (pdfPath) await deleteFile(pdfPath);
+    toast('Error: '+error.message,'error');
+    return;
+  }
+
+  clearPendingAttachFile($('modal-co'));
   closeModal('modal-co');
+  toast(editId ? 'Change order updated' : 'Change order saved');
   render();
 }
 
@@ -4509,7 +4849,8 @@ async function renderPOs() {
           <td style="font-size:11px">${po.issue_date?po.issue_date.substring(0,10):'—'}</td>
           <td>${statusBadge(po.status)}</td>
           <td style="font-size:11px;color:var(--gray600)">${po.invoice_number||'—'}</td>
-          <td><div style="display:flex;gap:4px">
+          <td><div style="display:flex;gap:4px" onclick="event.stopPropagation()">
+            ${po.pdf_url?`<button class="btn btn-sm" title="View attached PO" onclick="openStoredFile('${po.pdf_url}')">📎</button>`:''}
             <button class="btn btn-sm" onclick="openEditPO('${po.id}')">Edit</button>
             <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deletePO('${po.id}','${p.id}')">✕</button>
           </div></td>
@@ -4635,6 +4976,10 @@ async function openNewPO(projectId) {
   $('modal-po').dataset.projectId = projectId||'';
   $('modal-po').dataset.editId = '';
   $('modal-po-title').textContent = 'New Purchase Order — ' + nextNum;
+  // Attach UI
+  $('po-attach-container').innerHTML = renderAttachUI('po-attach', { label: 'Attach PO PDF (optional)' });
+  clearPendingAttachFile($('modal-po'));
+  resetAttachIndicator('po-attach');
   openModal('modal-po');
 }
 
@@ -4688,6 +5033,11 @@ async function openEditPO(poId) {
   $('modal-po').dataset.projectId = po.project_id;
   $('modal-po').dataset.editId = poId;
   $('modal-po-title').textContent = 'Edit PO — ' + po.po_number;
+  // Attach UI
+  $('po-attach-container').innerHTML = renderAttachUI('po-attach', { label: 'Attach PO PDF (optional)' });
+  clearPendingAttachFile($('modal-po'));
+  if (po.pdf_url) setAttachIndicatorAttached('po-attach', po.pdf_url);
+  else setAttachIndicatorEmpty('po-attach');
   openModal('modal-po');
 }
 
@@ -4715,13 +5065,40 @@ async function savePO() {
     notes: isShop ? 'Shop/Overhead' : null,
   };
 
+  // Pending file upload (Phase 2 storage)
+  const { file: pendingFile, name: pendingName } = getPendingAttachFile($('modal-po'));
+  let pdfPath = null;
+  if (pendingFile) {
+    try {
+      const project = state.projects?.find(p => p.id === projectId);
+      const path = buildFilePath(project, 'purchase_orders', ['PO-'+poData.po_number, vendor], pendingName);
+      pdfPath = await uploadFile(pendingFile, path);
+      poData.pdf_url = pdfPath;
+    } catch (e) {
+      console.error('PO file upload failed:', e);
+      toast('PO will save, but file upload failed: '+(e.message||'unknown'), 'error');
+    }
+  }
+
   let error;
   if (editId) {
+    // If replacing file, delete the old one
+    if (pdfPath) {
+      const { data: oldRow } = await db.from('purchase_orders').select('pdf_url').eq('id', editId).single();
+      if (oldRow?.pdf_url) await deleteFile(oldRow.pdf_url);
+    } else {
+      delete poData.pdf_url;  // preserve existing pdf_url if no new file
+    }
     ({error} = await db.from('purchase_orders').update(poData).eq('id', editId));
   } else {
     ({error} = await db.from('purchase_orders').insert(poData));
   }
-  if (error) { toast('Error: '+error.message, 'error'); return; }
+  if (error) {
+    if (pdfPath) await deleteFile(pdfPath);
+    toast('Error: '+error.message, 'error');
+    return;
+  }
+  clearPendingAttachFile($('modal-po'));
   closeModal('modal-po');
   toast(editId ? 'PO updated' : 'PO '+poData.po_number+' created');
   render();
@@ -5277,7 +5654,8 @@ async function renderMasterPOs() {
           <td style="font-size:11px">${po.issue_date?po.issue_date.substring(0,10):'—'}</td>
           <td>${statusBadge(po.status)}</td>
           <td style="font-size:11px;color:var(--gray600)">${po.invoice_number||'—'}</td>
-          <td><div style="display:flex;gap:4px">
+          <td><div style="display:flex;gap:4px" onclick="event.stopPropagation()">
+            ${po.pdf_url?`<button class="btn btn-sm" title="View attached PO" onclick="openStoredFile('${po.pdf_url}')">📎</button>`:''}
             <button class="btn btn-sm" onclick="openEditPO('${po.id}')">Edit</button>
             <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deletePO('${po.id}',null)">✕</button>
           </div></td>

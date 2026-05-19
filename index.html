@@ -2058,6 +2058,8 @@ async function readInvoiceFile(input) {
     const knownPOs = (state.allPOs || state.projectPOs || []).map(po => String(po.po_number)).filter(Boolean);
     const inv = parseInvoiceText(fullText, file.name, knownPOs);
     console.log('Parser result:', inv, 'Confidence:', inv._confidence);
+    // Stash on modal so savePurchase can use vendor info to pre-fill new-vendor modal
+    $('modal-purchase')._lastParserResult = inv;
 
     // Are we editing an existing invoice? If so, DO NOT overwrite the user's
     // existing field values — the parser might be wrong (especially for OCR'd
@@ -2497,6 +2499,68 @@ function step_paymentReceipt(text, result) {
   }
 }
 
+// ── STRATEGY 13: VENDOR CONTACT INFO (phone, email, address) ────────
+// Pulls structured vendor info from anywhere in the document. Used to
+// pre-fill the vendor creation modal when a new vendor is detected.
+function step_vendorContact(rawText, result) {
+  // Phone — match common US formats. Skip if it's labeled FAX
+  const phonePatterns = [
+    /\((\d{3})\)\s*(\d{3})[\-\s\.](\d{4})/,
+    /\b(\d{3})[\-\.\s](\d{3})[\-\.\s](\d{4})\b/,
+  ];
+  // Find all phone matches, skip ones near "FAX" label
+  for (const pat of phonePatterns) {
+    const matches = [...rawText.matchAll(new RegExp(pat.source, 'g'))];
+    for (const m of matches) {
+      const idx = m.index;
+      const before = rawText.substring(Math.max(0, idx-8), idx).toUpperCase();
+      if (before.includes('FAX')) continue;  // skip fax numbers
+      const formatted = `(${m[1]}) ${m[2]}-${m[3]}`;
+      upd(result, 'vendor_phone', formatted, CONF.MED_HIGH, 'phone-pattern');
+      break;
+    }
+    if (result.vendor_phone) break;
+  }
+
+  // Email — standard email pattern
+  const emailMatch = rawText.match(/\b([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})\b/);
+  if (emailMatch) {
+    const email = emailMatch[1].toLowerCase();
+    if (!email.includes('myaccount') && !email.includes('example.com') && !email.includes('tetramech')) {
+      upd(result, 'vendor_email', email, CONF.MED_HIGH, 'email-pattern');
+    }
+  }
+
+  // Address — multiple addresses usually appear on invoices (vendor + bill-to + ship-to).
+  // We try to find one that ISN'T our company's address (Tetra Mechanical / Greenvale / etc).
+  // Anti-signals: addresses near "TETRA", "BILL TO", "SHIP TO", "SOLD TO", or our zip codes.
+  const lines = rawText.split(/\n/).map(l => l.trim()).filter(Boolean);
+  const cityStatePattern = /^(.+?)\s+([A-Z]{2})\s+(\d{5})(?:-\d{4})?$/;
+  const isOurAddress = (block) => {
+    const upper = block.toUpperCase();
+    return upper.includes('TETRA') || upper.includes('GREENVALE') || upper.includes('11548')
+        || upper.includes('PLAZA ROAD');
+  };
+  const candidates = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(cityStatePattern);
+    if (m) {
+      const prevLine = i > 0 ? lines[i-1] : '';
+      if (/^\d+\s+\w+/.test(prevLine)) {
+        const fullAddress = `${prevLine}, ${m[1].trim()}, ${m[2]} ${m[3]}`;
+        candidates.push({ addr: fullAddress, index: i });
+      }
+    }
+  }
+  // Pick first address that isn't ours; if all addresses are ours, skip
+  for (const c of candidates) {
+    if (!isOurAddress(c.addr)) {
+      upd(result, 'vendor_address', c.addr, CONF.MED_HIGH, 'address-block');
+      break;
+    }
+  }
+}
+
 // ────────────────────────────────────────────────────────────────────
 // PIPELINE ORCHESTRATOR
 // ────────────────────────────────────────────────────────────────────
@@ -2519,6 +2583,7 @@ function parseInvoiceText(text, filename, knownPOs) {
   step_largestCurrency(t, result);
   step_paymentTerms(t, result);
   step_paymentReceipt(t, result);
+  step_vendorContact(text, result);  // Use RAW text with newlines for address parsing
 
   // Flatten to the shape the rest of the code expects.
   // Also stash confidence map under _confidence so the banner can show it.
@@ -2573,6 +2638,7 @@ async function openNewPurchase(projectId) {
   // Clear any stale file state from previous use
   delete $('modal-purchase')._pendingFile;
   delete $('modal-purchase')._pendingFileName;
+  delete $('modal-purchase')._lastParserResult;
   // Reset upload UI
   $('pu-ai-status').style.display = 'none';
   $('pu-ai-status').innerHTML = '';
@@ -2757,10 +2823,14 @@ async function savePurchase() {
     toast('Error: '+error.message,'error'); return;
   }
 
+  // Capture parser result before closing the modal (it stashes _lastParserResult)
+  const parserResult = $('modal-purchase')._lastParserResult;
+
   // Clean up modal state
   delete $('modal-purchase').dataset.editId;
   delete $('modal-purchase')._pendingFile;
   delete $('modal-purchase')._pendingFileName;
+  delete $('modal-purchase')._lastParserResult;
   closeModal('modal-purchase');
   toast(editId ? 'Invoice updated' : 'Invoice logged');
 
@@ -2772,10 +2842,23 @@ async function savePurchase() {
       // Fresh load in case state.vendors is stale
       const { data: dbVendors } = await db.from('vendors').select('name').ilike('name', vendorName);
       if (!dbVendors || dbVendors.length === 0) {
-        // Truly new — prompt
+        // Truly new — prompt with parser-extracted info pre-filled
+        const prefill = {
+          name: vendorName,
+          phone: parserResult?.vendor_phone || '',
+          email: parserResult?.vendor_email || '',
+          address: parserResult?.vendor_address || '',
+          payment_terms: parserResult?.payment_terms != null ? parserResult.payment_terms : 30,
+          default_cost_code: puData.cost_code || null,
+        };
         setTimeout(() => {
-          if (confirm(`"${vendorName}" is a new vendor. Add to your vendor list?\n\nThis lets you set their default cost code, payment terms, W-9 status, etc.`)) {
-            openNewVendor(vendorName);
+          const extras = [];
+          if (prefill.phone) extras.push('phone');
+          if (prefill.address) extras.push('address');
+          if (prefill.email) extras.push('email');
+          const extraNote = extras.length ? `\n\nI also extracted: ${extras.join(', ')} — these will pre-fill the vendor form.` : '';
+          if (confirm(`"${vendorName}" is a new vendor. Add to your vendor list?${extraNote}`)) {
+            openNewVendor(prefill);
           }
         }, 300);
       }
@@ -4706,27 +4789,36 @@ function populateVendorCostCodeDropdown(selected) {
     (state.costCodes||[]).map(cc => `<option value="${cc.code}" ${cc.code===selected?'selected':''}>${cc.code} — ${cc.description}</option>`).join('');
 }
 
-async function openNewVendor(prefillName) {
+async function openNewVendor(prefill) {
+  // Accept either a string (legacy: name only) or an object with multiple fields
+  if (typeof prefill === 'string') prefill = { name: prefill };
+  prefill = prefill || {};
+
   // Ensure cost codes loaded
   if (!state.costCodes?.length) {
     const { data: costCodes } = await db.from('cost_codes').select('*').order('code');
     state.costCodes = costCodes || [];
   }
-  $('ve-name').value = prefillName || '';
-  $('ve-contact').value = '';
-  $('ve-phone').value = '';
-  $('ve-email').value = '';
-  $('ve-address').value = '';
-  $('ve-terms').value = '30';
-  populateVendorCostCodeDropdown(null);
-  $('ve-1099').checked = false;
-  $('ve-w9').checked = false;
-  $('ve-notes').value = '';
+  $('ve-name').value = prefill.name || '';
+  $('ve-contact').value = prefill.contact_name || '';
+  $('ve-phone').value = prefill.phone || '';
+  $('ve-email').value = prefill.email || '';
+  $('ve-address').value = prefill.address || '';
+  $('ve-terms').value = prefill.payment_terms != null ? String(prefill.payment_terms) : '30';
+  populateVendorCostCodeDropdown(prefill.default_cost_code || null);
+  $('ve-1099').checked = !!prefill.is_1099;
+  $('ve-w9').checked = !!prefill.w9_on_file;
+  $('ve-notes').value = prefill.notes || '';
   $('ve-active').checked = true;
   $('modal-vendor').dataset.editId = '';
   document.querySelector('#modal-vendor .modal-title').textContent = 'Add Vendor';
   if ($('ve-deactivate-btn')) $('ve-deactivate-btn').style.display = 'none';
   if ($('ve-delete-btn')) $('ve-delete-btn').style.display = 'none';
+  // Show a hint if anything was prefilled from the parser
+  const fromParser = ['phone','email','address','payment_terms','default_cost_code'].some(k => prefill[k] != null && prefill[k] !== '');
+  if (fromParser) {
+    setTimeout(() => toast('Vendor info auto-filled from invoice — review and edit if needed', 'success'), 100);
+  }
   openModal('modal-vendor');
 }
 

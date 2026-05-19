@@ -145,6 +145,8 @@ select.finp{cursor:pointer}
 .text-green{color:var(--green)}.text-red{color:var(--danger)}.text-amber{color:var(--amber)}
 .font-600{font-weight:600}
 .section-sub{font-size:11px;color:var(--gray600);margin-bottom:12px}
+.quick-add-item{display:block;width:100%;text-align:left;padding:8px 12px;font-size:12px;background:none;border:none;border-radius:5px;cursor:pointer;color:var(--gray800);font-family:inherit}
+.quick-add-item:hover{background:var(--gray50);color:var(--navy)}
 </style>
 </head>
 <body>
@@ -158,7 +160,7 @@ select.finp{cursor:pointer}
     <div><div class="sb-co">Tetra Mechanical</div><div class="sb-sub">Services</div></div>
   </div>
   <div class="sb-sec">
-    <div class="sb-lbl">Company</div>
+    <div class="sb-lbl">Dashboards</div>
     <button class="sb-item active" data-view="dashboard">
       <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>Dashboard
     </button>
@@ -171,22 +173,34 @@ select.finp{cursor:pointer}
     <button class="sb-item" data-view="ap-aging">
       <svg viewBox="0 0 24 24"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>AP Aging
     </button>
+  </div>
+  <div class="sb-sec">
+    <div class="sb-lbl">Logs</div>
     <button class="sb-item" data-view="master-pos">
-      <svg viewBox="0 0 24 24"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/></svg>Master PO Log
+      <svg viewBox="0 0 24 24"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/></svg>PO Log
+    </button>
+    <button class="sb-item" data-view="master-ap">
+      <svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>AP Master (Vendor Invoices)
+    </button>
+    <button class="sb-item" data-view="master-ar">
+      <svg viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>AR Master (Pay Apps)
+    </button>
+    <button class="sb-item" data-view="master-cos">
+      <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>Change Order Log
     </button>
     <button class="sb-item" data-view="master-subs">
       <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Subcontractors
     </button>
   </div>
   <div class="sb-sec">
-    <div class="sb-lbl">Projects</div>
+    <div class="sb-lbl">Jobs</div>
     <div id="sb-projects"></div>
     <button class="sb-item" id="btn-new-project">
       <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>New Project
     </button>
   </div>
   <div class="sb-sec" style="margin-top:auto">
-    <div class="sb-lbl">System</div>
+    <div class="sb-lbl">Setup</div>
     <button class="sb-item" data-view="employees">
       <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Employees
     </button>
@@ -197,7 +211,21 @@ select.finp{cursor:pointer}
 <div class="main">
   <div class="topbar">
     <div class="breadcrumb" id="breadcrumb"><span class="cur">Company Dashboard</span></div>
-    <div class="topbar-right" id="topbar-actions"></div>
+    <div style="display:flex;align-items:center;gap:10px">
+      <!-- Quick Add — global button always available -->
+      <div style="position:relative">
+        <button class="btn btn-sm btn-red" id="quick-add-btn" onclick="toggleQuickAdd()" style="display:flex;align-items:center;gap:4px">
+          <span style="font-size:14px;line-height:1">+</span> Quick Add
+        </button>
+        <div id="quick-add-menu" style="display:none;position:absolute;top:100%;right:0;margin-top:6px;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,.1);padding:6px;min-width:200px;z-index:1000">
+          <button class="quick-add-item" onclick="quickAddPO()">📋 New PO</button>
+          <button class="quick-add-item" onclick="quickAddInvoice()">📥 Log Vendor Invoice</button>
+          <button class="quick-add-item" onclick="quickAddPayApp()">📤 Log Pay App</button>
+          <button class="quick-add-item" onclick="quickAddCO()">🔧 New Change Order</button>
+        </div>
+      </div>
+      <div class="topbar-right" id="topbar-actions"></div>
+    </div>
   </div>
   <div class="content" id="content">
     <div class="loading"><div class="spinner"></div>Loading...</div>
@@ -868,6 +896,9 @@ async function render() {
   else if (state.view === 'employees') await renderEmployees();
   else if (state.view === 'ap-aging') await renderAPAging();
   else if (state.view === 'master-pos') await renderMasterPOs();
+  else if (state.view === 'master-ap') await renderMasterAP();
+  else if (state.view === 'master-ar') await renderMasterAR();
+  else if (state.view === 'master-cos') await renderMasterCOs();
   else if (state.view === 'master-subs') await renderMasterSubs();
   else if (state.view === 'project' && state.activeProject) {
     if (!state.activeModule || state.activeModule === 'setup') await renderJobSetup();
@@ -890,7 +921,13 @@ function updateBreadcrumb() {
   if (state.view === 'dashboard') html = '<span class="cur">Company Dashboard</span>';
   else if (state.view === 'wip') html = '<span>Dashboard</span><span class="sep">/</span><span class="cur">WIP Schedule</span>';
   else if (state.view === 'ar-aging') html = '<span>Dashboard</span><span class="sep">/</span><span class="cur">AR Aging</span>';
-  else if (state.view === 'employees') html = '<span>Dashboard</span><span class="sep">/</span><span class="cur">Employees</span>';
+  else if (state.view === 'ap-aging') html = '<span>Dashboard</span><span class="sep">/</span><span class="cur">AP Aging</span>';
+  else if (state.view === 'master-pos') html = '<span>Logs</span><span class="sep">/</span><span class="cur">PO Log</span>';
+  else if (state.view === 'master-ap') html = '<span>Logs</span><span class="sep">/</span><span class="cur">AP Master — Vendor Invoices</span>';
+  else if (state.view === 'master-ar') html = '<span>Logs</span><span class="sep">/</span><span class="cur">AR Master — Pay Apps</span>';
+  else if (state.view === 'master-cos') html = '<span>Logs</span><span class="sep">/</span><span class="cur">Change Order Log</span>';
+  else if (state.view === 'master-subs') html = '<span>Logs</span><span class="sep">/</span><span class="cur">Subcontractors</span>';
+  else if (state.view === 'employees') html = '<span>Setup</span><span class="sep">/</span><span class="cur">Employees</span>';
   else if (state.view === 'project' && state.activeProject) {
     const p = state.activeProject;
     const modNames = {setup:'Job Setup',purchases:'Purchases & AP',labor:'Time & Labor',cos:'Change Orders',invoices:'Invoices & AR',payapps:'Pay Applications',phases:'Phase Breakdown',bva:'Budget vs Actual',pos:'Purchase Orders',subs:'Subcontractors',liens:'Lien Waivers',profit:'Profit & Cost Report'};
@@ -5730,6 +5767,410 @@ async function renderMasterSubs() {
 }
 
 // ── INIT ─────────────────────────────────────────────────────────────
+// ── QUICK ADD MENU ──────────────────────────────────────────────────
+function toggleQuickAdd() {
+  const menu = $('quick-add-menu');
+  menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+}
+// Close quick-add menu when clicking elsewhere
+document.addEventListener('click', (e) => {
+  const btn = $('quick-add-btn');
+  const menu = $('quick-add-menu');
+  if (!btn || !menu) return;
+  if (!btn.contains(e.target) && !menu.contains(e.target)) {
+    menu.style.display = 'none';
+  }
+});
+
+// Quick Add handlers — open master modals with the current project pre-filled
+// if the user is on a job page, otherwise just open the modal with empty job.
+function quickAddPO() {
+  $('quick-add-menu').style.display = 'none';
+  const projId = (state.activeProject && state.view === 'project') ? state.activeProject.id : null;
+  openNewPO(projId);
+}
+function quickAddInvoice() {
+  $('quick-add-menu').style.display = 'none';
+  const projId = (state.activeProject && state.view === 'project') ? state.activeProject.id : null;
+  if (projId) {
+    openNewPurchase(projId);
+  } else {
+    // Need to pick a job first — open master AP and prompt
+    if (!state.projects?.length) { toast('No projects yet — create one first','error'); return; }
+    // If only one project, use it
+    if (state.projects.length === 1) {
+      openNewPurchase(state.projects[0].id);
+    } else {
+      // Otherwise navigate to master AP page where they can use the "+ Log Invoice" button (which prompts)
+      navigate('master-ap');
+      setTimeout(() => promptForJobThenOpen('purchase'), 100);
+    }
+  }
+}
+function quickAddPayApp() {
+  $('quick-add-menu').style.display = 'none';
+  const projId = (state.activeProject && state.view === 'project') ? state.activeProject.id : null;
+  if (projId) {
+    openNewInvoice(projId);
+  } else {
+    if (!state.projects?.length) { toast('No projects yet — create one first','error'); return; }
+    if (state.projects.length === 1) {
+      openNewInvoice(state.projects[0].id);
+    } else {
+      navigate('master-ar');
+      setTimeout(() => promptForJobThenOpen('invoice'), 100);
+    }
+  }
+}
+function quickAddCO() {
+  $('quick-add-menu').style.display = 'none';
+  const projId = (state.activeProject && state.view === 'project') ? state.activeProject.id : null;
+  if (projId) {
+    openNewCO(projId);
+  } else {
+    if (!state.projects?.length) { toast('No projects yet — create one first','error'); return; }
+    if (state.projects.length === 1) {
+      openNewCO(state.projects[0].id);
+    } else {
+      navigate('master-cos');
+      setTimeout(() => promptForJobThenOpen('co'), 100);
+    }
+  }
+}
+
+// Helper: when "Quick Add" is clicked from a non-job page with multiple jobs,
+// prompt for which job before opening the modal.
+async function promptForJobThenOpen(type) {
+  const opts = state.projects.map((p,i) => `${i+1}. ${p.job_number} — ${p.job_name}`).join('\n');
+  const choice = prompt(`Which job is this for?\n\n${opts}\n\nEnter number (1-${state.projects.length}):`);
+  const idx = parseInt(choice)-1;
+  if (isNaN(idx) || idx < 0 || idx >= state.projects.length) return;
+  const proj = state.projects[idx];
+  if (type === 'purchase') openNewPurchase(proj.id);
+  else if (type === 'invoice') openNewInvoice(proj.id);
+  else if (type === 'co') openNewCO(proj.id);
+}
+
+// ── MASTER AP — All Vendor Invoices ─────────────────────────────────
+async function renderMasterAP() {
+  const [{ data: purchases }, { data: projects }, { data: costCodes }] = await Promise.all([
+    db.from('purchases').select('*').order('invoice_date', {ascending:false}),
+    db.from('projects').select('*'),
+    db.from('cost_codes').select('*'),
+  ]);
+  const projMap = {}; (projects||[]).forEach(p=>projMap[p.id]=p);
+  const ccMap = {}; (costCodes||[]).forEach(c=>ccMap[c.code]=c.description);
+  window._mapRows = (purchases||[]).map(pu => ({pu, proj: projMap[pu.project_id], ccDesc: ccMap[pu.cost_code]||''}));
+  window._mapProjMap = projMap;
+  renderMasterAPView();
+}
+
+function renderMasterAPView() {
+  const rows = window._mapRows || [];
+  const projMap = window._mapProjMap || {};
+  const jobFilter = ($('map-filter-job')||{}).value || '';
+  const vendorFilter = ($('map-filter-vendor')||{}).value || '';
+  const statusFilter = ($('map-filter-status')||{}).value || '';
+  const searchTerm = ($('map-search')||{}).value?.toLowerCase() || '';
+
+  let filtered = rows.filter(r => {
+    if (jobFilter && r.pu.project_id !== jobFilter) return false;
+    if (vendorFilter && r.pu.vendor !== vendorFilter) return false;
+    if (statusFilter && r.pu.status !== statusFilter) return false;
+    if (searchTerm) {
+      const blob = `${r.pu.vendor||''} ${r.pu.invoice_number||''} ${r.pu.po_number||''} ${r.pu.notes||''}`.toLowerCase();
+      if (!blob.includes(searchTerm)) return false;
+    }
+    return true;
+  });
+
+  const totalAmount = filtered.reduce((s,r)=>s+parseFloat(r.pu.po_amount||0),0);
+  const totalPaid = filtered.reduce((s,r)=>s+parseFloat(r.pu.paid_amount||0),0);
+  const totalOutstanding = totalAmount - totalPaid;
+
+  const allJobIds = [...new Set(rows.map(r => r.pu.project_id).filter(Boolean))];
+  const allVendors = [...new Set(rows.map(r => r.pu.vendor).filter(Boolean))].sort();
+
+  $('content').innerHTML = `
+  <div class="kgrid">
+    <div class="kcard db"><div class="klbl">Total Invoiced</div><div class="kval">${fmt(totalAmount)}</div><div class="ksub">${filtered.length} invoices</div></div>
+    <div class="kcard grn"><div class="klbl">Total Paid</div><div class="kval">${fmt(totalPaid)}</div></div>
+    <div class="kcard amb"><div class="klbl">Outstanding</div><div class="kval">${fmt(totalOutstanding)}</div></div>
+    <div class="kcard red"><div class="klbl">Vendors</div><div class="kval">${[...new Set(filtered.map(r=>r.pu.vendor))].length}</div></div>
+  </div>
+  <div class="card">
+    <div class="card-hd">
+      <div class="card-title">AP Master — All Vendor Invoices</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input class="finp" id="map-search" placeholder="Search…" oninput="renderMasterAPView()" style="font-size:11px;padding:4px 8px;width:140px;display:inline-block">
+        <select class="finp" id="map-filter-job" onchange="renderMasterAPView()" style="font-size:11px;padding:4px 8px;width:auto">
+          <option value="">All Jobs</option>
+          ${allJobIds.map(jid => {
+            const proj = projMap[jid]; const sel = jid === jobFilter ? 'selected' : '';
+            return `<option value="${jid}" ${sel}>${proj ? proj.job_number+' — '+proj.job_name : '(unknown)'}</option>`;
+          }).join('')}
+        </select>
+        <select class="finp" id="map-filter-vendor" onchange="renderMasterAPView()" style="font-size:11px;padding:4px 8px;width:auto">
+          <option value="">All Vendors</option>
+          ${allVendors.map(v => `<option value="${v}" ${v===vendorFilter?'selected':''}>${v}</option>`).join('')}
+        </select>
+        <select class="finp" id="map-filter-status" onchange="renderMasterAPView()" style="font-size:11px;padding:4px 8px;width:auto">
+          <option value="">All Statuses</option>
+          <option value="Pending" ${statusFilter==='Pending'?'selected':''}>Pending</option>
+          <option value="Approved" ${statusFilter==='Approved'?'selected':''}>Approved</option>
+          <option value="Paid" ${statusFilter==='Paid'?'selected':''}>Paid</option>
+          <option value="Overdue" ${statusFilter==='Overdue'?'selected':''}>Overdue</option>
+        </select>
+        ${(jobFilter || vendorFilter || statusFilter || searchTerm) ? `<button class="btn btn-sm" onclick="$('map-filter-job').value='';$('map-filter-vendor').value='';$('map-filter-status').value='';$('map-search').value='';renderMasterAPView()">Clear</button>` : ''}
+        <button class="btn btn-sm btn-red" onclick="quickAddInvoice()">+ Log Invoice</button>
+      </div>
+    </div>
+    ${filtered.length===0?'<div class="tbl-empty">No invoices matching the current filters.</div>':
+    `<div class="tbl-wrap"><table>
+      <thead><tr>
+        <th>Job</th><th>Vendor</th><th>Invoice #</th><th>PO #</th><th>Cost Code</th><th>Inv Date</th>
+        <th class="text-right">Amount</th><th class="text-right">Paid</th><th class="text-right">Balance</th>
+        <th>Status</th><th style="width:130px"></th>
+      </tr></thead><tbody>
+    ${filtered.map(r=>{
+      const pu = r.pu;
+      const bal = parseFloat(pu.po_amount||0) - parseFloat(pu.paid_amount||0);
+      return `<tr style="cursor:pointer" onclick="if(event.target.tagName!=='BUTTON')editPurchase('${pu.id}','${pu.project_id||''}')">
+        <td style="font-size:11px;color:var(--gray600)">${r.proj?r.proj.job_number+' — '+r.proj.job_name:'—'}</td>
+        <td class="font-600">${pu.vendor||'—'}</td>
+        <td class="mono" style="font-size:11px">${pu.invoice_number||'—'}</td>
+        <td class="mono" style="font-size:11px;color:var(--navy)">${pu.po_number||'—'}</td>
+        <td style="font-size:10px"><span style="background:var(--gray100);padding:2px 5px;border-radius:4px">${pu.cost_code||'—'}</span></td>
+        <td style="font-size:11px">${pu.invoice_date||'—'}</td>
+        <td class="text-right font-600">${fmt(pu.po_amount)}</td>
+        <td class="text-right" style="color:var(--green)">${parseFloat(pu.paid_amount||0)>0?fmt(pu.paid_amount):'—'}</td>
+        <td class="text-right font-600" style="color:${bal>0?'var(--amber)':'var(--green)'}">${bal>0?fmt(bal):'—'}</td>
+        <td><span class="badge b-${(pu.status||'pending').toLowerCase()}">${pu.status}</span></td>
+        <td><div style="display:flex;gap:4px" onclick="event.stopPropagation()">
+          ${pu.pdf_url?`<button class="btn btn-sm" title="View attached invoice" onclick="openStoredFile('${pu.pdf_url}')">📎</button>`:''}
+          ${bal>0?`<button class="btn btn-sm" style="color:var(--green);border-color:var(--green)" onclick="openPayPurchase('${pu.id}',${bal})">💰</button>`:''}
+        </div></td>
+      </tr>`;
+    }).join('')}
+    </tbody>
+    <tfoot><tr style="background:var(--navy)">
+      <td colspan="6" style="padding:8px 10px;color:#fff;font-weight:600">TOTALS (${filtered.length})</td>
+      <td class="text-right" style="padding:8px 10px;color:#fff;font-weight:600">${fmt(totalAmount)}</td>
+      <td class="text-right" style="padding:8px 10px;color:#fff;font-weight:600">${fmt(totalPaid)}</td>
+      <td class="text-right" style="padding:8px 10px;color:#fff;font-weight:600">${fmt(totalOutstanding)}</td>
+      <td colspan="2"></td>
+    </tr></tfoot>
+    </table></div>`}
+  </div>`;
+  $('topbar-actions').innerHTML = `<button class="btn btn-sm btn-red" onclick="quickAddInvoice()">+ Log Invoice</button>`;
+}
+
+// ── MASTER AR — All Client Invoices / Pay Apps ──────────────────────
+async function renderMasterAR() {
+  const [{ data: invoices }, { data: projects }] = await Promise.all([
+    db.from('invoices').select('*').order('invoice_date', {ascending:false}),
+    db.from('projects').select('*'),
+  ]);
+  const projMap = {}; (projects||[]).forEach(p=>projMap[p.id]=p);
+  window._marRows = (invoices||[]).map(i => ({i, proj: projMap[i.project_id]}));
+  window._marProjMap = projMap;
+  renderMasterARView();
+}
+
+function renderMasterARView() {
+  const rows = window._marRows || [];
+  const projMap = window._marProjMap || {};
+  const jobFilter = ($('mar-filter-job')||{}).value || '';
+  const statusFilter = ($('mar-filter-status')||{}).value || '';
+  const searchTerm = ($('mar-search')||{}).value?.toLowerCase() || '';
+
+  let filtered = rows.filter(r => {
+    if (jobFilter && r.i.project_id !== jobFilter) return false;
+    if (statusFilter && r.i.status !== statusFilter) return false;
+    if (searchTerm) {
+      const blob = `${r.i.invoice_number||''} ${r.i.description||''}`.toLowerCase();
+      if (!blob.includes(searchTerm)) return false;
+    }
+    return true;
+  });
+
+  const totalBilled = filtered.reduce((s,r)=>s+parseFloat(r.i.billed_amount||0),0);
+  const totalRet = filtered.reduce((s,r)=>s+(parseFloat(r.i.billed_amount||0)*(parseFloat(r.i.retainage_pct||0)/100)),0);
+  const totalNet = totalBilled - totalRet;
+  const totalPaid = filtered.reduce((s,r)=>s+parseFloat(r.i.paid_amount||0),0);
+  const outstanding = totalNet - totalPaid;
+
+  const allJobIds = [...new Set(rows.map(r => r.i.project_id).filter(Boolean))];
+
+  $('content').innerHTML = `
+  <div class="kgrid">
+    <div class="kcard db"><div class="klbl">Total Billed</div><div class="kval">${fmt(totalBilled)}</div><div class="ksub">${filtered.length} pay apps</div></div>
+    <div class="kcard amb"><div class="klbl">Retainage Held</div><div class="kval">${fmt(totalRet)}</div></div>
+    <div class="kcard grn"><div class="klbl">Collected</div><div class="kval">${fmt(totalPaid)}</div></div>
+    <div class="kcard red"><div class="klbl">Outstanding</div><div class="kval">${fmt(outstanding)}</div></div>
+  </div>
+  <div class="card">
+    <div class="card-hd">
+      <div class="card-title">AR Master — All Client Invoices / Pay Apps</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input class="finp" id="mar-search" placeholder="Search…" oninput="renderMasterARView()" style="font-size:11px;padding:4px 8px;width:140px">
+        <select class="finp" id="mar-filter-job" onchange="renderMasterARView()" style="font-size:11px;padding:4px 8px;width:auto">
+          <option value="">All Jobs</option>
+          ${allJobIds.map(jid => {
+            const proj = projMap[jid]; const sel = jid === jobFilter ? 'selected' : '';
+            return `<option value="${jid}" ${sel}>${proj ? proj.job_number+' — '+proj.job_name : '(unknown)'}</option>`;
+          }).join('')}
+        </select>
+        <select class="finp" id="mar-filter-status" onchange="renderMasterARView()" style="font-size:11px;padding:4px 8px;width:auto">
+          <option value="">All Statuses</option>
+          <option value="Pending" ${statusFilter==='Pending'?'selected':''}>Pending</option>
+          <option value="Paid" ${statusFilter==='Paid'?'selected':''}>Paid</option>
+          <option value="Partial" ${statusFilter==='Partial'?'selected':''}>Partial</option>
+          <option value="Overdue" ${statusFilter==='Overdue'?'selected':''}>Overdue</option>
+        </select>
+        ${(jobFilter || statusFilter || searchTerm) ? `<button class="btn btn-sm" onclick="$('mar-filter-job').value='';$('mar-filter-status').value='';$('mar-search').value='';renderMasterARView()">Clear</button>` : ''}
+        <button class="btn btn-sm btn-red" onclick="quickAddPayApp()">+ Log Pay App</button>
+      </div>
+    </div>
+    ${filtered.length===0?'<div class="tbl-empty">No pay apps matching the current filters.</div>':
+    `<div class="tbl-wrap"><table>
+      <thead><tr>
+        <th>Job</th><th>Invoice #</th><th>Date</th><th>Description</th>
+        <th class="text-right">Billed</th><th class="text-right">Retainage</th><th class="text-right">Net Due</th><th class="text-right">Paid</th>
+        <th>Status</th><th style="width:90px"></th>
+      </tr></thead><tbody>
+    ${filtered.map(r=>{
+      const i = r.i;
+      const ret = parseFloat(i.billed_amount||0)*(parseFloat(i.retainage_pct||0)/100);
+      const net = parseFloat(i.billed_amount||0)-ret;
+      return `<tr style="cursor:pointer" onclick="if(event.target.tagName!=='BUTTON')openEditInvoice('${i.id}','${i.project_id||''}')">
+        <td style="font-size:11px;color:var(--gray600)">${r.proj?r.proj.job_number+' — '+r.proj.job_name:'—'}</td>
+        <td class="mono font-600">${i.invoice_number||'—'}</td>
+        <td style="font-size:11px">${i.invoice_date||'—'}</td>
+        <td style="font-size:11px">${i.description||'—'}</td>
+        <td class="text-right font-600">${fmt(i.billed_amount)}</td>
+        <td class="text-right">${fmt(ret)}</td>
+        <td class="text-right">${fmt(net)}</td>
+        <td class="text-right" style="color:var(--green)">${fmt(i.paid_amount)}</td>
+        <td><span class="badge b-${(i.status||'pending').toLowerCase()}">${i.status}</span></td>
+        <td><div style="display:flex;gap:4px" onclick="event.stopPropagation()">
+          ${i.pdf_url?`<button class="btn btn-sm" title="View pay app" onclick="openStoredFile('${i.pdf_url}')">📎</button>`:''}
+        </div></td>
+      </tr>`;
+    }).join('')}
+    </tbody>
+    <tfoot><tr style="background:var(--navy)">
+      <td colspan="4" style="padding:8px 10px;color:#fff;font-weight:600">TOTALS (${filtered.length})</td>
+      <td class="text-right" style="padding:8px 10px;color:#fff;font-weight:600">${fmt(totalBilled)}</td>
+      <td class="text-right" style="padding:8px 10px;color:#fff;font-weight:600">${fmt(totalRet)}</td>
+      <td class="text-right" style="padding:8px 10px;color:#fff;font-weight:600">${fmt(totalNet)}</td>
+      <td class="text-right" style="padding:8px 10px;color:#fff;font-weight:600">${fmt(totalPaid)}</td>
+      <td colspan="2"></td>
+    </tr></tfoot>
+    </table></div>`}
+  </div>`;
+  $('topbar-actions').innerHTML = `<button class="btn btn-sm btn-red" onclick="quickAddPayApp()">+ Log Pay App</button>`;
+}
+
+// ── MASTER CO LOG — All Change Orders ───────────────────────────────
+async function renderMasterCOs() {
+  const [{ data: cos }, { data: projects }] = await Promise.all([
+    db.from('change_orders').select('*').order('submitted_date', {ascending:false}),
+    db.from('projects').select('*'),
+  ]);
+  const projMap = {}; (projects||[]).forEach(p=>projMap[p.id]=p);
+  window._mcoRows = (cos||[]).map(c => ({c, proj: projMap[c.project_id]}));
+  window._mcoProjMap = projMap;
+  renderMasterCOsView();
+}
+
+function renderMasterCOsView() {
+  const rows = window._mcoRows || [];
+  const projMap = window._mcoProjMap || {};
+  const jobFilter = ($('mco-filter-job')||{}).value || '';
+  const statusFilter = ($('mco-filter-status')||{}).value || '';
+  const searchTerm = ($('mco-search')||{}).value?.toLowerCase() || '';
+
+  let filtered = rows.filter(r => {
+    if (jobFilter && r.c.project_id !== jobFilter) return false;
+    if (statusFilter && r.c.status !== statusFilter) return false;
+    if (searchTerm) {
+      const blob = `${r.c.co_number||''} ${r.c.description||''} ${r.c.co_type||''}`.toLowerCase();
+      if (!blob.includes(searchTerm)) return false;
+    }
+    return true;
+  });
+
+  const approved = filtered.filter(r=>r.c.status==='Approved').reduce((s,r)=>s+parseFloat(r.c.amount||0),0);
+  const pending = filtered.filter(r=>r.c.status==='Pending'||r.c.status==='Submitted').reduce((s,r)=>s+parseFloat(r.c.amount||0),0);
+  const rejected = filtered.filter(r=>r.c.status==='Rejected').reduce((s,r)=>s+parseFloat(r.c.amount||0),0);
+  const total = approved+pending;
+
+  const allJobIds = [...new Set(rows.map(r => r.c.project_id).filter(Boolean))];
+
+  $('content').innerHTML = `
+  <div class="kgrid">
+    <div class="kcard grn"><div class="klbl">Approved COs</div><div class="kval">${fmt(approved)}</div><div class="ksub">${filtered.filter(r=>r.c.status==='Approved').length} orders</div></div>
+    <div class="kcard amb"><div class="klbl">Pending / Submitted</div><div class="kval">${fmt(pending)}</div><div class="ksub">${filtered.filter(r=>r.c.status==='Pending'||r.c.status==='Submitted').length} orders</div></div>
+    <div class="kcard red"><div class="klbl">Rejected</div><div class="kval">${fmt(rejected)}</div><div class="ksub">${filtered.filter(r=>r.c.status==='Rejected').length} orders</div></div>
+    <div class="kcard db"><div class="klbl">Total in Play</div><div class="kval">${fmt(total)}</div></div>
+  </div>
+  <div class="card">
+    <div class="card-hd">
+      <div class="card-title">Change Order Log — All Jobs</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input class="finp" id="mco-search" placeholder="Search…" oninput="renderMasterCOsView()" style="font-size:11px;padding:4px 8px;width:140px">
+        <select class="finp" id="mco-filter-job" onchange="renderMasterCOsView()" style="font-size:11px;padding:4px 8px;width:auto">
+          <option value="">All Jobs</option>
+          ${allJobIds.map(jid => {
+            const proj = projMap[jid]; const sel = jid === jobFilter ? 'selected' : '';
+            return `<option value="${jid}" ${sel}>${proj ? proj.job_number+' — '+proj.job_name : '(unknown)'}</option>`;
+          }).join('')}
+        </select>
+        <select class="finp" id="mco-filter-status" onchange="renderMasterCOsView()" style="font-size:11px;padding:4px 8px;width:auto">
+          <option value="">All Statuses</option>
+          <option value="Pending" ${statusFilter==='Pending'?'selected':''}>Pending</option>
+          <option value="Submitted" ${statusFilter==='Submitted'?'selected':''}>Submitted</option>
+          <option value="Approved" ${statusFilter==='Approved'?'selected':''}>Approved</option>
+          <option value="Rejected" ${statusFilter==='Rejected'?'selected':''}>Rejected</option>
+        </select>
+        ${(jobFilter || statusFilter || searchTerm) ? `<button class="btn btn-sm" onclick="$('mco-filter-job').value='';$('mco-filter-status').value='';$('mco-search').value='';renderMasterCOsView()">Clear</button>` : ''}
+        <button class="btn btn-sm btn-red" onclick="quickAddCO()">+ New CO</button>
+      </div>
+    </div>
+    ${filtered.length===0?'<div class="tbl-empty">No change orders matching the current filters.</div>':
+    `<div class="tbl-wrap"><table>
+      <thead><tr>
+        <th>Job</th><th>CO #</th><th>Description</th><th>Type</th><th class="text-right">Amount</th>
+        <th>Submitted</th><th>Approved</th><th>Status</th><th style="width:90px"></th>
+      </tr></thead><tbody>
+    ${filtered.map(r=>{
+      const c = r.c;
+      return `<tr style="cursor:pointer" onclick="if(event.target.tagName!=='BUTTON')openEditCO('${c.id}','${c.project_id||''}')">
+        <td style="font-size:11px;color:var(--gray600)">${r.proj?r.proj.job_number+' — '+r.proj.job_name:'—'}</td>
+        <td class="mono font-600">${c.co_number||'—'}</td>
+        <td style="font-size:11px">${c.description||'—'}</td>
+        <td style="font-size:11px">${c.co_type||'—'}</td>
+        <td class="text-right font-600 ${parseFloat(c.amount||0)<0?'text-red':'text-green'}">${fmt(c.amount)}</td>
+        <td style="font-size:11px">${c.submitted_date||'—'}</td>
+        <td style="font-size:11px">${c.approved_date||'—'}</td>
+        <td><span class="badge ${c.status==='Approved'?'b-paid':c.status==='Rejected'?'b-overdue':c.status==='Submitted'?'b-partial':'b-pending'}">${c.status}</span></td>
+        <td><div style="display:flex;gap:4px" onclick="event.stopPropagation()">
+          ${c.pdf_url?`<button class="btn btn-sm" title="View CO doc" onclick="openStoredFile('${c.pdf_url}')">📎</button>`:''}
+        </div></td>
+      </tr>`;
+    }).join('')}
+    </tbody>
+    <tfoot><tr style="background:var(--navy)">
+      <td colspan="4" style="padding:8px 10px;color:#fff;font-weight:600">TOTALS (${filtered.length})</td>
+      <td class="text-right" style="padding:8px 10px;color:#fff;font-weight:600">${fmt(filtered.reduce((s,r)=>s+parseFloat(r.c.amount||0),0))}</td>
+      <td colspan="4"></td>
+    </tr></tfoot>
+    </table></div>`}
+  </div>`;
+  $('topbar-actions').innerHTML = `<button class="btn btn-sm btn-red" onclick="quickAddCO()">+ New CO</button>`;
+}
+
 async function init() {
   const { data: projects } = await db.from('projects').select('*').order('created_at');
   state.projects = projects || [];

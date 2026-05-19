@@ -303,6 +303,19 @@ select.finp{cursor:pointer}
     <div id="pu-attach-indicator" style="display:none;padding:6px 10px;border-radius:6px;font-size:11px;margin-bottom:10px;background:#F0F7FF;color:var(--navy);border:1px solid #D0E1F5"></div>
 
     <div class="form-grid">
+      <div class="fgroup" style="grid-column:1/-1">
+        <label class="flbl">Job Assignment</label>
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+            <input type="radio" name="pu-job-type" value="job" checked onchange="togglePUJobType(this.value)"> Assign to Job
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+            <input type="radio" name="pu-job-type" value="shop" onchange="togglePUJobType(this.value)"> 🏪 Shop / Overhead (no job)
+          </label>
+        </div>
+        <select class="finp" id="pu-job-select" style="display:block"><option value="">Select job...</option></select>
+        <div id="pu-shop-label" style="display:none;padding:6px 10px;background:var(--gray50);border-radius:7px;border:1px solid var(--border);font-size:12px;color:var(--gray600)">🏪 Shop / Stock / Consumables — not tied to a job</div>
+      </div>
       <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Link to PO (optional — auto-fills vendor & cost code)</label>
         <select class="finp" id="pu-po-select"><option value="">No PO — direct invoice</option></select>
       </div>
@@ -2019,7 +2032,7 @@ async function readInvoiceFile(input) {
     console.log('Text extracted', usedOCR ? '(via OCR)' : '(via PDF.js)', ':', fullText.substring(0, 500));
 
     // Parse the extracted text — pass known PO numbers for fuzzy matching
-    const knownPOs = (state.projectPOs || []).map(po => String(po.po_number)).filter(Boolean);
+    const knownPOs = (state.allPOs || state.projectPOs || []).map(po => String(po.po_number)).filter(Boolean);
     const inv = parseInvoiceText(fullText, file.name, knownPOs);
     console.log('Parser result:', inv, 'Confidence:', inv._confidence);
 
@@ -2041,22 +2054,39 @@ async function readInvoiceFile(input) {
         $('pu-status').value = 'Paid';
       }
 
-      // Try to match PO in dropdown
+      // Try to match PO across ALL POs (not just current project's)
+      // If found, auto-set the job too — this is the key feature: upload an
+      // invoice, parser finds PO 2001, we know PO 2001 is on Edenwald,
+      // so we auto-pick Edenwald + select that PO.
       if (inv.po_number) {
-        const poSel = $('pu-po-select');
-        const matchingPO = Array.from(poSel.options).find(opt =>
-          opt.dataset.num === String(inv.po_number)
-        );
-        if (matchingPO) {
-          poSel.value = matchingPO.value;
-          if (matchingPO.dataset.vendor && !inv.vendor) $('pu-vendor').value = matchingPO.dataset.vendor;
-          if (matchingPO.dataset.code) {
-            $('pu-cost-code').value = matchingPO.dataset.code;
+        const matchedPO = (state.allPOs||[]).find(po => String(po.po_number) === String(inv.po_number));
+        if (matchedPO) {
+          // Set job assignment to the PO's project (or shop if no project)
+          const isShopPO = !matchedPO.project_id;
+          document.querySelectorAll('input[name="pu-job-type"]').forEach(r => r.checked = (r.value === 'shop') === isShopPO);
+          togglePUJobType(isShopPO ? 'shop' : 'job');
+          if (!isShopPO) $('pu-job-select').value = matchedPO.project_id;
+
+          // Reload phases + PO dropdown for the now-selected project
+          if (matchedPO.project_id) {
+            const { data: phases } = await db.from('phases').select('*').eq('project_id', matchedPO.project_id).order('sort_order');
+            state.phases = phases || [];
+            const phSel = $('pu-phase');
+            phSel.innerHTML = '<option value="">Select phase (optional)...</option>' +
+              (state.phases||[]).map(ph=>`<option value="${ph.id}">${ph.phase_name}</option>`).join('');
           }
+          const filteredPOs = (state.allPOs||[]).filter(po => isShopPO ? !po.project_id : po.project_id === matchedPO.project_id);
+          const poSel = $('pu-po-select');
+          poSel.innerHTML = '<option value="">No PO (direct invoice)</option>' +
+            filteredPOs.map(po=>`<option value="${po.id}" data-num="${po.po_number}" data-vendor="${po.vendor}" data-code="${po.cost_code||''}" data-amount="${po.committed_amount||0}">${po.po_number} — ${po.vendor} ${po.description?'('+po.description.substring(0,30)+')':''}</option>`).join('');
+          poSel.value = matchedPO.id;
+          // Pull vendor + cost code from the PO if not already filled
+          if (matchedPO.vendor && !$('pu-vendor').value) $('pu-vendor').value = matchedPO.vendor;
+          if (matchedPO.cost_code) $('pu-cost-code').value = matchedPO.cost_code;
         }
       }
 
-      // Try to match cost code
+      // Try to match cost code (only if no PO matched)
       if (inv.cost_code && !inv.po_number) {
         $('pu-cost-code').value = inv.cost_code;
       }
@@ -2529,22 +2559,63 @@ async function openNewPurchase(projectId) {
   // Hide delete button (only for edit mode)
   if ($('pu-delete-btn')) $('pu-delete-btn').style.display = 'none';
 
-  // Fetch fresh data if needed
-  if (!state.phases?.length || !state.projectPOs) {
-    const [{ data: phases }, { data: pos }, { data: costCodes }] = await Promise.all([
-      db.from('phases').select('*').eq('project_id', projectId).order('sort_order'),
-      db.from('purchase_orders').select('*').eq('project_id', projectId).order('po_number'),
-      db.from('cost_codes').select('*').order('code'),
-    ]);
-    state.phases = phases || [];
-    state.projectPOs = pos || [];
-    state.costCodes = costCodes || [];
-  }
-  // Always refresh vendors so the dropdown stays current
+  // Reset job-type toggle
+  document.querySelectorAll('input[name="pu-job-type"]').forEach(r => r.checked = r.value === 'job');
+  togglePUJobType('job');
+
+  // Always load ALL POs (across all jobs) — user might switch jobs in modal
+  // and we want a fresh complete list
+  const [{ data: allPOs }, { data: costCodes }] = await Promise.all([
+    db.from('purchase_orders').select('*').order('po_number'),
+    db.from('cost_codes').select('*').order('code'),
+  ]);
+  state.allPOs = allPOs || [];
+  state.costCodes = costCodes || [];
+  // Always refresh vendors
   if (!state.vendors?.length) {
     const { data: vendors } = await db.from('vendors').select('*').eq('approved', true).order('name');
     state.vendors = vendors || [];
   }
+
+  // Populate job dropdown (all projects)
+  const jobSel = $('pu-job-select');
+  jobSel.innerHTML = '<option value="">Select job...</option>' +
+    (state.projects||[]).map(p => `<option value="${p.id}" ${p.id===projectId?'selected':''}>${p.job_number} — ${p.job_name}</option>`).join('');
+  if (projectId) jobSel.value = projectId;
+
+  // Function to populate PO + phase dropdowns based on current job selection
+  const refreshJobBoundDropdowns = async () => {
+    const currentProjId = jobSel.value || null;
+    const isShop = document.querySelector('input[name="pu-job-type"]:checked')?.value === 'shop';
+    // POs to show: filter to current project, OR shop POs (project_id null) when in shop mode
+    const filteredPOs = (state.allPOs||[]).filter(po => {
+      if (isShop) return !po.project_id;
+      return po.project_id === currentProjId;
+    });
+    const poSel = $('pu-po-select');
+    poSel.innerHTML = '<option value="">No PO (direct invoice)</option>' +
+      filteredPOs.map(po=>`<option value="${po.id}" data-num="${po.po_number}" data-vendor="${po.vendor}" data-code="${po.cost_code||''}" data-amount="${po.committed_amount||0}">${po.po_number} — ${po.vendor} ${po.description?'('+po.description.substring(0,30)+')':''}</option>`).join('');
+    // Phases for current project
+    if (currentProjId && !isShop) {
+      const { data: phases } = await db.from('phases').select('*').eq('project_id', currentProjId).order('sort_order');
+      state.phases = phases || [];
+    } else {
+      state.phases = [];
+    }
+    const phSel = $('pu-phase');
+    if (phSel) {
+      phSel.innerHTML = '<option value="">Select phase (optional)...</option>' +
+        (state.phases||[]).map(ph=>`<option value="${ph.id}">${ph.phase_name}</option>`).join('');
+    }
+  };
+  // Update PO + phase dropdowns when job changes
+  jobSel.onchange = refreshJobBoundDropdowns;
+  // Also update when job-type toggles change
+  document.querySelectorAll('input[name="pu-job-type"]').forEach(r => {
+    r.addEventListener('change', refreshJobBoundDropdowns);
+  });
+  // Initial population
+  await refreshJobBoundDropdowns();
 
   // Populate vendor dropdown (active vendors only)
   const vSel = $('pu-vendor-select');
@@ -2555,12 +2626,8 @@ async function openNewPurchase(projectId) {
     vSel.value = '';
   }
 
-  // Populate PO dropdown
+  // PO change → auto-fill vendor/cost-code
   const poSel = $('pu-po-select');
-  poSel.innerHTML = '<option value="">No PO (direct invoice)</option>' +
-    (state.projectPOs||[]).map(po=>`<option value="${po.id}" data-num="${po.po_number}" data-vendor="${po.vendor}" data-code="${po.cost_code||''}" data-amount="${po.committed_amount||0}">${po.po_number} — ${po.vendor} ${po.description?'('+po.description.substring(0,30)+')':''}</option>`).join('');
-
-  // Auto-fill from PO selection
   poSel.onchange = () => {
     const opt = poSel.options[poSel.selectedIndex];
     if (opt.value) {
@@ -2575,18 +2642,20 @@ async function openNewPurchase(projectId) {
   ccSel.innerHTML = '<option value="">Select cost code...</option>' +
     (state.costCodes||[]).map(cc=>`<option value="${cc.code}">${cc.code} — ${cc.description}</option>`).join('');
 
-  // Populate phase dropdown
-  const phSel = $('pu-phase');
-  phSel.innerHTML = '<option value="">Select phase (optional)...</option>' +
-    (state.phases||[]).map(ph=>`<option value="${ph.id}">${ph.phase_name}</option>`).join('');
-
-  $('modal-purchase').dataset.projectId = projectId;
+  $('modal-purchase').dataset.projectId = projectId || '';
   openModal('modal-purchase');
 }
 
 async function savePurchase() {
-  const projectId = $('modal-purchase').dataset.projectId;
   const editId = $('modal-purchase').dataset.editId;
+  // Read project_id from the form (job dropdown or shop radio)
+  const isShop = document.querySelector('input[name="pu-job-type"]:checked')?.value === 'shop';
+  const projectId = isShop ? null : ($('pu-job-select')?.value || $('modal-purchase').dataset.projectId || null);
+  // Require either a job or shop selection
+  if (!isShop && !projectId) {
+    toast('Pick a job or choose Shop / Overhead','error');
+    return;
+  }
   const poSel = $('pu-po-select');
   const selectedPO = poSel.options[poSel.selectedIndex];
   const poId = poSel.value || null;
@@ -2708,21 +2777,34 @@ async function editPurchase(purchaseId, projectId) {
   const { data: pu } = await db.from('purchases').select('*').eq('id', purchaseId).single();
   if (!pu) return;
 
-  // Ensure dropdowns are populated
-  if (!state.phases?.length || !state.projectPOs) {
-    const [{ data: phases }, { data: pos }, { data: costCodes }] = await Promise.all([
-      db.from('phases').select('*').eq('project_id', projectId).order('sort_order'),
-      db.from('purchase_orders').select('*').eq('project_id', projectId).order('po_number'),
-      db.from('cost_codes').select('*').order('code'),
-    ]);
-    state.phases = phases || [];
-    state.projectPOs = pos || [];
-    state.costCodes = costCodes || [];
-  }
+  // Load all data needed for dropdowns
+  const [{ data: allPOs }, { data: costCodes }] = await Promise.all([
+    db.from('purchase_orders').select('*').order('po_number'),
+    db.from('cost_codes').select('*').order('code'),
+  ]);
+  state.allPOs = allPOs || [];
+  state.costCodes = costCodes || [];
   if (!state.vendors?.length) {
     const { data: vendors } = await db.from('vendors').select('*').eq('approved', true).order('name');
     state.vendors = vendors || [];
   }
+  // Load phases for this specific project
+  if (pu.project_id) {
+    const { data: phases } = await db.from('phases').select('*').eq('project_id', pu.project_id).order('sort_order');
+    state.phases = phases || [];
+  } else {
+    state.phases = [];
+  }
+
+  // Job assignment toggle — pick "job" or "shop" based on existing record
+  const isShop = !pu.project_id;
+  document.querySelectorAll('input[name="pu-job-type"]').forEach(r => r.checked = (r.value === 'shop') === isShop);
+  togglePUJobType(isShop ? 'shop' : 'job');
+
+  // Populate job dropdown
+  const jobSel = $('pu-job-select');
+  jobSel.innerHTML = '<option value="">Select job...</option>' +
+    (state.projects||[]).map(p => `<option value="${p.id}" ${p.id===pu.project_id?'selected':''}>${p.job_number} — ${p.job_name}</option>`).join('');
 
   // Populate vendor dropdown (active vendors only, preselect if current vendor is in the list)
   const vSel = $('pu-vendor-select');
@@ -2733,10 +2815,11 @@ async function editPurchase(purchaseId, projectId) {
       activeVendors.map(v => `<option value="${v.id}" ${matchingVendor && v.id===matchingVendor.id?'selected':''}>${v.name}</option>`).join('');
   }
 
-  // Populate PO dropdown
+  // Populate PO dropdown — filter to this project's POs (or shop POs if shop mode)
+  const filteredPOs = (state.allPOs||[]).filter(po => isShop ? !po.project_id : po.project_id === pu.project_id);
   const poSel = $('pu-po-select');
   poSel.innerHTML = '<option value="">No PO — direct invoice</option>' +
-    (state.projectPOs||[]).map(po=>`<option value="${po.id}" data-num="${po.po_number}" data-vendor="${po.vendor}" data-code="${po.cost_code||''}" data-amount="${po.committed_amount||0}">${po.po_number} — ${po.vendor}</option>`).join('');
+    filteredPOs.map(po=>`<option value="${po.id}" data-num="${po.po_number}" data-vendor="${po.vendor}" data-code="${po.cost_code||''}" data-amount="${po.committed_amount||0}">${po.po_number} — ${po.vendor}</option>`).join('');
   poSel.value = pu.po_id || '';
 
   // Populate cost code dropdown
@@ -2758,7 +2841,7 @@ async function editPurchase(purchaseId, projectId) {
   $('pu-status').value = pu.status||'Pending';
   $('pu-notes').value = pu.notes||'';
 
-  $('modal-purchase').dataset.projectId = projectId;
+  $('modal-purchase').dataset.projectId = pu.project_id || '';
   $('modal-purchase').dataset.editId = purchaseId;
   // Show delete button (this is edit mode)
   if ($('pu-delete-btn')) $('pu-delete-btn').style.display = 'inline-block';
@@ -5694,6 +5777,18 @@ function togglePOJobType(val) {
   }
 }
 
+function togglePUJobType(val) {
+  if (val === 'shop') {
+    $('pu-job-select').style.display = 'none';
+    $('pu-shop-label').style.display = 'block';
+    if ($('pu-phase')) $('pu-phase').closest('.fgroup').style.display = 'none';
+  } else {
+    $('pu-job-select').style.display = 'block';
+    $('pu-shop-label').style.display = 'none';
+    if ($('pu-phase')) $('pu-phase').closest('.fgroup').style.display = 'flex';
+  }
+}
+
 async function getNextPONumber() {
   const { data } = await db.from('purchase_orders').select('po_number').order('po_number', {ascending:false}).limit(1);
   if (data && data.length > 0) {
@@ -6574,20 +6669,9 @@ function quickAddPO() {
 function quickAddInvoice() {
   $('quick-add-menu').style.display = 'none';
   const projId = (state.activeProject && state.view === 'project') ? state.activeProject.id : null;
-  if (projId) {
-    openNewPurchase(projId);
-  } else {
-    // Need to pick a job first — open master AP and prompt
-    if (!state.projects?.length) { toast('No projects yet — create one first','error'); return; }
-    // If only one project, use it
-    if (state.projects.length === 1) {
-      openNewPurchase(state.projects[0].id);
-    } else {
-      // Otherwise navigate to master AP page where they can use the "+ Log Invoice" button (which prompts)
-      navigate('master-ap');
-      setTimeout(() => promptForJobThenOpen('purchase'), 100);
-    }
-  }
+  // Always open modal directly. User picks job (or shop) inside the modal.
+  // Uploading a PDF with a known PO# will auto-set the job.
+  openNewPurchase(projId);
 }
 function quickAddPayApp() {
   $('quick-add-menu').style.display = 'none';

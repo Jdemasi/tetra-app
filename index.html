@@ -309,9 +309,14 @@ select.finp{cursor:pointer}
       <div class="fgroup"><label class="flbl">Status</label><select class="finp" id="pu-status"><option>Pending</option><option>Approved</option><option>Paid</option><option>Overdue</option></select></div>
       <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Notes</label><input class="finp" id="pu-notes" placeholder="Optional notes"></div>
     </div>
-    <div class="form-actions">
-      <button class="btn" onclick="closeModal('modal-purchase')">Cancel</button>
-      <button class="btn btn-red" onclick="savePurchase()">Save Invoice</button>
+    <div class="form-actions" style="display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <button id="pu-delete-btn" class="btn btn-sm" style="color:var(--danger);border-color:var(--danger);display:none" onclick="deletePurchaseFromModal()">🗑 Delete</button>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn" onclick="closeModal('modal-purchase')">Cancel</button>
+        <button class="btn btn-red" onclick="savePurchase()">Save Invoice</button>
+      </div>
     </div>
   </div>
 </div>
@@ -328,9 +333,14 @@ select.finp{cursor:pointer}
       <div class="fgroup"><label class="flbl">OT 2x Hours</label><input class="finp" type="number" id="la-ot2" placeholder="0.00" step="0.25"></div>
     </div>
     <div id="la-cost-preview" style="background:var(--gray50);border-radius:8px;padding:10px;margin-bottom:12px;font-size:12px;color:var(--gray600)">Select employee to see cost preview</div>
-    <div class="form-actions">
-      <button class="btn" onclick="closeModal('modal-labor')">Cancel</button>
-      <button class="btn btn-red" onclick="saveLabor()">Save Hours</button>
+    <div class="form-actions" style="display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <button id="la-delete-btn" class="btn btn-sm" style="color:var(--danger);border-color:var(--danger);display:none" onclick="deleteLaborFromModal()">🗑 Delete</button>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn" onclick="closeModal('modal-labor')">Cancel</button>
+        <button class="btn btn-red" onclick="saveLabor()">Save Hours</button>
+      </div>
     </div>
   </div>
 </div>
@@ -351,9 +361,14 @@ select.finp{cursor:pointer}
       <div class="fgroup"><label class="flbl">Status</label><select class="finp" id="inv-status"><option>Pending</option><option>Paid</option><option>Partial</option><option>Overdue</option></select></div>
     </div>
     <div id="inv-attach-container"></div>
-    <div class="form-actions">
-      <button class="btn" onclick="closeModal('modal-invoice')">Cancel</button>
-      <button class="btn btn-red" onclick="saveInvoice()">Save Invoice</button>
+    <div class="form-actions" style="display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <button id="inv-delete-btn" class="btn btn-sm" style="color:var(--danger);border-color:var(--danger);display:none" onclick="deleteClientInvoiceFromModal()">🗑 Delete</button>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn" onclick="closeModal('modal-invoice')">Cancel</button>
+        <button class="btn btn-red" onclick="saveInvoice()">Save Invoice</button>
+      </div>
     </div>
   </div>
 </div>
@@ -469,9 +484,14 @@ select.finp{cursor:pointer}
       </div>
     </div>
     <div id="po-attach-container"></div>
-    <div class="form-actions">
-      <button class="btn" onclick="closeModal('modal-po')">Cancel</button>
-      <button class="btn btn-red" onclick="savePO()">Save PO</button>
+    <div class="form-actions" style="display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <button id="po-delete-btn" class="btn btn-sm" style="color:var(--danger);border-color:var(--danger);display:none" onclick="deletePOFromModal()">🗑 Delete</button>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn" onclick="closeModal('modal-po')">Cancel</button>
+        <button class="btn btn-red" onclick="savePO()">Save PO</button>
+      </div>
     </div>
   </div>
 </div>
@@ -546,9 +566,14 @@ select.finp{cursor:pointer}
       <div class="fgroup"><label class="flbl">Date Approved</label><input class="finp" type="date" id="co-approved"></div>
     </div>
     <div id="co-attach-container"></div>
-    <div class="form-actions">
-      <button class="btn" onclick="closeModal('modal-co')">Cancel</button>
-      <button class="btn btn-red" onclick="saveCO()">Save Change Order</button>
+    <div class="form-actions" style="display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <button id="co-delete-btn" class="btn btn-sm" style="color:var(--danger);border-color:var(--danger);display:none" onclick="deleteCOFromModal()">🗑 Delete</button>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn" onclick="closeModal('modal-co')">Cancel</button>
+        <button class="btn btn-red" onclick="saveCO()">Save Change Order</button>
+      </div>
     </div>
   </div>
 </div>
@@ -800,6 +825,93 @@ function getPendingAttachFile(modal) {
 function clearPendingAttachFile(modal) {
   delete modal._pendingAttachFile;
   delete modal._pendingAttachFileName;
+}
+
+// ── DELETE-FROM-MODAL WRAPPERS ──────────────────────────────────────
+// Each Edit modal has a Delete button bottom-left. These read the editId
+// off the modal dataset and call the existing delete functions, then
+// close the modal afterward.
+async function deletePurchaseFromModal() {
+  const id = $('modal-purchase').dataset.editId;
+  const projectId = $('modal-purchase').dataset.projectId;
+  if (!id) return;
+  if (!confirm('Delete this invoice entry? This cannot be undone.')) return;
+  // Inline delete (avoid the existing confirm which would double-prompt)
+  const { data: pu } = await db.from('purchases').select('pdf_url').eq('id', id).single();
+  if (pu?.pdf_url) await deleteFile(pu.pdf_url);
+  const { error } = await db.from('purchases').delete().eq('id', id);
+  if (error) { toast('Error: '+error.message,'error'); return; }
+  delete $('modal-purchase').dataset.editId;
+  closeModal('modal-purchase');
+  toast('Invoice deleted');
+  render();
+}
+
+async function deleteLaborFromModal() {
+  const id = $('modal-labor').dataset.editId;
+  if (!id) return;
+  if (!confirm('Delete this labor entry? This cannot be undone.')) return;
+  const { error } = await db.from('labor_entries').delete().eq('id', id);
+  if (error) { toast('Error: '+error.message,'error'); return; }
+  delete $('modal-labor').dataset.editId;
+  delete $('modal-labor').dataset.lockedRate;
+  $('la-emp').disabled = false;
+  closeModal('modal-labor');
+  toast('Labor entry deleted');
+  render();
+}
+
+async function deleteClientInvoiceFromModal() {
+  const id = $('modal-invoice').dataset.editId;
+  if (!id) return;
+  if (!confirm('Delete this client invoice / pay app? This cannot be undone.')) return;
+  const { data: i } = await db.from('invoices').select('pdf_url').eq('id', id).single();
+  if (i?.pdf_url) await deleteFile(i.pdf_url);
+  const { error } = await db.from('invoices').delete().eq('id', id);
+  if (error) { toast('Error: '+error.message,'error'); return; }
+  delete $('modal-invoice').dataset.editId;
+  closeModal('modal-invoice');
+  toast('Invoice deleted');
+  render();
+}
+
+async function deleteCOFromModal() {
+  const id = $('modal-co').dataset.editId;
+  const projectId = $('modal-co').dataset.projectId;
+  if (!id) return;
+  if (!confirm('Delete this change order? This cannot be undone.')) return;
+  const { data: c } = await db.from('change_orders').select('pdf_url, status, amount').eq('id', id).single();
+  if (c?.pdf_url) await deleteFile(c.pdf_url);
+  // If the CO was approved, subtract from project's approved_cos
+  if (c?.status === 'Approved' && c.amount) {
+    const proj = state.projects.find(p=>p.id===projectId);
+    if (proj) {
+      const newTotal = parseFloat(proj.approved_cos||0) - parseFloat(c.amount);
+      await db.from('projects').update({approved_cos: newTotal}).eq('id', projectId);
+      proj.approved_cos = newTotal;
+      if (state.activeProject?.id === projectId) state.activeProject.approved_cos = newTotal;
+    }
+  }
+  const { error } = await db.from('change_orders').delete().eq('id', id);
+  if (error) { toast('Error: '+error.message,'error'); return; }
+  delete $('modal-co').dataset.editId;
+  closeModal('modal-co');
+  toast('Change order deleted');
+  render();
+}
+
+async function deletePOFromModal() {
+  const id = $('modal-po').dataset.editId;
+  if (!id) return;
+  if (!confirm('Delete this PO? This cannot be undone.')) return;
+  const { data: po } = await db.from('purchase_orders').select('pdf_url').eq('id', id).single();
+  if (po?.pdf_url) await deleteFile(po.pdf_url);
+  const { error } = await db.from('purchase_orders').delete().eq('id', id);
+  if (error) { toast('Error: '+error.message,'error'); return; }
+  delete $('modal-po').dataset.editId;
+  closeModal('modal-po');
+  toast('PO deleted');
+  render();
 }
 
 // ── CONTRACT DOCUMENT (one per project) ─────────────────────────────
@@ -1659,7 +1771,6 @@ async function renderPurchases() {
             ${pu.pdf_url?`<button class="btn btn-sm" title="View attached invoice" onclick="openStoredFile('${pu.pdf_url}')">📎</button>`:''}
             ${balance>0?`<button class="btn btn-sm" style="color:var(--green);border-color:var(--green)" onclick="openPayPurchase('${pu.id}',${balance})">💰 Pay</button>`:''}
             <button class="btn btn-sm" onclick="editPurchase('${pu.id}','${p.id}')">Edit</button>
-            <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deletePurchase('${pu.id}','${p.id}')">✕</button>
           </div>
         </td>
       </tr>`;
@@ -2154,6 +2265,8 @@ async function openNewPurchase(projectId) {
   // Reset attach-file UI (hide "currently attached" indicator)
   const attachIndicator = $('pu-attach-indicator');
   if (attachIndicator) attachIndicator.style.display = 'none';
+  // Hide delete button (only for edit mode)
+  if ($('pu-delete-btn')) $('pu-delete-btn').style.display = 'none';
 
   // Fetch fresh data if needed
   if (!state.phases?.length || !state.projectPOs) {
@@ -2340,6 +2453,8 @@ async function editPurchase(purchaseId, projectId) {
 
   $('modal-purchase').dataset.projectId = projectId;
   $('modal-purchase').dataset.editId = purchaseId;
+  // Show delete button (this is edit mode)
+  if ($('pu-delete-btn')) $('pu-delete-btn').style.display = 'inline-block';
 
   // Clear any stale pending file from previous use
   delete $('modal-purchase')._pendingFile;
@@ -2455,7 +2570,6 @@ async function renderLabor() {
         '<td class="text-right font-600">'+fmt(cost)+'</td>' +
         '<td><div style="display:flex;gap:4px">' +
           '<button class="btn btn-sm" onclick="openEditLabor(\''+l.id+'\',\''+p.id+'\')">Edit</button>' +
-          '<button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deleteLaborEntry(\''+l.id+'\',\''+p.id+'\')">✕</button>' +
         '</div></td>' +
         '</tr>';
     }).join('')}
@@ -2493,6 +2607,7 @@ function openNewLabor(projectId) {
   // Reset modal title
   const titleEl = document.querySelector('#modal-labor .modal-title');
   if (titleEl) titleEl.textContent = 'Log Hours';
+  if ($('la-delete-btn')) $('la-delete-btn').style.display = 'none';
   openModal('modal-labor');
 }
 
@@ -2547,6 +2662,7 @@ async function openEditLabor(entryId, projectId) {
   // Update modal title to reflect edit mode
   const titleEl = document.querySelector('#modal-labor .modal-title');
   if (titleEl) titleEl.textContent = `Edit Hours (Rate locked at ${fmtD(entry.st_rate)}/hr from original entry)`;
+  if ($('la-delete-btn')) $('la-delete-btn').style.display = 'inline-block';
 
   openModal('modal-labor');
 }
@@ -3314,7 +3430,6 @@ async function renderInvoices() {
         <td><div style="display:flex;gap:4px">
           ${i.pdf_url?`<button class="btn btn-sm" title="View attached pay app" onclick="openStoredFile('${i.pdf_url}')">📎</button>`:''}
           <button class="btn btn-sm" onclick="openEditInvoice('${i.id}','${p.id}')">Edit</button>
-          <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deleteClientInvoice('${i.id}','${p.id}')">✕</button>
         </div></td>
       </tr>`;
     }).join('')}
@@ -3351,6 +3466,7 @@ function openNewInvoice(projectId) {
   $('inv-attach-container').innerHTML = renderAttachUI('inv-attach', { label: 'Attach Pay App PDF (G702/G703 + backup, combined)' });
   clearPendingAttachFile($('modal-invoice'));
   resetAttachIndicator('inv-attach');
+  if ($('inv-delete-btn')) $('inv-delete-btn').style.display = 'none';
   openModal('modal-invoice');
 }
 
@@ -3374,6 +3490,7 @@ async function openEditInvoice(invoiceId, projectId) {
   clearPendingAttachFile($('modal-invoice'));
   if (i.pdf_url) setAttachIndicatorAttached('inv-attach', i.pdf_url);
   else setAttachIndicatorEmpty('inv-attach');
+  if ($('inv-delete-btn')) $('inv-delete-btn').style.display = 'inline-block';
   openModal('modal-invoice');
 }
 
@@ -3643,7 +3760,6 @@ async function renderChangeOrders() {
       <td><div style="display:flex;gap:4px">
         ${c.pdf_url?`<button class="btn btn-sm" title="View CO doc" onclick="openStoredFile('${c.pdf_url}')">📎</button>`:''}
         <button class="btn btn-sm" onclick="openEditCO('${c.id}','${p.id}')">Edit</button>
-        <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deleteCO('${c.id}','${p.id}')">✕</button>
       </div></td>
     </tr>`).join('')}
     </tbody></table>`}
@@ -3664,6 +3780,7 @@ function openNewCO(projectId) {
   $('co-attach-container').innerHTML = renderAttachUI('co-attach', { label: 'Attach CO documents (optional)' });
   clearPendingAttachFile($('modal-co'));
   resetAttachIndicator('co-attach');
+  if ($('co-delete-btn')) $('co-delete-btn').style.display = 'none';
   openModal('modal-co');
 }
 
@@ -3685,6 +3802,7 @@ async function openEditCO(coId, projectId) {
   clearPendingAttachFile($('modal-co'));
   if (c.pdf_url) setAttachIndicatorAttached('co-attach', c.pdf_url);
   else setAttachIndicatorEmpty('co-attach');
+  if ($('co-delete-btn')) $('co-delete-btn').style.display = 'inline-block';
   openModal('modal-co');
 }
 
@@ -4904,7 +5022,6 @@ async function renderPOs() {
           <td><div style="display:flex;gap:4px" onclick="event.stopPropagation()">
             ${po.pdf_url?`<button class="btn btn-sm" title="View attached PO" onclick="openStoredFile('${po.pdf_url}')">📎</button>`:''}
             <button class="btn btn-sm" onclick="openEditPO('${po.id}')">Edit</button>
-            <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deletePO('${po.id}','${p.id}')">✕</button>
           </div></td>
         </tr>`;
       }).join('')}
@@ -5042,6 +5159,7 @@ async function openNewPO(projectId) {
   $('po-attach-container').innerHTML = renderAttachUI('po-attach', { label: 'Attach PO PDF (optional)' });
   clearPendingAttachFile($('modal-po'));
   resetAttachIndicator('po-attach');
+  if ($('po-delete-btn')) $('po-delete-btn').style.display = 'none';
   openModal('modal-po');
 }
 
@@ -5110,6 +5228,7 @@ async function openEditPO(poId) {
   clearPendingAttachFile($('modal-po'));
   if (po.pdf_url) setAttachIndicatorAttached('po-attach', po.pdf_url);
   else setAttachIndicatorEmpty('po-attach');
+  if ($('po-delete-btn')) $('po-delete-btn').style.display = 'inline-block';
   openModal('modal-po');
 }
 
@@ -5730,7 +5849,6 @@ async function renderMasterPOs() {
           <td><div style="display:flex;gap:4px" onclick="event.stopPropagation()">
             ${po.pdf_url?`<button class="btn btn-sm" title="View attached PO" onclick="openStoredFile('${po.pdf_url}')">📎</button>`:''}
             <button class="btn btn-sm" onclick="openEditPO('${po.id}')">Edit</button>
-            <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deletePO('${po.id}',null)">✕</button>
           </div></td>
         </tr>`;
       }).join('')}

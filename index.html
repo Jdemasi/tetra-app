@@ -273,9 +273,14 @@ select.finp{cursor:pointer}
       <div class="fgroup"><label class="flbl">Labor Budget ($) — auto</label><input class="finp" type="number" id="ph-budget" placeholder="0" style="background:var(--gray50)"></div>
     </div>
     <div id="ph-preview" style="background:var(--gray50);border-radius:8px;padding:8px 12px;font-size:11px;color:var(--gray600);margin-bottom:12px;display:none"></div>
-    <div class="form-actions">
-      <button class="btn" onclick="closeModal('modal-phase')">Cancel</button>
-      <button class="btn btn-red" onclick="savePhase()">Save Phase</button>
+    <div class="form-actions" style="display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <button id="ph-delete-btn" class="btn btn-sm" style="color:var(--danger);border-color:var(--danger);display:none" onclick="deletePhaseFromModal()">🗑 Delete</button>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn" onclick="closeModal('modal-phase')">Cancel</button>
+        <button class="btn btn-red" onclick="savePhase()">Save Phase</button>
+      </div>
     </div>
   </div>
 </div>
@@ -381,10 +386,21 @@ select.finp{cursor:pointer}
       <div class="fgroup"><label class="flbl">Role</label><input class="finp" id="em-role" placeholder="e.g. Journeyman"></div>
       <div class="fgroup"><label class="flbl">ST Rate ($/hr all-in)</label><input class="finp" type="number" id="em-rate" placeholder="0.00"></div>
       <div class="fgroup"><label class="flbl">Effective Date</label><input class="finp" type="date" id="em-date"></div>
+      <div class="fgroup" style="grid-column:1/-1">
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer">
+          <input type="checkbox" id="em-active" checked> Active (appears in Time & Labor dropdown)
+        </label>
+      </div>
     </div>
-    <div class="form-actions">
-      <button class="btn" onclick="closeModal('modal-employee')">Cancel</button>
-      <button class="btn btn-red" onclick="saveEmployee()">Save</button>
+    <div class="form-actions" style="display:flex;justify-content:space-between;align-items:center">
+      <div style="display:flex;gap:6px">
+        <button id="em-deactivate-btn" class="btn btn-sm" style="color:var(--amber);border-color:var(--amber);display:none" onclick="toggleEmployeeActive()">⏸ Deactivate</button>
+        <button id="em-delete-btn" class="btn btn-sm" style="color:var(--danger);border-color:var(--danger);display:none" onclick="deleteEmployeeFromModal()">🗑 Delete</button>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn" onclick="closeModal('modal-employee')">Cancel</button>
+        <button class="btn btn-red" onclick="saveEmployee()">Save</button>
+      </div>
     </div>
   </div>
 </div>
@@ -588,9 +604,14 @@ select.finp{cursor:pointer}
       <div class="fgroup" style="grid-column:span 2"><label class="flbl">Scheduled Value ($)</label><input class="finp" type="number" step="0.01" id="sov-value" placeholder="0.00"></div>
       <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Description</label><input class="finp" id="sov-desc" placeholder="e.g. Mobilization, Buildings 14 & 15"></div>
     </div>
-    <div class="form-actions">
-      <button class="btn" onclick="closeModal('modal-sov')">Cancel</button>
-      <button class="btn btn-red" onclick="saveSOVItem()">Save Line Item</button>
+    <div class="form-actions" style="display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <button id="sov-delete-btn" class="btn btn-sm" style="color:var(--danger);border-color:var(--danger);display:none" onclick="deleteSOVItemFromModal()">🗑 Delete</button>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn" onclick="closeModal('modal-sov')">Cancel</button>
+        <button class="btn btn-red" onclick="saveSOVItem()">Save Line Item</button>
+      </div>
     </div>
   </div>
 </div>
@@ -911,6 +932,29 @@ async function deletePOFromModal() {
   delete $('modal-po').dataset.editId;
   closeModal('modal-po');
   toast('PO deleted');
+  render();
+}
+
+async function deletePhaseFromModal() {
+  const id = $('modal-phase').dataset.editId;
+  if (!id) return;
+  if (!confirm('Delete this phase? Labor entries assigned to it will be unlinked. This cannot be undone.')) return;
+  const { error } = await db.from('phases').delete().eq('id', id);
+  if (error) { toast('Error: '+error.message,'error'); return; }
+  delete $('modal-phase').dataset.editId;
+  closeModal('modal-phase');
+  toast('Phase deleted');
+  render();
+}
+
+async function deleteSOVItemFromModal() {
+  const id = $('sov-id').value;
+  if (!id) return;
+  if (!confirm('Delete this SOV line item? This cannot be undone.')) return;
+  const { error } = await db.from('sov_line_items').delete().eq('id', id);
+  if (error) { toast('Error: '+error.message,'error'); return; }
+  closeModal('modal-sov');
+  toast('SOV item deleted');
   render();
 }
 
@@ -1353,7 +1397,6 @@ async function renderJobSetup() {
           '<td style="padding:8px 10px;border-bottom:1px solid var(--border)">' +
             '<div style="display:flex;gap:4px">' +
               '<button class="btn btn-sm" onclick="editPhase(\''+ph.id+'\',\''+ph.phase_name+'\',\''+ph.status+'\','+bHrs+','+phaseBud+')">Edit</button>' +
-              '<button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deletePhase(\''+ph.id+'\',\''+p.id+'\')">✕</button>' +
             '</div>' +
           '</td>' +
           '</tr>';
@@ -1448,7 +1491,6 @@ async function renderJobSetup() {
           <td class="text-right font-600">${fmt(li.scheduled_value)}</td>
           <td style="text-align:right">
             <button class="btn btn-sm" onclick="editSOVItem('${li.id}','${li.item_number}','${li.description.replace(/'/g,"\\'")}',${li.scheduled_value})">Edit</button>
-            <button class="btn btn-sm" style="color:var(--danger)" onclick="deleteSOVItem('${li.id}','${p.id}')">✕</button>
           </td>
         </tr>`;
       }).join('')}
@@ -1470,6 +1512,7 @@ function openAddSOVItem(projectId) {
   $('sov-desc').value = '';
   $('sov-value').value = '';
   $('modal-sov-title').textContent = 'Add SOV Line Item';
+  if ($('sov-delete-btn')) $('sov-delete-btn').style.display = 'none';
   openModal('modal-sov');
   // Focus the first input after the modal opens
   setTimeout(() => $('sov-item-num').focus(), 50);
@@ -1483,6 +1526,7 @@ function editSOVItem(id, itemNum, desc, val) {
   $('sov-desc').value = desc || '';
   $('sov-value').value = val || '';
   $('modal-sov-title').textContent = 'Edit SOV Line Item';
+  if ($('sov-delete-btn')) $('sov-delete-btn').style.display = 'inline-block';
   openModal('modal-sov');
   setTimeout(() => $('sov-desc').focus(), 50);
 }
@@ -1643,6 +1687,7 @@ function editPhase(phaseId, name, status, hours, budget) {
   updatePhasePreview();
   $('modal-phase').dataset.editId = phaseId;
   $('modal-phase').dataset.projectId = state.activeProject?.id;
+  if ($('ph-delete-btn')) $('ph-delete-btn').style.display = 'inline-block';
   openModal('modal-phase');
 }
 
@@ -1660,6 +1705,7 @@ function openAddPhase(projectId) {
   $('ph-preview').style.display = 'none';
   delete $('modal-phase').dataset.editId;
   $('modal-phase').dataset.projectId = projectId;
+  if ($('ph-delete-btn')) $('ph-delete-btn').style.display = 'none';
   openModal('modal-phase');
 }
 
@@ -4080,31 +4126,139 @@ async function renderARaging() {
 async function renderEmployees() {
   const { data: employees } = await db.from('employees').select('*').order('name');
   state.employees = employees || [];
+  const showInactive = $('em-show-inactive')?.checked || false;
+  const visible = (showInactive ? employees : employees.filter(e=>e.active));
   $('content').innerHTML = `
   <div class="card">
-    <div class="card-hd"><div class="card-title"><svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>Employee Roster & Rates</div>
-      <button class="btn btn-sm btn-red" onclick="openModal('modal-employee')">+ Add Employee</button>
+    <div class="card-hd">
+      <div class="card-title"><svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>Employee Roster & Rates</div>
+      <div style="display:flex;gap:10px;align-items:center">
+        <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--gray600);cursor:pointer">
+          <input type="checkbox" id="em-show-inactive" ${showInactive?'checked':''} onchange="renderEmployees()"> Show inactive
+        </label>
+        <button class="btn btn-sm btn-red" onclick="openNewEmployee()">+ Add Employee</button>
+      </div>
     </div>
-    <table><thead><tr><th>Name</th><th>Role</th><th class="text-right">ST Rate ($/hr)</th><th>Effective Date</th><th>Status</th></tr></thead><tbody>
-    ${state.employees.map(e=>`<tr>
+    <table>
+      <thead><tr><th>Name</th><th>Role</th><th class="text-right">ST Rate ($/hr)</th><th>Effective Date</th><th>Status</th><th style="width:60px"></th></tr></thead>
+      <tbody>
+    ${(visible||[]).map(e=>`<tr style="${!e.active?'opacity:.55':''}">
       <td class="font-600">${e.name}</td>
       <td>${e.role||'—'}</td>
       <td class="text-right font-600">${fmtD(e.st_rate)}</td>
       <td>${e.effective_date||'—'}</td>
       <td><span class="badge ${e.active?'b-active':'b-hold'}">${e.active?'Active':'Inactive'}</span></td>
+      <td><button class="btn btn-sm" onclick="openEditEmployee('${e.id}')">Edit</button></td>
     </tr>`).join('')}
     </tbody></table>
+    ${(visible||[]).length===0?'<div class="tbl-empty">No employees to display.</div>':''}
   </div>`;
-  $('topbar-actions').innerHTML = `<button class="btn btn-sm btn-red" onclick="openModal('modal-employee')">+ Add Employee</button>`;
+  $('topbar-actions').innerHTML = `<button class="btn btn-sm btn-red" onclick="openNewEmployee()">+ Add Employee</button>`;
+}
+
+function openNewEmployee() {
+  clearForm(['em-name','em-role','em-rate','em-date']);
+  $('em-active').checked = true;
+  $('modal-employee').dataset.editId = '';
+  document.querySelector('#modal-employee .modal-title').textContent = 'Add Employee';
+  // Hide delete/deactivate buttons (only for edit)
+  if ($('em-deactivate-btn')) $('em-deactivate-btn').style.display = 'none';
+  if ($('em-delete-btn')) $('em-delete-btn').style.display = 'none';
+  openModal('modal-employee');
+}
+
+async function openEditEmployee(employeeId) {
+  const { data: e } = await db.from('employees').select('*').eq('id', employeeId).single();
+  if (!e) { toast('Could not load employee','error'); return; }
+  $('em-name').value = e.name || '';
+  $('em-role').value = e.role || '';
+  $('em-rate').value = e.st_rate || '';
+  $('em-date').value = e.effective_date || '';
+  $('em-active').checked = !!e.active;
+  $('modal-employee').dataset.editId = employeeId;
+  document.querySelector('#modal-employee .modal-title').textContent = 'Edit Employee — ' + e.name;
+
+  // Check if this employee has any labor entries
+  const { count } = await db.from('labor_entries').select('id', {count:'exact', head:true}).eq('employee_id', employeeId);
+  const hasHistory = (count||0) > 0;
+
+  // Show Deactivate button if they're active and have history
+  // Show hard Delete button only if they have ZERO history
+  if (e.active) {
+    if ($('em-deactivate-btn')) {
+      $('em-deactivate-btn').style.display = 'inline-block';
+      $('em-deactivate-btn').textContent = '⏸ Deactivate';
+    }
+  } else {
+    if ($('em-deactivate-btn')) {
+      $('em-deactivate-btn').style.display = 'inline-block';
+      $('em-deactivate-btn').textContent = '▶ Reactivate';
+    }
+  }
+  if ($('em-delete-btn')) {
+    if (hasHistory) {
+      $('em-delete-btn').style.display = 'none';
+    } else {
+      $('em-delete-btn').style.display = 'inline-block';
+      $('em-delete-btn').title = 'No labor history — safe to permanently delete';
+    }
+  }
+
+  openModal('modal-employee');
 }
 
 async function saveEmployee() {
+  const editId = $('modal-employee').dataset.editId;
   const name = $('em-name').value.trim();
   if (!name) { toast('Enter employee name','error'); return; }
-  const { error } = await db.from('employees').insert({ name, role: $('em-role').value, st_rate: parseFloat($('em-rate').value)||0, effective_date: $('em-date').value||null, active: true });
+  const data = {
+    name,
+    role: $('em-role').value,
+    st_rate: parseFloat($('em-rate').value)||0,
+    effective_date: $('em-date').value || null,
+    active: $('em-active').checked,
+  };
+  let error;
+  if (editId) {
+    ({error} = await db.from('employees').update(data).eq('id', editId));
+  } else {
+    ({error} = await db.from('employees').insert(data));
+  }
   if (error) { toast('Error: '+error.message,'error'); return; }
+  delete $('modal-employee').dataset.editId;
   closeModal('modal-employee');
-  toast('Employee added');
+  toast(editId ? 'Employee updated' : 'Employee added');
+  render();
+}
+
+async function toggleEmployeeActive() {
+  const id = $('modal-employee').dataset.editId;
+  if (!id) return;
+  const { data: e } = await db.from('employees').select('active').eq('id', id).single();
+  const newActive = !e?.active;
+  const action = newActive ? 'reactivate' : 'deactivate';
+  if (!confirm(`${action.charAt(0).toUpperCase()+action.slice(1)} this employee? ` + (newActive ? 'They will reappear in the Time & Labor employee dropdown.' : 'They will be hidden from the Time & Labor employee dropdown. Their historical labor entries are preserved and still visible.'))) return;
+  await db.from('employees').update({active: newActive}).eq('id', id);
+  closeModal('modal-employee');
+  toast(newActive ? 'Employee reactivated' : 'Employee deactivated');
+  render();
+}
+
+async function deleteEmployeeFromModal() {
+  const id = $('modal-employee').dataset.editId;
+  if (!id) return;
+  // Double-check no history (defensive — the button should be hidden if there's history)
+  const { count } = await db.from('labor_entries').select('id', {count:'exact', head:true}).eq('employee_id', id);
+  if ((count||0) > 0) {
+    toast('Cannot delete — employee has labor history. Use Deactivate instead.', 'error');
+    return;
+  }
+  if (!confirm('Permanently delete this employee? This cannot be undone.')) return;
+  const { error } = await db.from('employees').delete().eq('id', id);
+  if (error) { toast('Error: '+error.message,'error'); return; }
+  delete $('modal-employee').dataset.editId;
+  closeModal('modal-employee');
+  toast('Employee deleted');
   render();
 }
 

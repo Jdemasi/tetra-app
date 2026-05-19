@@ -260,10 +260,11 @@ select.finp{cursor:pointer}
     <div id="pu-upload-zone" style="border:2px dashed var(--border);border-radius:10px;padding:16px;margin-bottom:14px;text-align:center;cursor:pointer;transition:.2s" onclick="triggerInvoiceUpload()" onmouseenter="this.style.borderColor='var(--red)'" onmouseleave="this.style.borderColor='var(--border)'">
       <div style="font-size:24px;margin-bottom:4px">📎</div>
       <div style="font-size:13px;font-weight:600;color:var(--navy)">Upload Invoice — PDF, JPG, or PNG</div>
-      <div style="font-size:11px;color:var(--gray600);margin-top:2px">AI reads vendor, invoice #, amount, PO # automatically. Scanned files use OCR (slower).</div>
+      <div style="font-size:11px;color:var(--gray600);margin-top:2px">AI reads vendor, invoice #, amount, PO # automatically. File is saved with the invoice record.</div>
       <input type="file" id="pu-pdf-input" accept=".pdf,.PDF,.jpg,.jpeg,.JPG,.JPEG,.png,.PNG" style="display:none" onchange="readInvoiceFile(this)">
     </div>
     <div id="pu-ai-status" style="display:none;padding:8px 12px;border-radius:7px;font-size:12px;margin-bottom:10px;background:var(--gray50)"></div>
+    <div id="pu-attach-indicator" style="display:none;padding:6px 10px;border-radius:6px;font-size:11px;margin-bottom:10px;background:#F0F7FF;color:var(--navy);border:1px solid #D0E1F5"></div>
 
     <div class="form-grid">
       <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Link to PO (optional — auto-fills vendor & cost code)</label>
@@ -578,6 +579,82 @@ const SUPA_URL = 'https://mvwsmywudyvxfunyqkxt.supabase.co';
 const SUPA_KEY = 'sb_publishable_pjOx3XexFeKRRz0ZU2Ld0Q_uDYOkHzD';
 const { createClient } = supabase;
 const db = createClient(SUPA_URL, SUPA_KEY);
+
+// ── STORAGE HELPERS ────────────────────────────────────────────────
+// Single bucket "tetra-files" organized as:
+//   <job-folder>/<category>/<filename>
+// Example: "2601-Edenwald/invoices/NIS_5196866.pdf"
+//
+// All file operations go through these helpers so the path convention
+// stays consistent and we can swap the storage backend later if needed.
+
+const STORAGE_BUCKET = 'tetra-files';
+
+// Sanitize a string for use in a file path (no slashes, no special chars)
+function sanitizeForPath(s) {
+  if (!s) return '';
+  return String(s)
+    .replace(/[^a-zA-Z0-9._-]/g, '_')  // only safe chars
+    .replace(/_+/g, '_')                // collapse multiple underscores
+    .replace(/^_+|_+$/g, '');           // trim leading/trailing
+}
+
+// Build the job folder name for a project: "2601-Edenwald"
+function jobFolderName(project) {
+  if (!project) return '_shop';  // shop/overhead bucket for null project
+  const num = sanitizeForPath(project.job_number || 'unknown');
+  const name = sanitizeForPath(project.job_name || '');
+  return name ? `${num}-${name}` : num;
+}
+
+// Build a path for an invoice file:
+//   "<job-folder>/invoices/<vendor>_<invnum>_<timestamp>.<ext>"
+// Timestamp prevents collisions if you upload the same invoice twice.
+function buildInvoicePath(project, vendor, invoiceNumber, originalFilename) {
+  const folder = jobFolderName(project);
+  const v = sanitizeForPath(vendor || 'vendor');
+  const inv = sanitizeForPath(invoiceNumber || 'noinv');
+  const ts = Date.now();
+  // Preserve original extension
+  const extMatch = (originalFilename||'').match(/\.([a-zA-Z0-9]+)$/);
+  const ext = extMatch ? extMatch[1].toLowerCase() : 'pdf';
+  return `${folder}/invoices/${v}_${inv}_${ts}.${ext}`;
+}
+
+// Upload a file (Blob or File) to a given path. Returns the path on success.
+async function uploadFile(file, path) {
+  const { data, error } = await db.storage.from(STORAGE_BUCKET).upload(path, file, {
+    cacheControl: '3600',
+    upsert: false,  // don't overwrite — paths include timestamps so collisions shouldn't happen
+    contentType: file.type || undefined,
+  });
+  if (error) throw error;
+  return data.path;
+}
+
+// Get a signed URL for viewing a file (works for private buckets).
+// Expires in 1 hour; we re-generate on demand.
+async function getFileURL(path) {
+  if (!path) return null;
+  const { data, error } = await db.storage.from(STORAGE_BUCKET).createSignedUrl(path, 3600);
+  if (error) { console.error('Signed URL error', error); return null; }
+  return data.signedUrl;
+}
+
+// Delete a file (used when replacing an attachment)
+async function deleteFile(path) {
+  if (!path) return;
+  const { error } = await db.storage.from(STORAGE_BUCKET).remove([path]);
+  if (error) console.error('Delete file error', error);
+}
+
+// Open a stored file in a new tab. Used by the 📎 view buttons.
+async function openStoredFile(path) {
+  if (!path) { toast('No file attached','error'); return; }
+  const url = await getFileURL(path);
+  if (!url) { toast('Could not open file','error'); return; }
+  window.open(url, '_blank');
+}
 
 let state = {
   view: 'dashboard',
@@ -1364,6 +1441,7 @@ async function renderPurchases() {
         <td>${statusBadge(pu.status)}</td>
         <td>
           <div style="display:flex;gap:4px">
+            ${pu.pdf_url?`<button class="btn btn-sm" title="View attached invoice" onclick="openStoredFile('${pu.pdf_url}')">📎</button>`:''}
             ${balance>0?`<button class="btn btn-sm" style="color:var(--green);border-color:var(--green)" onclick="openPayPurchase('${pu.id}',${balance})">💰 Pay</button>`:''}
             <button class="btn btn-sm" onclick="editPurchase('${pu.id}','${p.id}')">Edit</button>
             <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deletePurchase('${pu.id}','${p.id}')">✕</button>
@@ -1445,6 +1523,11 @@ async function ocrImage(blobOrFile, statusEl, label) {
 async function readInvoiceFile(input) {
   const file = input.files[0];
   if (!file) return;
+
+  // Stash the file on the modal so savePurchase can upload it to storage.
+  // This lets the same upload action handle both parsing AND attachment.
+  $('modal-purchase')._pendingFile = file;
+  $('modal-purchase')._pendingFileName = file.name;
 
   const status = $('pu-ai-status');
   status.style.display = 'block';
@@ -1833,6 +1916,16 @@ async function openNewPurchase(projectId) {
   $('pu-date').value = today();
   $('pu-status').value = 'Pending';
 
+  // Clear any stale file state from previous use
+  delete $('modal-purchase')._pendingFile;
+  delete $('modal-purchase')._pendingFileName;
+  // Reset upload UI
+  $('pu-ai-status').style.display = 'none';
+  $('pu-ai-status').innerHTML = '';
+  // Reset attach-file UI (hide "currently attached" indicator)
+  const attachIndicator = $('pu-attach-indicator');
+  if (attachIndicator) attachIndicator.style.display = 'none';
+
   // Fetch fresh data if needed
   if (!state.phases?.length || !state.projectPOs) {
     const [{ data: phases }, { data: pos }, { data: costCodes }] = await Promise.all([
@@ -1901,8 +1994,34 @@ async function savePurchase() {
     notes: $('pu-notes').value,
   };
 
+  // If there's a pending file from the upload zone, upload it to storage first.
+  // We do this BEFORE the DB insert so the pdf_url is part of the same row creation.
+  const pendingFile = $('modal-purchase')._pendingFile;
+  let pdfPath = null;
+  if (pendingFile) {
+    try {
+      // Find the project for the job folder name
+      const project = state.projects?.find(p => p.id === projectId);
+      const path = buildInvoicePath(project, puData.vendor, puData.invoice_number, $('modal-purchase')._pendingFileName);
+      pdfPath = await uploadFile(pendingFile, path);
+      puData.pdf_url = pdfPath;
+    } catch (e) {
+      console.error('File upload failed:', e);
+      // If upload fails, still save the invoice data — the user can re-attach later
+      toast('Invoice will save, but file upload failed: '+(e.message||'unknown'), 'error');
+    }
+  }
+
   let error;
   if (editId) {
+    // For edits: if a NEW file was uploaded, delete the old one first to avoid orphans
+    if (pdfPath) {
+      const { data: oldRow } = await db.from('purchases').select('pdf_url').eq('id', editId).single();
+      if (oldRow?.pdf_url) await deleteFile(oldRow.pdf_url);
+    } else {
+      // No new file — preserve the existing pdf_url, don't overwrite with null
+      delete puData.pdf_url;
+    }
     ({error} = await db.from('purchases').update(puData).eq('id', editId));
   } else {
     ({error} = await db.from('purchases').insert(puData));
@@ -1923,8 +2042,16 @@ async function savePurchase() {
     }
   }
 
-  if (error) { toast('Error: '+error.message,'error'); return; }
+  if (error) {
+    // DB save failed — clean up the storage file we just uploaded (no orphans)
+    if (pdfPath) await deleteFile(pdfPath);
+    toast('Error: '+error.message,'error'); return;
+  }
+
+  // Clean up modal state
   delete $('modal-purchase').dataset.editId;
+  delete $('modal-purchase')._pendingFile;
+  delete $('modal-purchase')._pendingFileName;
   closeModal('modal-purchase');
   toast(editId ? 'Invoice updated' : 'Invoice logged');
   render();
@@ -1984,6 +2111,25 @@ async function editPurchase(purchaseId, projectId) {
 
   $('modal-purchase').dataset.projectId = projectId;
   $('modal-purchase').dataset.editId = purchaseId;
+
+  // Clear any stale pending file from previous use
+  delete $('modal-purchase')._pendingFile;
+  delete $('modal-purchase')._pendingFileName;
+  $('pu-ai-status').style.display = 'none';
+
+  // Show existing attachment status
+  const attachIndicator = $('pu-attach-indicator');
+  if (attachIndicator) {
+    if (pu.pdf_url) {
+      attachIndicator.style.display = 'block';
+      attachIndicator.innerHTML = `📎 <strong>File attached.</strong> <a href="#" onclick="event.preventDefault();openStoredFile('${pu.pdf_url}')" style="color:var(--navy);text-decoration:underline">View file</a> &nbsp;|&nbsp; Upload a new file above to replace it.`;
+    } else {
+      attachIndicator.style.display = 'block';
+      attachIndicator.style.color = 'var(--gray600)';
+      attachIndicator.innerHTML = '📎 No file attached. Upload one above to attach.';
+    }
+  }
+
   openModal('modal-purchase');
 }
 
@@ -4896,7 +5042,7 @@ function renderAPAgingView() {
         <th>Aging</th>
         <th>Due In</th>
         <th>Status</th>
-        <th style="width:80px"></th>
+        <th style="width:130px"></th>
       </tr></thead><tbody>
     ${filtered.map(r=>{
       const pu = r.pu;
@@ -4915,7 +5061,10 @@ function renderAPAgingView() {
         <td style="font-size:11px">${dueBadge(r.daysToDue)}</td>
         <td><span class="badge b-${(pu.status||'pending').toLowerCase()}">${pu.status}</span></td>
         <td>
-          <button class="btn btn-sm" style="color:var(--green);border-color:var(--green)" onclick="event.stopPropagation();openPayPurchase('${pu.id}',${r.outstanding})">💰 Pay</button>
+          <div style="display:flex;gap:4px">
+            ${pu.pdf_url?`<button class="btn btn-sm" title="View attached invoice" onclick="event.stopPropagation();openStoredFile('${pu.pdf_url}')">📎</button>`:''}
+            <button class="btn btn-sm" style="color:var(--green);border-color:var(--green)" onclick="event.stopPropagation();openPayPurchase('${pu.id}',${r.outstanding})">💰 Pay</button>
+          </div>
         </td>
       </tr>`;
     }).join('')}

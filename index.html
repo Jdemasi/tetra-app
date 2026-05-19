@@ -603,6 +603,21 @@ select.finp{cursor:pointer}
   </div>
 </div>
 
+<div class="modal-bg" id="modal-job-picker">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-hd"><div class="modal-title">Which job is this for?</div><button class="modal-close" onclick="closeModal('modal-job-picker')">×</button></div>
+    <input type="hidden" id="job-picker-type">
+    <div class="fgroup">
+      <label class="flbl">Select Job</label>
+      <select class="finp" id="job-picker-select"></select>
+    </div>
+    <div class="form-actions">
+      <button class="btn" onclick="closeModal('modal-job-picker')">Cancel</button>
+      <button class="btn btn-red" onclick="confirmJobPicker()">Continue</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -5657,6 +5672,7 @@ async function renderMasterPOs() {
           <option>Open</option><option>Ordered</option><option>Received</option>
           <option>Invoiced</option><option>Closed</option><option>Cancelled</option>
         </select>
+        <button class="btn btn-sm btn-red" onclick="quickAddPO()">+ New PO</button>
       </div>
     </div>
     ${(pos||[]).length===0?'<div class="tbl-empty">No POs yet across any job.</div>':
@@ -5709,6 +5725,7 @@ async function renderMasterPOs() {
       </div>
     </div>
   </div>`;
+  $('topbar-actions').innerHTML = `<button class="btn btn-sm btn-red" onclick="quickAddPO()">+ New PO</button>`;
 }
 
 function filterMasterPOs() {
@@ -5787,7 +5804,13 @@ document.addEventListener('click', (e) => {
 function quickAddPO() {
   $('quick-add-menu').style.display = 'none';
   const projId = (state.activeProject && state.view === 'project') ? state.activeProject.id : null;
-  openNewPO(projId);
+  if (projId) {
+    openNewPO(projId);
+  } else {
+    // PO can be issued for Shop/Overhead too (no job), so just open with no project
+    // user can choose Shop or pick a job from inside the modal
+    openNewPO(null);
+  }
 }
 function quickAddInvoice() {
   $('quick-add-menu').style.display = 'none';
@@ -5839,16 +5862,25 @@ function quickAddCO() {
 }
 
 // Helper: when "Quick Add" is clicked from a non-job page with multiple jobs,
-// prompt for which job before opening the modal.
-async function promptForJobThenOpen(type) {
-  const opts = state.projects.map((p,i) => `${i+1}. ${p.job_number} — ${p.job_name}`).join('\n');
-  const choice = prompt(`Which job is this for?\n\n${opts}\n\nEnter number (1-${state.projects.length}):`);
-  const idx = parseInt(choice)-1;
-  if (isNaN(idx) || idx < 0 || idx >= state.projects.length) return;
-  const proj = state.projects[idx];
-  if (type === 'purchase') openNewPurchase(proj.id);
-  else if (type === 'invoice') openNewInvoice(proj.id);
-  else if (type === 'co') openNewCO(proj.id);
+// show a proper modal to pick the job before opening the entry modal.
+function promptForJobThenOpen(type) {
+  $('job-picker-type').value = type;
+  const sel = $('job-picker-select');
+  sel.innerHTML = '<option value="">Select a job...</option>' +
+    state.projects.map(p => `<option value="${p.id}">${p.job_number} — ${p.job_name}</option>`).join('');
+  openModal('modal-job-picker');
+  setTimeout(() => sel.focus(), 50);
+}
+
+function confirmJobPicker() {
+  const projId = $('job-picker-select').value;
+  const type = $('job-picker-type').value;
+  if (!projId) { toast('Pick a job first','error'); return; }
+  closeModal('modal-job-picker');
+  if (type === 'purchase') openNewPurchase(projId);
+  else if (type === 'invoice') openNewInvoice(projId);
+  else if (type === 'co') openNewCO(projId);
+  else if (type === 'po') openNewPO(projId);
 }
 
 // ── MASTER AP — All Vendor Invoices ─────────────────────────────────

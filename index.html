@@ -2237,6 +2237,13 @@ function step_AirweldRules(text, result) {
     upd(result, 'invoice_date', formatDate(header[1]), CONF.HIGH, 'airweld-header-row');
     upd(result, 'invoice_number', header[3], CONF.HIGH, 'airweld-header-row');
   }
+  // Fallback for invoice #: Airweld invoice numbers are 0-prefixed 9-10 digit
+  // numbers like 0002741593. Look for this pattern anywhere in the doc.
+  // This is a strong signature — almost nothing else in their invoices matches it.
+  if (!result.invoice_number?.value || result.invoice_number.confidence < CONF.HIGH) {
+    const m = text.match(/\b(00\d{7,8})\b/);
+    if (m) upd(result, 'invoice_number', m[1], CONF.MED_HIGH, 'airweld-invoice-signature');
+  }
   // PO number from "CUS P/O #" field — Airweld concatenates customer ref onto it
   // (e.g. "20012601270" — first 4 digits are our PO, rest is their internal ref)
   // The PO appears in the line: "0002554805-00 20012601270 NET 30 000014 JR 1"

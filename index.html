@@ -1041,12 +1041,17 @@ $('btn-new-project').addEventListener('click', () => {
 });
 
 function navigate(view, projectId=null, module=null) {
+  const prevProjectId = state.activeProject?.id;
   state.view = view;
-  state.activeProject = projectId ? state.projects.find(p=>p.id===projectId) : state.activeProject;
+  state.activeProject = projectId ? state.projects.find(p=>p.id===projectId) : (view === 'project' ? state.activeProject : null);
   state.activeModule = module;
   document.querySelectorAll('.sb-item').forEach(b => b.classList.remove('active'));
   const btn = document.querySelector(`.sb-item[data-view="${view}"]`);
   if (btn) btn.classList.add('active');
+  // Re-render the sidebar's project list so the active job expands its modules
+  // (and other jobs collapse). Skip on master pages so non-project views can
+  // still leave the previously-opened job collapsed.
+  renderSidebarProjects();
   document.querySelectorAll('.sb-mod').forEach(b => b.classList.remove('active'));
   if (module) {
     const mb = document.querySelector(`.sb-mod[data-module="${module}"]`);

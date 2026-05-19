@@ -318,7 +318,10 @@ select.finp{cursor:pointer}
       <div class="fgroup"><label class="flbl">Cost Code</label><select class="finp" id="pu-cost-code"><option value="">Select cost code...</option></select></div>
       <div class="fgroup"><label class="flbl">Phase (optional)</label><select class="finp" id="pu-phase"><option value="">Select phase...</option></select></div>
       <div class="fgroup"><label class="flbl">Invoice Amount ($)</label><input class="finp" type="number" id="pu-amount" placeholder="0.00"></div>
-      <div class="fgroup"><label class="flbl">Paid Amount ($)</label><input class="finp" type="number" id="pu-paid" placeholder="0.00 (leave blank if unpaid)"></div>
+      <div class="fgroup">
+        <label class="flbl">Paid Amount ($) <button type="button" onclick="copyInvoiceAmountToPaid()" style="background:none;border:none;color:var(--navy);font-size:10px;cursor:pointer;text-decoration:underline;padding:0;margin-left:4px">Paid in full →</button></label>
+        <input class="finp" type="number" id="pu-paid" placeholder="0.00 (leave blank if unpaid)">
+      </div>
       <div class="fgroup"><label class="flbl">Status</label><select class="finp" id="pu-status"><option>Pending</option><option>Approved</option><option>Paid</option><option>Overdue</option></select></div>
       <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Notes</label><input class="finp" id="pu-notes" placeholder="Optional notes"></div>
     </div>
@@ -2467,6 +2470,18 @@ function parseInvoiceText(text, filename, knownPOs) {
     }
   }
   return flat;
+}
+
+// Quick action: copy the Invoice Amount value to Paid Amount + mark as Paid
+function copyInvoiceAmountToPaid() {
+  const amt = $('pu-amount').value;
+  if (!amt || parseFloat(amt) === 0) {
+    toast('Enter the Invoice Amount first','error');
+    return;
+  }
+  $('pu-paid').value = amt;
+  $('pu-status').value = 'Paid';
+  toast('Marked as paid in full');
 }
 
 // Vendor selected from invoice modal dropdown — auto-fill name + defaults

@@ -4966,6 +4966,16 @@ async function getNextPONumber() {
 }
 
 async function openNewPO(projectId) {
+  // Ensure vendors and cost codes are loaded (might not be if opened from Quick Add)
+  if (!state.vendors?.length) {
+    const { data: vendors } = await db.from('vendors').select('*').eq('approved', true).order('name');
+    state.vendors = vendors || [];
+  }
+  if (!state.costCodes?.length) {
+    const { data: costCodes } = await db.from('cost_codes').select('*').order('code');
+    state.costCodes = costCodes || [];
+  }
+
   // Auto-assign next PO number
   const nextNum = await getNextPONumber();
   $('po-num').value = nextNum;
@@ -5038,6 +5048,16 @@ async function openNewPO(projectId) {
 async function openEditPO(poId) {
   const { data: po } = await db.from('purchase_orders').select('*').eq('id', poId).single();
   if (!po) return;
+
+  // Ensure vendors and cost codes are loaded
+  if (!state.vendors?.length) {
+    const { data: vendors } = await db.from('vendors').select('*').eq('approved', true).order('name');
+    state.vendors = vendors || [];
+  }
+  if (!state.costCodes?.length) {
+    const { data: costCodes } = await db.from('cost_codes').select('*').order('code');
+    state.costCodes = costCodes || [];
+  }
 
   $('po-num').value = po.po_number||'';
   $('po-num').readOnly = true;

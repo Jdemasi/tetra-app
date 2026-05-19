@@ -2015,8 +2015,10 @@ async function readInvoiceFile(input) {
 
     console.log('Text extracted', usedOCR ? '(via OCR)' : '(via PDF.js)', ':', fullText.substring(0, 500));
 
-    // Parse the extracted text
-    const inv = parseInvoiceText(fullText, file.name);
+    // Parse the extracted text — pass known PO numbers for fuzzy matching
+    const knownPOs = (state.projectPOs || []).map(po => String(po.po_number)).filter(Boolean);
+    const inv = parseInvoiceText(fullText, file.name, knownPOs);
+    console.log('Parser result:', inv, 'Confidence:', inv._confidence);
 
     // Are we editing an existing invoice? If so, DO NOT overwrite the user's
     // existing field values — the parser might be wrong (especially for OCR'd
@@ -2108,259 +2110,363 @@ async function readInvoiceFile(input) {
 // Backward compat — old onchange handler name
 const readInvoicePDF = readInvoiceFile;
 
-function parseInvoiceText(text, filename) {
-  const inv = {};
-  const t = text.replace(/\s+/g, ' ');
+// ────────────────────────────────────────────────────────────────────
+// INVOICE PARSER — PIPELINE ARCHITECTURE
+// ────────────────────────────────────────────────────────────────────
+// Every invoice goes through a sequence of strategies. Each strategy
+// extracts whatever fields it can find with a confidence score. After
+// all strategies run, the highest-confidence result per field wins.
+//
+// Adding support for a new vendor format = adding a new strategy. The
+// pipeline keeps working for everyone else.
+// ────────────────────────────────────────────────────────────────────
 
-  // ── VENDOR DETECTION ──────────────────────────────────────────────
-  const vendorMap = {
-    'national industrial supply': 'National Industrial Supply',
-    'natindllc': 'National Industrial Supply',
-    'natind': 'National Industrial Supply',
-    'nefco': 'Nefco',
-    'ideal supply': 'Ideal Supply Co.',
-    'idealsupply': 'Ideal Supply Co.',
-    'the ideal supply': 'Ideal Supply Co.',
-    'communipaw': 'Ideal Supply Co.',  // unique to Ideal's address
-    'airweld': 'Airweld',
-    'cassone': 'Cassone',
-    'united rentals': 'United Rentals',
-    'mayer malbin': 'Mayer Malbin',
-    'core & main': 'Core & Main',
-    'core and main': 'Core & Main',
-    'shaw supply': 'Shaw Supply',
-    'mobile steam': 'Mobile Steam',
-    'fw webb': 'FW Webb',
-    'f.w. webb': 'FW Webb',
-    'nefcocorp': 'Nefco',
-  };
-  for (const [key, name] of Object.entries(vendorMap)) {
-    if (t.toLowerCase().includes(key.toLowerCase())) {
-      inv.vendor = name;
-      break;
-    }
-  }
+// Confidence values used by strategies
+const CONF = {
+  HIGH: 90,       // vendor-specific exact match, anchored label found
+  MED_HIGH: 75,   // labeled value, well-known pattern
+  MED: 60,        // header/column inferred, common pattern
+  LOW: 40,        // weak heuristic, fallback
+  GUESS: 20,      // very loose fallback (top-of-page date, largest currency)
+};
 
-  // ── PO NUMBER — anchored to a PO/Customer Order header ────────────
-  // PO format is NNNN-NNNN-NN[N] where middle group is the job number (2600-2699).
-  // We anchor to "Customer Order Number" or "PO Number" labels first so we don't
-  // grab addresses (1173-229-XXX) or customer numbers like 53095.
-  const poAnchors = [
-    /customer\s*order\s*number[^\d]{0,40}(\d{4}\s*[- ]\s*\d{4}\s*[- ]\s*\d{2,3})/i,
-    /\bpo\s*number[^\d]{0,40}(\d{4}\s*[- ]\s*\d{4}\s*[- ]\s*\d{2,3})/i,
-  ];
-  let poRaw = null;
-  for (const pat of poAnchors) {
-    const m = t.match(pat);
-    if (m) { poRaw = m[1]; break; }
+// Helper: try to update a field only if new confidence is higher
+function upd(result, field, value, confidence, source) {
+  if (value == null || value === '' || value === undefined) return;
+  if (!result[field] || confidence > result[field].confidence) {
+    result[field] = { value, confidence, source };
   }
-  // Fallback: any NNNN-NNNN-NNN where middle group looks like a job number (2600-2699)
-  if (!poRaw) {
-    const fallback = t.match(/\d{4}\s*[- ]\s*26\d{2}\s*[- ]\s*\d{2,3}/);
-    if (fallback) poRaw = fallback[0];
-  }
-  if (poRaw) {
-    const parts = poRaw.match(/(\d{4})\s*[- ]\s*(\d{4})\s*[- ]\s*(\d{2,3})/);
-    if (parts) {
-      inv.po_number = parts[1];
-      inv.job_number = parts[2];
-      inv.cost_code = parts[3];
-    }
-  }
-
-  // ── INVOICE NUMBER ────────────────────────────────────────────────
-  // S-prefix (Nefco S6085145.003, Ideal S2173362.001) is the strongest signal.
-  // NIS-style "INVOICE <ordernum> ... INVOICE <invnum> ORDER NUMBER" — we want
-  // the digits immediately followed by "ORDER NUMBER".
-  // Ideal-style "INVOICE NUMBER" header with date sitting between label and value.
-  const invPatterns = [
-    /\b(S\d{7}(?:\.\d{2,3})?)\b/,
-    /INVOICE\s*NUMBER\s+(?:\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\s+)?([A-Z]?\d{5,}(?:[.\-]\d+)?)/i,
-    /INVOICE\s+(\d{6,8})\s+ORDER\s+NUMBER/i,
-    /INV(?:OICE)?\s*(?:NO\.?|#)\s*[:\s]+([A-Z]?\d{5,}(?:[.\-]\d+)?)/i,
-    /Receipt\s*#\s*(\d+)/i,
-  ];
-  for (const pat of invPatterns) {
-    const m = t.match(pat);
-    if (m && m[1] && !m[1].match(/^(19|20|26)\d{2}$/)) { // exclude years
-      inv.invoice_number = m[1];
-      break;
-    }
-  }
-
-  // ── AMOUNT DUE ────────────────────────────────────────────────────
-  // Strategy in order:
-  //  0. VENDOR-SPECIFIC (NIS): NIS invoices always end with "AMOUNT DUE: <total>"
-  //     somewhere. Find every "AMOUNT DUE" occurrence regardless of what follows
-  //     (which may be split across whitespace differently per PDF.js extraction)
-  //     and pick the LAST one with a positive value. As a safety net, also scan
-  //     for all currency-style numbers and pick the largest, since NIS totals are
-  //     always >= any single line item.
-  //  1. Stacked 4-label block (Nefco): "SUBTOTAL SHIPPING SALES TAX AMOUNT DUE n1 n2 n3 n4" → n4
-  //  2. Stacked 3-label block: "SUBTOTAL TAX AMOUNT DUE n1 n2 n3" → n3
-  //  3. LAST "AMOUNT DUE" / "Total Due" / "Balance Due" with a positive value
-  //  4. Amount Received fallback (payment receipts)
-  let amountDue = null;
-
-  // NIS-specific path: NIS prints "AMOUNT DUE:" followed by the total amount.
-  // Multi-page invoices may have the value extracted with extra whitespace
-  // or even slight reordering by PDF.js. Be very permissive: match AMOUNT DUE
-  // followed by ANY whitespace then a currency number.
-  if (inv.vendor === 'National Industrial Supply') {
-    // Find all "AMOUNT DUE" matches and the very next currency-looking number
-    const nisMatches = [...t.matchAll(/AMOUNT\s*DUE[:\s]*\$?\s*([\d,]+\.\d{2})/gi)];
-    for (let i = nisMatches.length - 1; i >= 0; i--) {
-      const v = parseFloat(nisMatches[i][1].replace(/,/g, ''));
-      if (v > 0) { amountDue = v; break; }
-    }
-    // Safety net: if AMOUNT DUE didn't yield a value, grab the largest
-    // comma-formatted currency value in the doc. NIS totals are always >=
-    // any individual line item.
-    if (amountDue === null) {
-      const allNums = [...t.matchAll(/\b([\d]{1,3}(?:,\d{3})*\.\d{2})\b/g)];
-      let max = 0;
-      for (const m of allNums) {
-        const v = parseFloat(m[1].replace(/,/g, ''));
-        if (v > max) max = v;
-      }
-      if (max > 0) amountDue = max;
-    }
-  }
-
-  // Ideal-specific path: Ideal prints "Amount Due" with the value below it
-  // in the same column. Layout puts Subtotal/S&H/Sales Tax/Amount Due labels
-  // stacked vertically with values to the right — PDF.js extraction can put
-  // them in odd orders. Look for "Amount Due" with permissive whitespace,
-  // fall back to largest currency number (Ideal totals also exceed any line
-  // item).
-  if (inv.vendor === 'Ideal Supply Co.') {
-    // Try Amount Due (case-insensitive, any whitespace before the number)
-    const idealMatches = [...t.matchAll(/Amount\s*Due[:\s]*\$?\s*([\d,]+\.\d{2})/gi)];
-    for (let i = idealMatches.length - 1; i >= 0; i--) {
-      const v = parseFloat(idealMatches[i][1].replace(/,/g, ''));
-      if (v > 0) { amountDue = v; break; }
-    }
-    // Fallback: largest comma-formatted currency value
-    if (amountDue === null) {
-      const allNums = [...t.matchAll(/\b([\d]{1,3}(?:,\d{3})*\.\d{2})\b/g)];
-      let max = 0;
-      for (const m of allNums) {
-        const v = parseFloat(m[1].replace(/,/g, ''));
-        if (v > max) max = v;
-      }
-      if (max > 0) amountDue = max;
-    }
-  }
-
-  const stackedLabels4 = t.match(
-    /SUBTOTAL\s+(?:SHIPPING(?:\s+CHARGES)?\s+)?(?:SALES\s+)?TAX\s+AMOUNT\s+DUE\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})/i
-  );
-  if (amountDue === null && stackedLabels4) amountDue = parseFloat(stackedLabels4[4].replace(/,/g, ''));
-  if (amountDue === null) {
-    const stackedLabels3 = t.match(
-      /SUBTOTAL\s+(?:SALES\s+)?TAX\s+AMOUNT\s+DUE\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})/i
-    );
-    if (stackedLabels3) amountDue = parseFloat(stackedLabels3[3].replace(/,/g, ''));
-  }
-  if (amountDue === null) {
-    // Walk all "Amount Due"-style matches from LAST to first, pick first positive value.
-    const allMatches = [...t.matchAll(/(?:Total\s*Due|AMOUNT\s*DUE|Amount\s*Due|Balance\s*Due|TOTAL\s*SALE)[:\s]*\$?\s*([\d,]+\.\d{2})/gi)];
-    for (let i = allMatches.length - 1; i >= 0; i--) {
-      const v = parseFloat(allMatches[i][1].replace(/,/g, ''));
-      if (v > 0) { amountDue = v; break; }
-    }
-  }
-  if (amountDue === null) {
-    const m = t.match(/Amount\s*Received[:\s]*\$?\s*([\d,]+\.\d{2})/i);
-    if (m) amountDue = parseFloat(m[1].replace(/,/g, ''));
-  }
-  if (amountDue !== null && amountDue > 0) inv.amount_due = amountDue;
-
-  // ── DATE ──────────────────────────────────────────────────────────
-  // Strategy in order:
-  //  1. Stacked layout "INVOICE DATE INVOICE NUMBER <date>" (Ideal)
-  //  2. Standard "Invoice Date <date>" label
-  //  3. First M/D/YYYY in the FIRST 200 chars (NIS top-of-page timestamp)
-  //  4. OCR fallback: tolerate extra whitespace inside the date (e.g. "04 / 13 / 26")
-  //     and tolerate slight label corruption (e.g. "INVOIGE DATE", "lNVOICE DATE")
-  //  5. ISO date elsewhere, EXCLUDING the NIS template footer pattern
-  //     "2017.1 - 2017-07-25" which would otherwise match.
-  let foundDate = null;
-
-  // Helper: normalize a date string with possible OCR-inserted spaces, like
-  // "04 / 13 / 26" or "04/ 13 /26" → "04/13/26"
-  const cleanDate = (d) => d.replace(/\s+/g, '');
-
-  const stackedDate = t.match(/INVOICE\s*DATE\s+INVOICE\s*NUMBER\s+(\d{1,2}\s*[\/\-]\s*\d{1,2}\s*[\/\-]\s*\d{2,4})/i);
-  if (stackedDate) foundDate = cleanDate(stackedDate[1]);
-  if (!foundDate) {
-    const m = t.match(/Invoice\s*Date\s+(\d{1,2}\s*[\/\-]\s*\d{1,2}\s*[\/\-]\s*\d{2,4})/i);
-    if (m) foundDate = cleanDate(m[1]);
-  }
-  if (!foundDate) {
-    const m = t.match(/INVOICE\s*DATE\s+(\d{1,2}\s*[\/\-]\s*\d{1,2}\s*[\/\-]\s*\d{2,4})/i);
-    if (m) foundDate = cleanDate(m[1]);
-  }
-  // OCR-tolerant: "INVOICE DATE" with possibly garbled letters
-  // (e.g. INVOIGE DATE, lNVOICE DATE, INV0ICE DATE — common OCR misreads)
-  if (!foundDate) {
-    const m = t.match(/[Il1][Nn][Vv][O0o][Il1][CGc][Ee]\s*[Dd][Aa][Tt][Ee]\s+(?:[A-Za-z0-9\s]{0,30}?)(\d{1,2}\s*[\/\-]\s*\d{1,2}\s*[\/\-]\s*\d{2,4})/);
-    if (m) foundDate = cleanDate(m[1]);
-  }
-  if (!foundDate) {
-    // First M/D/YYYY in the first 200 chars — NIS prints the date at the very top
-    const top = t.substring(0, 200);
-    const m = top.match(/\b(\d{1,2}\/\d{1,2}\/\d{4})\b/);
-    if (m) foundDate = m[1];
-  }
-  if (!foundDate) {
-    // Final OCR fallback: scan first 600 chars for ANY M/D/YY or M/D/YYYY date
-    // (Ideal scans put the invoice date in the upper-right corner; OCR may
-    // produce extra spaces around the slashes)
-    const top = t.substring(0, 600);
-    const m = top.match(/\b(\d{1,2}\s*[\/\-]\s*\d{1,2}\s*[\/\-]\s*\d{2,4})\b/);
-    if (m) foundDate = cleanDate(m[1]);
-  }
-  if (!foundDate) {
-    // ISO date — but skip the NIS template version marker like "2017.1 - 2017-07-25"
-    const matches = [...t.matchAll(/\b(\d{4}-\d{2}-\d{2})\b/g)];
-    for (const m of matches) {
-      const idx = m.index;
-      const before = t.substring(Math.max(0, idx - 20), idx);
-      if (/\d+\.\d+\s*-\s*$/.test(before)) continue; // template version marker
-      foundDate = m[1];
-      break;
-    }
-  }
-  if (foundDate) inv.invoice_date = formatDate(foundDate);
-
-  // ── PAYMENT TERMS ─────────────────────────────────────────────────
-  if (/NET\s*30/i.test(t)) inv.payment_terms = 30;
-  else if (/NET\s*60/i.test(t)) inv.payment_terms = 60;
-  else if (/NET\s*45/i.test(t)) inv.payment_terms = 45;
-  else if (/COD|CASH/i.test(t)) inv.payment_terms = 0;
-  else inv.payment_terms = 30;
-
-  // ── IS PAID (payment receipt) ─────────────────────────────────────
-  if (/PAYMENT\s*RECEIPT|Amount\s*Received|Cash\s*Rcvd/i.test(t)) {
-    inv.is_paid = true;
-    inv.amount_paid = inv.amount_due;
-  }
-
-  return inv;
 }
+
+// Helper: clean OCR-spaced date strings like "04 / 13 / 26" → "04/13/26"
+function cleanDateStr(d) { return (d||'').replace(/\s+/g, ''); }
 
 function formatDate(dateStr) {
   if (!dateStr) return '';
-  // Handle MM/DD/YY or MM/DD/YYYY
   const parts = dateStr.split(/[\/\-]/);
   if (parts.length === 3) {
     let [m, d, y] = parts;
     if (y.length === 2) y = '20' + y;
-    if (m.length === 4) return `${m}-${d.padStart(2,'0')}-${parts[2].padStart(2,'0')}`; // YYYY-MM-DD already
+    if (m.length === 4) return `${m}-${d.padStart(2,'0')}-${parts[2].padStart(2,'0')}`;
     return `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
   }
   return dateStr;
+}
+
+// ── STRATEGY 1: VENDOR DETECTION ────────────────────────────────────
+const VENDOR_SIGNALS = {
+  'national industrial supply': 'National Industrial Supply',
+  'natindllc': 'National Industrial Supply',
+  'natind': 'National Industrial Supply',
+  'nefco': 'Nefco',
+  'nefcocorp': 'Nefco',
+  'ideal supply': 'Ideal Supply Co.',
+  'idealsupply': 'Ideal Supply Co.',
+  'the ideal supply': 'Ideal Supply Co.',
+  'communipaw': 'Ideal Supply Co.',
+  'airweld': 'Airweld',
+  'airweld.net': 'Airweld',
+  'atlantic welding supply': 'Airweld',
+  'bronx welding supply': 'Airweld',
+  'middlesex welding supply': 'Airweld',
+  'cassone': 'Cassone',
+  'united rentals': 'United Rentals',
+  'mayer malbin': 'Mayer Malbin',
+  'core & main': 'Core & Main',
+  'core and main': 'Core & Main',
+  'shaw supply': 'Shaw Supply',
+  'mobile steam': 'Mobile Steam',
+  'fw webb': 'FW Webb',
+  'f.w. webb': 'FW Webb',
+};
+function step_detectVendor(text, result) {
+  const lower = text.toLowerCase();
+  for (const [key, name] of Object.entries(VENDOR_SIGNALS)) {
+    if (lower.includes(key)) {
+      upd(result, 'vendor', name, CONF.HIGH, 'vendor-signal:'+key);
+      return;
+    }
+  }
+}
+
+// ── STRATEGY 2: NIS-SPECIFIC RULES ──────────────────────────────────
+function step_NISRules(text, result) {
+  if (result.vendor?.value !== 'National Industrial Supply') return;
+  // NIS prints "AMOUNT DUE:" with the total
+  const m = [...text.matchAll(/AMOUNT\s*DUE[:\s]*\$?\s*([\d,]+\.\d{2})/gi)];
+  for (let i = m.length-1; i >= 0; i--) {
+    const v = parseFloat(m[i][1].replace(/,/g,''));
+    if (v > 0) { upd(result, 'amount_due', v, CONF.HIGH, 'nis-amount-due'); break; }
+  }
+  // NIS-style "INVOICE <ordernum> ... <invnum> ORDER NUMBER"
+  const inv = text.match(/INVOICE\s+(\d{6,8})\s+ORDER\s+NUMBER/i);
+  if (inv) upd(result, 'invoice_number', inv[1], CONF.HIGH, 'nis-invoice-format');
+}
+
+// ── STRATEGY 3: IDEAL-SPECIFIC RULES ────────────────────────────────
+function step_IdealRules(text, result) {
+  if (result.vendor?.value !== 'Ideal Supply Co.') return;
+  // Ideal uses "Amount Due" with the total
+  const m = [...text.matchAll(/Amount\s*Due[:\s]*\$?\s*([\d,]+\.\d{2})/gi)];
+  for (let i = m.length-1; i >= 0; i--) {
+    const v = parseFloat(m[i][1].replace(/,/g,''));
+    if (v > 0) { upd(result, 'amount_due', v, CONF.HIGH, 'ideal-amount-due'); break; }
+  }
+  // Ideal stacks date+invoice number labels above values
+  const stacked = text.match(/INVOICE\s*DATE\s+INVOICE\s*NUMBER\s+(\d{1,2}\s*[\/\-]\s*\d{1,2}\s*[\/\-]\s*\d{2,4})/i);
+  if (stacked) upd(result, 'invoice_date', formatDate(cleanDateStr(stacked[1])), CONF.HIGH, 'ideal-stacked-date');
+}
+
+// ── STRATEGY 4: AIRWELD-SPECIFIC RULES ──────────────────────────────
+// Airweld layout: top row has 3 labeled cells side-by-side:
+//   INVOICE DATE | ACCOUNT NUMBER | INVOICE NUMBER
+//   04/17/26       50209            0002741593
+// And PO appears as "CUS P/O #" with our PO number followed by their reference.
+// Total appears in a box at the very bottom-right, labeled "AMOUNT THIS INVOICE"
+// but the label and value get separated in PDF.js extraction. Find the last
+// currency value on the doc as the total (Airweld puts taxable amount + tax-incl
+// total on the very last line, with tax-incl total being larger).
+function step_AirweldRules(text, result) {
+  if (result.vendor?.value !== 'Airweld') return;
+  // The 3-cell header: date / account / invoice number
+  const header = text.match(/INVOICE\s*DATE\s+ACCOUNT\s*NUMBER\s+INVOICE\s*NUMBER\s+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\s+(\d+)\s+(\d{7,10})/i);
+  if (header) {
+    upd(result, 'invoice_date', formatDate(header[1]), CONF.HIGH, 'airweld-header-row');
+    upd(result, 'invoice_number', header[3], CONF.HIGH, 'airweld-header-row');
+  }
+  // PO number from "CUS P/O #" field — Airweld concatenates customer ref onto it
+  // (e.g. "20012601270" — first 4 digits are our PO, rest is their internal ref)
+  // The PO appears in the line: "0002554805-00 20012601270 NET 30 000014 JR 1"
+  // i.e. immediately followed by NET 30 (terms).
+  const poField = text.match(/(\d{4,11})\s+NET\s*\d/i);
+  if (poField) {
+    const candidate = poField[1].substring(0, 4);
+    if (/^2\d{3}$/.test(candidate)) {
+      upd(result, 'po_number', candidate, CONF.HIGH, 'airweld-cus-po');
+    }
+  }
+  // Total: try the direct labeled match first
+  const directTotal = text.match(/AMOUNT\s+THIS\s+INVOICE\s+INCLUDING\s+TAX\s+([\d,]+\.\d{2})/i);
+  if (directTotal) {
+    upd(result, 'amount_due', parseFloat(directTotal[1].replace(/,/g,'')), CONF.HIGH, 'airweld-total-labeled');
+  } else {
+    // Layout-based: Airweld puts the final total at the very end of the doc.
+    // It's the LAST currency value, and it equals taxable_amount + delivery + tax.
+    // Find the last 2 currency values — they should be (taxable_amount, total_incl_tax).
+    const all = [...text.matchAll(/\b((?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2})\b/g)];
+    if (all.length >= 2) {
+      const last = parseFloat(all[all.length-1][1].replace(/,/g,''));
+      const prev = parseFloat(all[all.length-2][1].replace(/,/g,''));
+      // Total-incl-tax should be larger than taxable amount
+      if (last > prev && last > 0) {
+        upd(result, 'amount_due', last, CONF.MED_HIGH, 'airweld-last-currency');
+      }
+    }
+  }
+}
+
+// ── STRATEGY 5: LABELED VALUES (works for most vendors) ─────────────
+function step_labeledValues(text, result) {
+  // Invoice number labels — try anchored patterns first
+  const invPatterns = [
+    [/\b(S\d{7}(?:\.\d{2,3})?)\b/, CONF.MED_HIGH],  // S-prefixed (Nefco/Ideal style)
+    [/INV(?:OICE)?\s*(?:NO\.?|#|NUMBER)\s*[:\s]+([A-Z]?\d{5,}(?:[.\-]\d+)?)/i, CONF.MED_HIGH],
+    [/Receipt\s*#\s*(\d+)/i, CONF.MED],
+  ];
+  for (const [pat, conf] of invPatterns) {
+    const m = text.match(pat);
+    if (m && m[1] && !m[1].match(/^(19|20|26)\d{2}$/)) {
+      upd(result, 'invoice_number', m[1], conf, 'labeled-invoice');
+      break;
+    }
+  }
+
+  // Date labels
+  const datePatterns = [
+    [/Invoice\s*Date\s*[:\s]+(\d{1,2}\s*[\/\-]\s*\d{1,2}\s*[\/\-]\s*\d{2,4})/i, CONF.MED_HIGH],
+    [/INVOICE\s*DATE\s+(\d{1,2}\s*[\/\-]\s*\d{1,2}\s*[\/\-]\s*\d{2,4})/i, CONF.MED_HIGH],
+    [/Date\s*Issued\s*[:\s]+(\d{1,2}\s*[\/\-]\s*\d{1,2}\s*[\/\-]\s*\d{2,4})/i, CONF.MED],
+    // OCR-tolerant: INVOIGE, lNVOICE, INV0ICE
+    [/[Il1][Nn][Vv][O0o][Il1][CGc][Ee]\s*[Dd][Aa][Tt][Ee]\s+(?:[A-Za-z0-9\s]{0,30}?)(\d{1,2}\s*[\/\-]\s*\d{1,2}\s*[\/\-]\s*\d{2,4})/, CONF.MED],
+  ];
+  for (const [pat, conf] of datePatterns) {
+    const m = text.match(pat);
+    if (m) { upd(result, 'invoice_date', formatDate(cleanDateStr(m[1])), conf, 'labeled-date'); break; }
+  }
+
+  // Total / Amount Due
+  const amtPatterns = [
+    [/(?:Total\s*Due|AMOUNT\s*DUE|Amount\s*Due|Balance\s*Due|TOTAL\s*SALE|GRAND\s*TOTAL)[:\s]*\$?\s*([\d,]+\.\d{2})/gi, CONF.MED_HIGH],
+  ];
+  for (const [pat, conf] of amtPatterns) {
+    const matches = [...text.matchAll(pat)];
+    for (let i = matches.length-1; i >= 0; i--) {
+      const v = parseFloat(matches[i][1].replace(/,/g,''));
+      if (v > 0) { upd(result, 'amount_due', v, conf, 'labeled-amount'); break; }
+    }
+  }
+}
+
+// ── STRATEGY 6: PO NUMBER (anchored to PO labels) ───────────────────
+function step_POAnchored(text, result) {
+  // PO format used by NIS/Nefco: NNNN-NNNN-NN[N]
+  // Anchor to "Customer Order Number" or "PO Number" labels first
+  const anchors = [
+    /customer\s*order\s*number[^\d]{0,40}(\d{4}\s*[- ]\s*\d{4}\s*[- ]\s*\d{2,3})/i,
+    /\bpo\s*number[^\d]{0,40}(\d{4}\s*[- ]\s*\d{4}\s*[- ]\s*\d{2,3})/i,
+  ];
+  for (const pat of anchors) {
+    const m = text.match(pat);
+    if (m) {
+      const parts = m[1].match(/(\d{4})\s*[- ]\s*(\d{4})\s*[- ]\s*(\d{2,3})/);
+      if (parts) {
+        upd(result, 'po_number', parts[1], CONF.HIGH, 'po-anchored');
+        upd(result, 'job_number', parts[2], CONF.HIGH, 'po-anchored');
+        upd(result, 'cost_code', parts[3], CONF.HIGH, 'po-anchored');
+      }
+      return;
+    }
+  }
+  // Fallback: NNNN-26XX-NNN pattern anywhere in document
+  const fallback = text.match(/(\d{4})\s*[- ]\s*(26\d{2})\s*[- ]\s*(\d{2,3})/);
+  if (fallback) {
+    upd(result, 'po_number', fallback[1], CONF.MED, 'po-pattern-match');
+    upd(result, 'job_number', fallback[2], CONF.MED, 'po-pattern-match');
+    upd(result, 'cost_code', fallback[3], CONF.MED, 'po-pattern-match');
+  }
+}
+
+// ── STRATEGY 7: FUZZY PO MATCHING against known POs ─────────────────
+// If a PO number was extracted but doesn't match any real PO, look for
+// any of our real PO numbers (4-digit, 2000-2999) anywhere in the doc.
+// Also try matching POs that appear as PREFIXES of longer numbers (Airweld
+// concatenates internal refs: "20012601270" → PO 2001).
+function step_POFuzzyMatch(text, result, knownPOs) {
+  if (!knownPOs?.length) return;
+  const current = result.po_number?.value;
+  if (current && knownPOs.includes(String(current))) return;
+
+  // First try clean word-boundary matches
+  const candidates = [...text.matchAll(/\b(2\d{3})\b/g)].map(m => m[1]);
+  for (const c of candidates) {
+    if (knownPOs.includes(c)) {
+      upd(result, 'po_number', c, CONF.MED, 'po-known-list');
+      return;
+    }
+  }
+  // Then try matching POs as the FIRST 4 digits of any 8+ digit run
+  // (handles vendor-side concatenations like "20012601270")
+  const longSequences = [...text.matchAll(/\b(\d{8,})\b/g)].map(m => m[1]);
+  for (const seq of longSequences) {
+    const prefix = seq.substring(0, 4);
+    if (knownPOs.includes(prefix)) {
+      upd(result, 'po_number', prefix, CONF.LOW, 'po-prefix-match');
+      return;
+    }
+  }
+}
+
+// ── STRATEGY 8: TOP-OF-PAGE DATE FALLBACK ───────────────────────────
+// Many invoices print the date in the upper-right corner with no clear label.
+function step_topOfPageDate(text, result) {
+  if (result.invoice_date?.confidence >= CONF.MED_HIGH) return;  // already have a good date
+  const top = text.substring(0, 200);
+  const m = top.match(/\b(\d{1,2}\/\d{1,2}\/\d{4})\b/);
+  if (m) upd(result, 'invoice_date', formatDate(m[1]), CONF.LOW, 'top-of-page');
+  if (!result.invoice_date) {
+    const top600 = text.substring(0, 600);
+    const m2 = top600.match(/\b(\d{1,2}\s*[\/\-]\s*\d{1,2}\s*[\/\-]\s*\d{2,4})\b/);
+    if (m2) upd(result, 'invoice_date', formatDate(cleanDateStr(m2[1])), CONF.GUESS, 'top-600-fallback');
+  }
+  if (!result.invoice_date) {
+    // ISO date — but skip the NIS template version marker like "2017.1 - 2017-07-25"
+    const matches = [...text.matchAll(/\b(\d{4}-\d{2}-\d{2})\b/g)];
+    for (const m of matches) {
+      const idx = m.index;
+      const before = text.substring(Math.max(0, idx-20), idx);
+      if (/\d+\.\d+\s*-\s*$/.test(before)) continue;
+      upd(result, 'invoice_date', m[1], CONF.LOW, 'iso-date');
+      break;
+    }
+  }
+}
+
+// ── STRATEGY 9: LARGEST CURRENCY VALUE FALLBACK ─────────────────────
+// On invoices we couldn't otherwise parse, the largest currency number
+// is almost always the total. Use this as a safety net.
+function step_largestCurrency(text, result) {
+  if (result.amount_due?.confidence >= CONF.MED_HIGH) return;
+  const allNums = [...text.matchAll(/\b((?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2})\b/g)];
+  let max = 0;
+  for (const m of allNums) {
+    const v = parseFloat(m[1].replace(/,/g,''));
+    if (v > max) max = v;
+  }
+  if (max > 0) upd(result, 'amount_due', max, CONF.GUESS, 'largest-currency');
+}
+
+// ── STRATEGY 10: STACKED LABEL TOTALS (Nefco-style) ─────────────────
+// "SUBTOTAL SHIPPING TAX AMOUNT DUE n1 n2 n3 n4" → n4
+function step_stackedLabels(text, result) {
+  const m4 = text.match(/SUBTOTAL\s+(?:SHIPPING(?:\s+CHARGES)?\s+)?(?:SALES\s+)?TAX\s+AMOUNT\s+DUE\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})/i);
+  if (m4) upd(result, 'amount_due', parseFloat(m4[4].replace(/,/g,'')), CONF.HIGH, 'stacked-4');
+  const m3 = text.match(/SUBTOTAL\s+(?:SALES\s+)?TAX\s+AMOUNT\s+DUE\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})/i);
+  if (m3) upd(result, 'amount_due', parseFloat(m3[3].replace(/,/g,'')), CONF.HIGH, 'stacked-3');
+}
+
+// ── STRATEGY 11: PAYMENT TERMS ──────────────────────────────────────
+function step_paymentTerms(text, result) {
+  if (/NET\s*30/i.test(text)) upd(result, 'payment_terms', 30, CONF.HIGH, 'terms-explicit');
+  else if (/NET\s*60/i.test(text)) upd(result, 'payment_terms', 60, CONF.HIGH, 'terms-explicit');
+  else if (/NET\s*45/i.test(text)) upd(result, 'payment_terms', 45, CONF.HIGH, 'terms-explicit');
+  else if (/NET\s*15/i.test(text)) upd(result, 'payment_terms', 15, CONF.HIGH, 'terms-explicit');
+  else if (/\b(COD|CASH)\b/i.test(text)) upd(result, 'payment_terms', 0, CONF.MED, 'terms-cod');
+  else upd(result, 'payment_terms', 30, CONF.GUESS, 'terms-default');
+}
+
+// ── STRATEGY 12: PAYMENT RECEIPT DETECTION ──────────────────────────
+function step_paymentReceipt(text, result) {
+  if (/PAYMENT\s*RECEIPT|Amount\s*Received|Cash\s*Rcvd/i.test(text)) {
+    result.is_paid = { value: true, confidence: CONF.HIGH, source: 'receipt-detected' };
+    if (result.amount_due?.value) {
+      result.amount_paid = { value: result.amount_due.value, confidence: CONF.MED_HIGH, source: 'receipt-detected' };
+    }
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────
+// PIPELINE ORCHESTRATOR
+// ────────────────────────────────────────────────────────────────────
+// Run all strategies in order. Returns a flat object compatible with
+// the old parseInvoiceText shape, plus _confidence map for the banner.
+function parseInvoiceText(text, filename, knownPOs) {
+  const t = text.replace(/\s+/g, ' ');
+  const result = {};  // each field: {value, confidence, source}
+
+  // Run pipeline — order matters (vendor-specific high-conf rules win)
+  step_detectVendor(t, result);
+  step_NISRules(t, result);
+  step_IdealRules(t, result);
+  step_AirweldRules(t, result);
+  step_labeledValues(t, result);
+  step_POAnchored(t, result);
+  step_POFuzzyMatch(t, result, knownPOs);
+  step_stackedLabels(t, result);
+  step_topOfPageDate(t, result);
+  step_largestCurrency(t, result);
+  step_paymentTerms(t, result);
+  step_paymentReceipt(t, result);
+
+  // Flatten to the shape the rest of the code expects.
+  // Also stash confidence map under _confidence so the banner can show it.
+  const flat = { _confidence: {} };
+  for (const [key, slot] of Object.entries(result)) {
+    if (slot && typeof slot === 'object' && 'value' in slot) {
+      flat[key] = slot.value;
+      flat._confidence[key] = { confidence: slot.confidence, source: slot.source };
+    }
+  }
+  return flat;
 }
 
 // Vendor selected from invoice modal dropdown — auto-fill name + defaults

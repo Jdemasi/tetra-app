@@ -724,6 +724,29 @@ select.finp{cursor:pointer}
   </div>
 </div>
 
+<div class="modal-bg" id="modal-import-pos">
+  <div class="modal" style="max-width:780px;width:95%">
+    <div class="modal-hd"><div class="modal-title">📥 Bulk Import POs</div><button class="modal-close" onclick="closeModal('modal-import-pos')">×</button></div>
+    <div style="padding:6px 0;font-size:12px;color:var(--gray600);margin-bottom:10px">
+      Upload an Excel file (.xlsx) with PO data. The app will look for a sheet named <strong>"PO Log"</strong> with columns: PO #, Job #, Cost Code, Vendor, Description, Date Issued, Amount, Amount Paid Off So Far, Status, Invoice #.
+    </div>
+    <div id="imp-po-upload-zone" style="border:2px dashed var(--border);border-radius:10px;padding:24px;text-align:center;cursor:pointer;margin-bottom:12px" onclick="document.getElementById('imp-po-file').click()">
+      <div style="font-size:30px">📥</div>
+      <div style="font-size:13px;font-weight:600;color:var(--navy);margin-top:6px">Click to upload PO Log .xlsx</div>
+      <div style="font-size:11px;color:var(--gray600);margin-top:2px">Excel file with a "PO Log" sheet</div>
+      <input type="file" id="imp-po-file" accept=".xlsx,.xls,.csv" style="display:none" onchange="parseImportPOs(this.files[0])">
+    </div>
+    <div id="imp-po-preview" style="display:none;font-size:11px;max-height:380px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:10px"></div>
+    <div class="form-actions" style="display:flex;justify-content:space-between;align-items:center">
+      <div></div>
+      <div style="display:flex;gap:8px">
+        <button class="btn" onclick="closeModal('modal-import-pos')">Cancel</button>
+        <button id="imp-po-confirm-btn" class="btn btn-red" onclick="confirmImportPOs()" disabled style="opacity:.5">Import</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="modal-bg" id="modal-job-picker">
   <div class="modal" style="max-width:420px">
     <div class="modal-hd"><div class="modal-title">Which job is this for?</div><button class="modal-close" onclick="closeModal('modal-job-picker')">×</button></div>
@@ -6527,6 +6550,7 @@ async function renderMasterPOs() {
           <option>Open</option><option>Ordered</option><option>Received</option>
           <option>Invoiced</option><option>Closed</option><option>Cancelled</option>
         </select>
+        <button class="btn btn-sm" onclick="openImportPOs()" title="Import POs from Excel/CSV">📥 Import</button>
         <button class="btn btn-sm btn-red" onclick="quickAddPO()">+ New PO</button>
       </div>
     </div>
@@ -7044,6 +7068,186 @@ function renderMasterCOsView() {
     </table></div>`}
   </div>`;
   $('topbar-actions').innerHTML = `<button class="btn btn-sm btn-red" onclick="quickAddCO()">+ New CO</button>`;
+}
+
+// ── BULK PO IMPORT (from Excel/CSV) ─────────────────────────────────
+let _importPOData = null;  // Holds parsed rows ready to import
+
+function openImportPOs() {
+  $('imp-po-file').value = '';
+  $('imp-po-preview').style.display = 'none';
+  $('imp-po-preview').innerHTML = '';
+  $('imp-po-confirm-btn').disabled = true;
+  $('imp-po-confirm-btn').style.opacity = .5;
+  _importPOData = null;
+  openModal('modal-import-pos');
+}
+
+async function parseImportPOs(file) {
+  if (!file) return;
+  const preview = $('imp-po-preview');
+  preview.style.display = 'block';
+  preview.innerHTML = '<div style="padding:8px">📄 Reading file...</div>';
+
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    const wb = XLSX.read(arrayBuffer, { type: 'array', cellDates: true });
+    // Try to find a "PO Log" sheet, or fall back to the first sheet
+    let sheetName = wb.SheetNames.find(s => /po\s*log/i.test(s)) || wb.SheetNames[0];
+    const sheet = wb.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(sheet, { defval: null });
+
+    if (!rows.length) {
+      preview.innerHTML = '<div style="color:var(--danger);padding:8px">No data rows found in sheet "'+sheetName+'"</div>';
+      return;
+    }
+
+    // Map columns flexibly — accept slight name variations
+    const norm = (s) => String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+    const colMap = {};
+    Object.keys(rows[0]).forEach(k => { colMap[norm(k)] = k; });
+    const get = (row, ...keys) => {
+      for (const k of keys) {
+        const col = colMap[norm(k)];
+        if (col && row[col] != null && row[col] !== '') return row[col];
+      }
+      return null;
+    };
+
+    // Look up project IDs by job number
+    const projectByJob = {};
+    (state.projects||[]).forEach(p => { projectByJob[String(p.job_number)] = p.id; });
+
+    // Build PO records
+    const parsed = rows.map((row, i) => {
+      const poNum = get(row, 'PO #', 'PO Number', 'PO#');
+      const jobNum = get(row, 'Job #', 'Job Number', 'Job#');
+      const amount = parseFloat(get(row, 'Amount', 'Total Amount', 'Total')) || 0;
+      const paid = parseFloat(get(row, 'Amount Paid Off So Far', 'Paid', 'Amount Paid')) || 0;
+      const dateRaw = get(row, 'Date Issued', 'Issue Date', 'Date');
+      let issueDate = null;
+      if (dateRaw instanceof Date) issueDate = dateRaw.toISOString().split('T')[0];
+      else if (typeof dateRaw === 'string') issueDate = dateRaw.substring(0,10);
+      const projId = jobNum ? projectByJob[String(jobNum)] : null;
+      return {
+        rowIndex: i + 2,  // Excel-style row number for error reporting
+        po_number: poNum ? String(poNum) : null,
+        job_number: jobNum ? String(jobNum) : null,
+        project_id: projId,
+        cost_code: get(row, 'Cost Code') ? String(get(row, 'Cost Code')) : null,
+        vendor: get(row, 'Vendor', 'Vendor Name'),
+        description: get(row, 'Description', 'Notes', 'Item'),
+        issue_date: issueDate,
+        committed_amount: amount,
+        paid_amount: paid,
+        status: get(row, 'Status') || 'Open',
+        invoice_number: get(row, 'Invoice #', 'Invoice Number') ? String(get(row, 'Invoice #', 'Invoice Number')).replace(/\.0$/,'') : null,
+      };
+    }).filter(r => r.po_number);  // skip blank rows
+
+    if (!parsed.length) {
+      preview.innerHTML = '<div style="color:var(--danger);padding:8px">No rows had a valid PO #</div>';
+      return;
+    }
+
+    // Check for existing POs (to avoid duplicates)
+    const { data: existingPOs } = await db.from('purchase_orders').select('po_number');
+    const existingSet = new Set((existingPOs||[]).map(p => String(p.po_number)));
+
+    let newCount = 0, dupCount = 0, orphanCount = 0;
+    parsed.forEach(r => {
+      r._isDuplicate = existingSet.has(r.po_number);
+      r._isOrphan = !r.project_id && r.job_number;  // job# given but doesn't match any project
+      if (r._isDuplicate) dupCount++;
+      else if (r._isOrphan) orphanCount++;
+      else newCount++;
+    });
+
+    // Render the preview table
+    preview.innerHTML = `
+      <div style="padding:8px 0;font-size:12px">
+        <strong>${parsed.length} rows in sheet "${sheetName}"</strong><br>
+        <span style="color:var(--green)">✓ ${newCount} ready to import</span> ·
+        <span style="color:var(--amber)">${dupCount} duplicates (will skip)</span> ·
+        <span style="color:var(--danger)">${orphanCount} orphans (job # not in system)</span>
+      </div>
+      <table style="font-size:10px;width:100%">
+        <thead><tr style="background:var(--gray50)">
+          <th>PO #</th><th>Job</th><th>Vendor</th><th>Cost Code</th>
+          <th>Description</th><th>Amount</th><th>Status</th><th></th>
+        </tr></thead>
+        <tbody>
+        ${parsed.slice(0,50).map(r => {
+          let badge = '';
+          let rowStyle = '';
+          if (r._isDuplicate) { badge = '<span style="color:var(--amber)">dup</span>'; rowStyle = 'opacity:.5'; }
+          else if (r._isOrphan) { badge = '<span style="color:var(--danger)">orphan</span>'; rowStyle = 'opacity:.6'; }
+          else badge = '<span style="color:var(--green)">✓</span>';
+          return `<tr style="${rowStyle}">
+            <td>${r.po_number}</td>
+            <td>${r.job_number||'—'}</td>
+            <td>${r.vendor||'—'}</td>
+            <td>${r.cost_code||'—'}</td>
+            <td>${(r.description||'').substring(0,40)}</td>
+            <td>${fmt(r.committed_amount)}</td>
+            <td>${r.status}</td>
+            <td>${badge}</td>
+          </tr>`;
+        }).join('')}
+        ${parsed.length > 50 ? '<tr><td colspan="8" style="text-align:center;color:var(--gray600);padding:6px">…and '+(parsed.length-50)+' more</td></tr>' : ''}
+        </tbody>
+      </table>
+    `;
+
+    _importPOData = parsed.filter(r => !r._isDuplicate && !r._isOrphan);
+    if (_importPOData.length > 0) {
+      $('imp-po-confirm-btn').disabled = false;
+      $('imp-po-confirm-btn').style.opacity = 1;
+      $('imp-po-confirm-btn').textContent = 'Import ' + _importPOData.length + ' POs';
+    } else {
+      $('imp-po-confirm-btn').disabled = true;
+      $('imp-po-confirm-btn').style.opacity = .5;
+    }
+
+  } catch (e) {
+    console.error('Import parse error:', e);
+    preview.innerHTML = '<div style="color:var(--danger);padding:8px">Error reading file: '+(e.message||'unknown')+'</div>';
+  }
+}
+
+async function confirmImportPOs() {
+  if (!_importPOData || !_importPOData.length) return;
+  if (!confirm('Import '+_importPOData.length+' POs into the database?')) return;
+  $('imp-po-confirm-btn').disabled = true;
+  $('imp-po-confirm-btn').textContent = 'Importing...';
+
+  let okCount = 0, failCount = 0;
+  for (const r of _importPOData) {
+    const data = {
+      project_id: r.project_id,
+      po_number: r.po_number,
+      vendor: r.vendor,
+      description: r.description,
+      cost_code: r.cost_code,
+      committed_amount: r.committed_amount,
+      paid_amount: r.paid_amount,
+      issue_date: r.issue_date,
+      status: r.status,
+      invoice_number: r.invoice_number,
+    };
+    const { error } = await db.from('purchase_orders').insert(data);
+    if (error) {
+      console.error('Failed to insert PO', r.po_number, error);
+      failCount++;
+    } else {
+      okCount++;
+    }
+  }
+
+  closeModal('modal-import-pos');
+  toast(`Imported ${okCount} POs${failCount?' ('+failCount+' failed)':''}`);
+  _importPOData = null;
+  render();
 }
 
 async function init() {

@@ -204,6 +204,9 @@ select.finp{cursor:pointer}
     <button class="sb-item" data-view="employees">
       <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Employees
     </button>
+    <button class="sb-item" data-view="vendors">
+      <svg viewBox="0 0 24 24"><path d="M3 9l2-5h14l2 5"/><path d="M3 9v11a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1V9"/><line x1="9" y1="13" x2="15" y2="13"/></svg>Vendors
+    </button>
   </div>
 </div>
 
@@ -303,7 +306,12 @@ select.finp{cursor:pointer}
       <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Link to PO (optional — auto-fills vendor & cost code)</label>
         <select class="finp" id="pu-po-select"><option value="">No PO — direct invoice</option></select>
       </div>
-      <div class="fgroup"><label class="flbl">Vendor</label><input class="finp" id="pu-vendor" placeholder="e.g. NIS"></div>
+      <div class="fgroup"><label class="flbl">Vendor</label>
+        <select class="finp" id="pu-vendor-select" onchange="onPuVendorSelect()" style="margin-bottom:4px">
+          <option value="">— Type below or pick known —</option>
+        </select>
+        <input class="finp" id="pu-vendor" placeholder="e.g. NIS">
+      </div>
       <div class="fgroup"><label class="flbl">Invoice #</label><input class="finp" id="pu-inv" placeholder="e.g. INV-1234"></div>
       <div class="fgroup"><label class="flbl">Invoice Date</label><input class="finp" type="date" id="pu-date"></div>
       <div class="fgroup"><label class="flbl">Terms (Days)</label><input class="finp" type="number" id="pu-terms" value="30"></div>
@@ -400,6 +408,57 @@ select.finp{cursor:pointer}
       <div style="display:flex;gap:8px">
         <button class="btn" onclick="closeModal('modal-employee')">Cancel</button>
         <button class="btn btn-red" onclick="saveEmployee()">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="modal-vendor">
+  <div class="modal" style="max-width:600px">
+    <div class="modal-hd"><div class="modal-title">Add Vendor</div><button class="modal-close" onclick="closeModal('modal-vendor')">×</button></div>
+    <div class="form-grid">
+      <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Vendor Name *</label><input class="finp" id="ve-name" placeholder="e.g. National Industrial Supply"></div>
+      <div class="fgroup"><label class="flbl">Contact Name</label><input class="finp" id="ve-contact" placeholder="e.g. John Smith"></div>
+      <div class="fgroup"><label class="flbl">Phone</label><input class="finp" id="ve-phone" placeholder="(516) 555-1212"></div>
+      <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Email</label><input class="finp" type="email" id="ve-email" placeholder="ar@vendor.com"></div>
+      <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Address</label><input class="finp" id="ve-address" placeholder="123 Main St, City, State Zip"></div>
+      <div class="fgroup"><label class="flbl">Default Payment Terms</label>
+        <select class="finp" id="ve-terms">
+          <option value="0">COD</option>
+          <option value="15">Net 15</option>
+          <option value="30" selected>Net 30</option>
+          <option value="45">Net 45</option>
+          <option value="60">Net 60</option>
+        </select>
+      </div>
+      <div class="fgroup"><label class="flbl">Default Cost Code</label>
+        <select class="finp" id="ve-cost-code"><option value="">— None —</option></select>
+      </div>
+      <div class="fgroup">
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin-top:18px">
+          <input type="checkbox" id="ve-1099"> 1099 vendor (year-end reporting)
+        </label>
+      </div>
+      <div class="fgroup">
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin-top:18px">
+          <input type="checkbox" id="ve-w9"> W-9 on file
+        </label>
+      </div>
+      <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Notes</label><input class="finp" id="ve-notes" placeholder="Any special notes about this vendor"></div>
+      <div class="fgroup" style="grid-column:1/-1">
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer">
+          <input type="checkbox" id="ve-active" checked> Active (appears in PO/Invoice dropdowns)
+        </label>
+      </div>
+    </div>
+    <div class="form-actions" style="display:flex;justify-content:space-between;align-items:center">
+      <div style="display:flex;gap:6px">
+        <button id="ve-deactivate-btn" class="btn btn-sm" style="color:var(--amber);border-color:var(--amber);display:none" onclick="toggleVendorActive()">⏸ Deactivate</button>
+        <button id="ve-delete-btn" class="btn btn-sm" style="color:var(--danger);border-color:var(--danger);display:none" onclick="deleteVendorFromModal()">🗑 Delete</button>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn" onclick="closeModal('modal-vendor')">Cancel</button>
+        <button class="btn btn-red" onclick="saveVendor()">Save Vendor</button>
       </div>
     </div>
   </div>
@@ -1070,6 +1129,7 @@ async function render() {
   else if (state.view === 'wip') await renderWIP();
   else if (state.view === 'ar-aging') await renderARaging();
   else if (state.view === 'employees') await renderEmployees();
+  else if (state.view === 'vendors') await renderVendors();
   else if (state.view === 'ap-aging') await renderAPAging();
   else if (state.view === 'master-pos') await renderMasterPOs();
   else if (state.view === 'master-ap') await renderMasterAP();
@@ -1104,6 +1164,7 @@ function updateBreadcrumb() {
   else if (state.view === 'master-cos') html = '<span>Logs</span><span class="sep">/</span><span class="cur">Change Order Log</span>';
   else if (state.view === 'master-subs') html = '<span>Logs</span><span class="sep">/</span><span class="cur">Subcontractors</span>';
   else if (state.view === 'employees') html = '<span>Setup</span><span class="sep">/</span><span class="cur">Employees</span>';
+  else if (state.view === 'vendors') html = '<span>Setup</span><span class="sep">/</span><span class="cur">Vendors</span>';
   else if (state.view === 'project' && state.activeProject) {
     const p = state.activeProject;
     const modNames = {setup:'Job Setup',purchases:'Purchases & AP',labor:'Time & Labor',cos:'Change Orders',invoices:'Invoices & AR',payapps:'Pay Applications',phases:'Phase Breakdown',bva:'Budget vs Actual',pos:'Purchase Orders',subs:'Subcontractors',liens:'Lien Waivers',profit:'Profit & Cost Report'};
@@ -2302,6 +2363,27 @@ function formatDate(dateStr) {
   return dateStr;
 }
 
+// Vendor selected from invoice modal dropdown — auto-fill name + defaults
+function onPuVendorSelect() {
+  const sel = $('pu-vendor-select');
+  if (!sel || !sel.value) return;
+  const vendor = (state.vendors||[]).find(v => v.id === sel.value);
+  if (!vendor) return;
+  // Auto-fill name field
+  $('pu-vendor').value = vendor.name;
+  // Auto-fill default cost code (only if not already set)
+  if (vendor.default_cost_code && !$('pu-cost-code').value) {
+    $('pu-cost-code').value = vendor.default_cost_code;
+  }
+  // Auto-fill payment terms (only if still default 30)
+  if (vendor.payment_terms != null) {
+    const currentTerms = parseInt($('pu-terms').value);
+    if (currentTerms === 30 || !currentTerms) {
+      $('pu-terms').value = vendor.payment_terms;
+    }
+  }
+}
+
 async function openNewPurchase(projectId) {
   clearForm(['pu-vendor','pu-inv','pu-amount','pu-paid','pu-notes']);
   $('pu-date').value = today();
@@ -2329,6 +2411,20 @@ async function openNewPurchase(projectId) {
     state.phases = phases || [];
     state.projectPOs = pos || [];
     state.costCodes = costCodes || [];
+  }
+  // Always refresh vendors so the dropdown stays current
+  if (!state.vendors?.length) {
+    const { data: vendors } = await db.from('vendors').select('*').eq('approved', true).order('name');
+    state.vendors = vendors || [];
+  }
+
+  // Populate vendor dropdown (active vendors only)
+  const vSel = $('pu-vendor-select');
+  if (vSel) {
+    const activeVendors = (state.vendors||[]).filter(v => v.active !== false);
+    vSel.innerHTML = '<option value="">— Type below or pick known —</option>' +
+      activeVendors.map(v => `<option value="${v.id}">${v.name}</option>`).join('');
+    vSel.value = '';
   }
 
   // Populate PO dropdown
@@ -2447,6 +2543,25 @@ async function savePurchase() {
   delete $('modal-purchase')._pendingFileName;
   closeModal('modal-purchase');
   toast(editId ? 'Invoice updated' : 'Invoice logged');
+
+  // Check if this is a NEW vendor (not in vendors table yet) — prompt to add
+  if (!editId && puData.vendor) {
+    const vendorName = puData.vendor.trim();
+    const known = (state.vendors||[]).find(v => (v.name||'').toLowerCase() === vendorName.toLowerCase());
+    if (!known) {
+      // Fresh load in case state.vendors is stale
+      const { data: dbVendors } = await db.from('vendors').select('name').ilike('name', vendorName);
+      if (!dbVendors || dbVendors.length === 0) {
+        // Truly new — prompt
+        setTimeout(() => {
+          if (confirm(`"${vendorName}" is a new vendor. Add to your vendor list?\n\nThis lets you set their default cost code, payment terms, W-9 status, etc.`)) {
+            openNewVendor(vendorName);
+          }
+        }, 300);
+      }
+    }
+  }
+
   render();
 }
 
@@ -2475,6 +2590,19 @@ async function editPurchase(purchaseId, projectId) {
     state.phases = phases || [];
     state.projectPOs = pos || [];
     state.costCodes = costCodes || [];
+  }
+  if (!state.vendors?.length) {
+    const { data: vendors } = await db.from('vendors').select('*').eq('approved', true).order('name');
+    state.vendors = vendors || [];
+  }
+
+  // Populate vendor dropdown (active vendors only, preselect if current vendor is in the list)
+  const vSel = $('pu-vendor-select');
+  if (vSel) {
+    const activeVendors = (state.vendors||[]).filter(v => v.active !== false);
+    const matchingVendor = activeVendors.find(v => (v.name||'').toLowerCase() === (pu.vendor||'').toLowerCase());
+    vSel.innerHTML = '<option value="">— Type below or pick known —</option>' +
+      activeVendors.map(v => `<option value="${v.id}" ${matchingVendor && v.id===matchingVendor.id?'selected':''}>${v.name}</option>`).join('');
   }
 
   // Populate PO dropdown
@@ -4264,6 +4392,212 @@ async function deleteEmployeeFromModal() {
   delete $('modal-employee').dataset.editId;
   closeModal('modal-employee');
   toast('Employee deleted');
+  render();
+}
+
+// ── VENDORS ──────────────────────────────────────────────────────────
+async function renderVendors() {
+  const [{ data: vendors }, { data: costCodes }, { data: purchases }] = await Promise.all([
+    db.from('vendors').select('*').order('name'),
+    db.from('cost_codes').select('*').order('code'),
+    db.from('purchases').select('vendor'),
+  ]);
+  state.vendors = vendors || [];
+  state.costCodes = costCodes || [];
+  // Build a map of vendor → invoice count for the "Has history" hint
+  const vendorUsage = {};
+  (purchases||[]).forEach(p => { if (p.vendor) vendorUsage[p.vendor] = (vendorUsage[p.vendor]||0)+1; });
+
+  const showInactive = $('ve-show-inactive')?.checked || false;
+  const searchTerm = ($('ve-search')?.value || '').toLowerCase();
+  let visible = (vendors||[]).filter(v => showInactive || v.active !== false);
+  if (searchTerm) {
+    visible = visible.filter(v => {
+      const blob = `${v.name||''} ${v.contact_name||''} ${v.email||''} ${v.phone||''}`.toLowerCase();
+      return blob.includes(searchTerm);
+    });
+  }
+
+  $('content').innerHTML = `
+  <div class="kgrid">
+    <div class="kcard db"><div class="klbl">Total Vendors</div><div class="kval">${(vendors||[]).length}</div></div>
+    <div class="kcard grn"><div class="klbl">Active</div><div class="kval">${(vendors||[]).filter(v=>v.active!==false).length}</div></div>
+    <div class="kcard amb"><div class="klbl">1099 Vendors</div><div class="kval">${(vendors||[]).filter(v=>v.is_1099).length}</div></div>
+    <div class="kcard red"><div class="klbl">Missing W-9</div><div class="kval">${(vendors||[]).filter(v=>v.is_1099 && !v.w9_on_file).length}</div></div>
+  </div>
+  <div class="card">
+    <div class="card-hd">
+      <div class="card-title">Vendor Roster</div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <input class="finp" id="ve-search" placeholder="Search vendors..." oninput="renderVendors()" value="${searchTerm}" style="font-size:11px;padding:4px 8px;width:160px">
+        <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--gray600);cursor:pointer">
+          <input type="checkbox" id="ve-show-inactive" ${showInactive?'checked':''} onchange="renderVendors()"> Show inactive
+        </label>
+        <button class="btn btn-sm btn-red" onclick="openNewVendor()">+ Add Vendor</button>
+      </div>
+    </div>
+    ${visible.length === 0 ? '<div class="tbl-empty">No vendors matching the current filters.</div>' :
+    `<table>
+      <thead><tr>
+        <th>Vendor</th><th>Contact</th><th>Phone / Email</th><th>Terms</th>
+        <th>Default Cost Code</th><th class="text-right"># Invoices</th><th>Flags</th><th>Status</th><th style="width:60px"></th>
+      </tr></thead>
+      <tbody>
+      ${visible.map(v => {
+        const cc = (state.costCodes||[]).find(c => c.code === v.default_cost_code);
+        const invCount = vendorUsage[v.name] || 0;
+        const flags = [];
+        if (v.is_1099) flags.push(v.w9_on_file ? '<span title="1099 — W-9 on file" style="font-size:14px">📋</span>' : '<span title="1099 — W-9 MISSING" style="font-size:14px;color:var(--danger)">⚠️</span>');
+        const isActive = v.active !== false;
+        return `<tr style="${!isActive?'opacity:.55':''}">
+          <td class="font-600">${v.name||'—'}</td>
+          <td style="font-size:11px">${v.contact_name||'—'}</td>
+          <td style="font-size:11px">${v.phone||''}${v.phone&&v.email?'<br>':''}${v.email||''}${!v.phone&&!v.email?'—':''}</td>
+          <td style="font-size:11px">Net ${v.payment_terms ?? 30}</td>
+          <td style="font-size:11px">${cc ? cc.code+' — '+cc.description : '—'}</td>
+          <td class="text-right">${invCount}</td>
+          <td>${flags.join(' ')||'—'}</td>
+          <td><span class="badge ${isActive?'b-active':'b-hold'}">${isActive?'Active':'Inactive'}</span></td>
+          <td><button class="btn btn-sm" onclick="openEditVendor('${v.id}')">Edit</button></td>
+        </tr>`;
+      }).join('')}
+      </tbody></table>`}
+  </div>`;
+  $('topbar-actions').innerHTML = `<button class="btn btn-sm btn-red" onclick="openNewVendor()">+ Add Vendor</button>`;
+}
+
+function populateVendorCostCodeDropdown(selected) {
+  const ccSel = $('ve-cost-code');
+  ccSel.innerHTML = '<option value="">— None —</option>' +
+    (state.costCodes||[]).map(cc => `<option value="${cc.code}" ${cc.code===selected?'selected':''}>${cc.code} — ${cc.description}</option>`).join('');
+}
+
+async function openNewVendor(prefillName) {
+  // Ensure cost codes loaded
+  if (!state.costCodes?.length) {
+    const { data: costCodes } = await db.from('cost_codes').select('*').order('code');
+    state.costCodes = costCodes || [];
+  }
+  $('ve-name').value = prefillName || '';
+  $('ve-contact').value = '';
+  $('ve-phone').value = '';
+  $('ve-email').value = '';
+  $('ve-address').value = '';
+  $('ve-terms').value = '30';
+  populateVendorCostCodeDropdown(null);
+  $('ve-1099').checked = false;
+  $('ve-w9').checked = false;
+  $('ve-notes').value = '';
+  $('ve-active').checked = true;
+  $('modal-vendor').dataset.editId = '';
+  document.querySelector('#modal-vendor .modal-title').textContent = 'Add Vendor';
+  if ($('ve-deactivate-btn')) $('ve-deactivate-btn').style.display = 'none';
+  if ($('ve-delete-btn')) $('ve-delete-btn').style.display = 'none';
+  openModal('modal-vendor');
+}
+
+async function openEditVendor(vendorId) {
+  if (!state.costCodes?.length) {
+    const { data: costCodes } = await db.from('cost_codes').select('*').order('code');
+    state.costCodes = costCodes || [];
+  }
+  const { data: v } = await db.from('vendors').select('*').eq('id', vendorId).single();
+  if (!v) { toast('Could not load vendor','error'); return; }
+  $('ve-name').value = v.name || '';
+  $('ve-contact').value = v.contact_name || '';
+  $('ve-phone').value = v.phone || '';
+  $('ve-email').value = v.email || '';
+  $('ve-address').value = v.address || '';
+  $('ve-terms').value = v.payment_terms ?? 30;
+  populateVendorCostCodeDropdown(v.default_cost_code);
+  $('ve-1099').checked = !!v.is_1099;
+  $('ve-w9').checked = !!v.w9_on_file;
+  $('ve-notes').value = v.notes || '';
+  $('ve-active').checked = v.active !== false;
+  $('modal-vendor').dataset.editId = vendorId;
+  document.querySelector('#modal-vendor .modal-title').textContent = 'Edit Vendor — ' + v.name;
+
+  // Check if this vendor has any invoices
+  const { count } = await db.from('purchases').select('id', {count:'exact', head:true}).eq('vendor', v.name);
+  const hasHistory = (count||0) > 0;
+  if (v.active !== false) {
+    if ($('ve-deactivate-btn')) { $('ve-deactivate-btn').style.display = 'inline-block'; $('ve-deactivate-btn').textContent = '⏸ Deactivate'; }
+  } else {
+    if ($('ve-deactivate-btn')) { $('ve-deactivate-btn').style.display = 'inline-block'; $('ve-deactivate-btn').textContent = '▶ Reactivate'; }
+  }
+  if ($('ve-delete-btn')) {
+    $('ve-delete-btn').style.display = hasHistory ? 'none' : 'inline-block';
+    if (!hasHistory) $('ve-delete-btn').title = 'No invoice history — safe to permanently delete';
+  }
+  openModal('modal-vendor');
+}
+
+async function saveVendor() {
+  const editId = $('modal-vendor').dataset.editId;
+  const name = $('ve-name').value.trim();
+  if (!name) { toast('Enter vendor name','error'); return; }
+  const data = {
+    name,
+    contact_name: $('ve-contact').value || null,
+    phone: $('ve-phone').value || null,
+    email: $('ve-email').value || null,
+    address: $('ve-address').value || null,
+    payment_terms: parseInt($('ve-terms').value) || 30,
+    default_cost_code: $('ve-cost-code').value || null,
+    is_1099: $('ve-1099').checked,
+    w9_on_file: $('ve-w9').checked,
+    notes: $('ve-notes').value || null,
+    active: $('ve-active').checked,
+    approved: true,  // marked approved so they show in the PO dropdown
+  };
+  let error;
+  if (editId) {
+    ({error} = await db.from('vendors').update(data).eq('id', editId));
+  } else {
+    ({error} = await db.from('vendors').insert(data));
+  }
+  if (error) { toast('Error: '+error.message,'error'); return; }
+  delete $('modal-vendor').dataset.editId;
+  closeModal('modal-vendor');
+  toast(editId ? 'Vendor updated' : 'Vendor added');
+  // Reload vendors cache so new vendors show in dropdowns immediately
+  const { data: refreshed } = await db.from('vendors').select('*').eq('approved', true).order('name');
+  state.vendors = refreshed || [];
+  render();
+}
+
+async function toggleVendorActive() {
+  const id = $('modal-vendor').dataset.editId;
+  if (!id) return;
+  const { data: v } = await db.from('vendors').select('active').eq('id', id).single();
+  const newActive = v?.active === false ? true : false;
+  const action = newActive ? 'reactivate' : 'deactivate';
+  if (!confirm(`${action.charAt(0).toUpperCase()+action.slice(1)} this vendor? ` + (newActive ? 'They will reappear in PO/Invoice dropdowns.' : 'They will be hidden from PO/Invoice dropdowns. Historical records preserved.'))) return;
+  await db.from('vendors').update({active: newActive}).eq('id', id);
+  closeModal('modal-vendor');
+  toast(newActive ? 'Vendor reactivated' : 'Vendor deactivated');
+  const { data: refreshed } = await db.from('vendors').select('*').eq('approved', true).order('name');
+  state.vendors = refreshed || [];
+  render();
+}
+
+async function deleteVendorFromModal() {
+  const id = $('modal-vendor').dataset.editId;
+  if (!id) return;
+  const { data: v } = await db.from('vendors').select('name').eq('id', id).single();
+  const { count } = await db.from('purchases').select('id', {count:'exact', head:true}).eq('vendor', v?.name);
+  if ((count||0) > 0) {
+    toast('Cannot delete — vendor has invoice history. Use Deactivate instead.', 'error');
+    return;
+  }
+  if (!confirm('Permanently delete this vendor? This cannot be undone.')) return;
+  const { error } = await db.from('vendors').delete().eq('id', id);
+  if (error) { toast('Error: '+error.message,'error'); return; }
+  delete $('modal-vendor').dataset.editId;
+  closeModal('modal-vendor');
+  toast('Vendor deleted');
+  const { data: refreshed } = await db.from('vendors').select('*').eq('approved', true).order('name');
+  state.vendors = refreshed || [];
   render();
 }
 

@@ -567,6 +567,13 @@ select.finp{cursor:pointer}
 <div class="modal-bg" id="modal-po">
   <div class="modal" style="max-width:640px">
     <div class="modal-hd"><div class="modal-title" id="modal-po-title">New Purchase Order</div><button class="modal-close" onclick="closeModal('modal-po')">×</button></div>
+    <div style="border:2px dashed var(--border);border-radius:10px;padding:14px;text-align:center;cursor:pointer;margin-bottom:14px" onclick="document.getElementById('po-quote-file').click()">
+      <div style="font-size:22px">📄</div>
+      <div style="font-size:12px;font-weight:600;color:var(--navy);margin-top:2px">Upload vendor quote to auto-fill</div>
+      <div style="font-size:10px;color:var(--gray600)">Reads vendor, amount &amp; description from the quote — PDF, JPG, or PNG</div>
+      <input type="file" id="po-quote-file" accept=".pdf,.jpg,.jpeg,.png" style="display:none" onchange="readPOQuoteFile(this.files[0])">
+    </div>
+    <div id="po-quote-status" style="display:none;margin-bottom:12px"></div>
     <div class="form-grid">
       <div class="fgroup"><label class="flbl">PO Number</label><input class="finp" id="po-num" readonly style="background:var(--gray50);font-weight:600"></div>
       <div class="fgroup"><label class="flbl">Date Issued</label><input class="finp" type="date" id="po-issue"></div>
@@ -6119,6 +6126,10 @@ async function openNewPO(projectId) {
   if ($('po-delete-btn')) $('po-delete-btn').style.display = 'none';
   // Generate button hidden for brand-new (unsaved) POs
   if ($('po-generate-btn')) $('po-generate-btn').style.display = 'none';
+  // Reset quote-parse status + stash
+  if ($('po-quote-status')) { $('po-quote-status').style.display = 'none'; $('po-quote-status').innerHTML = ''; }
+  if ($('po-quote-file')) $('po-quote-file').value = '';
+  delete $('modal-po')._quoteParserResult;
   openModal('modal-po');
 }
 
@@ -6219,6 +6230,10 @@ async function openEditPO(poId) {
   if ($('po-delete-btn')) $('po-delete-btn').style.display = 'inline-block';
   // Show Generate PO Document button (this is a saved PO)
   if ($('po-generate-btn')) $('po-generate-btn').style.display = 'inline-block';
+  // Reset quote-parse status + stash
+  if ($('po-quote-status')) { $('po-quote-status').style.display = 'none'; $('po-quote-status').innerHTML = ''; }
+  if ($('po-quote-file')) $('po-quote-file').value = '';
+  delete $('modal-po')._quoteParserResult;
   openModal('modal-po');
 }
 
@@ -6291,10 +6306,14 @@ async function savePO() {
       const { data: dbV } = await db.from('vendors').select('name').ilike('name', vendor);
       if (!dbV || dbV.length === 0) {
         const isSubByCode = (() => { const cc = parseInt(poData.cost_code); return cc>=300 && cc<500 && cc!==410; })();
+        const qpr = $('modal-po')._quoteParserResult || {};
         setTimeout(() => {
           if (confirm(`"${vendor}" is a new vendor. Add to your vendor list?\n\nThis lets the PO documents auto-fill their address, phone, and contact.`)) {
             openNewVendor({
               name: vendor,
+              phone: qpr.vendor_phone || '',
+              email: qpr.vendor_email || '',
+              address: qpr.vendor_address || '',
               default_cost_code: poData.cost_code || null,
               is_subcontractor: poData.po_type === 'subcontract' || isSubByCode,
             });
@@ -7341,6 +7360,103 @@ function renderMasterCOsView() {
     </table></div>`}
   </div>`;
   $('topbar-actions').innerHTML = `<button class="btn btn-sm btn-red" onclick="quickAddCO()">+ New CO</button>`;
+}
+
+// ── PO QUOTE PARSING ────────────────────────────────────────────────
+// Reads a vendor quote/proposal attached to a PO and auto-fills the PO
+// fields (vendor, amount, description, date). Reuses the invoice pipeline.
+async function readPOQuoteFile(file) {
+  if (!file) return;
+  const status = $('po-quote-status');
+  status.style.display = 'block';
+  status.style.background = '#FFF8E1';
+  status.style.color = 'var(--gray800)';
+  status.style.padding = '8px 10px';
+  status.style.borderRadius = '7px';
+  status.style.fontSize = '12px';
+
+  const name = file.name.toLowerCase();
+  const isImage = name.endsWith('.jpg') || name.endsWith('.jpeg') || name.endsWith('.png');
+  const isPdf = name.endsWith('.pdf');
+
+  try {
+    let fullText = '';
+    if (isPdf) {
+      status.innerHTML = '📄 Reading quote PDF...';
+      const pdfjsLib = await ensurePDFjs();
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const content = await page.getTextContent();
+        fullText += content.items.map(item => item.str).join(' ') + '\n';
+      }
+      if (fullText.trim().length < 50) {
+        status.innerHTML = '🔍 No text layer — running OCR...';
+        fullText = '';
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const imgBlob = await pdfPageToImage(pdf, i, 2);
+          const pageText = await ocrImage(imgBlob, status, `page ${i} of ${pdf.numPages}`);
+          fullText += pageText + '\n';
+        }
+      }
+    } else if (isImage) {
+      status.innerHTML = '🔍 OCR scanning quote...';
+      fullText = await ocrImage(file, status, 'image');
+    } else {
+      throw new Error('Unsupported file — use PDF, JPG, or PNG');
+    }
+
+    const knownPOs = (state.allPOs || []).map(po => String(po.po_number)).filter(Boolean);
+    const parsed = parseInvoiceText(fullText, file.name, knownPOs);
+    console.log('PO quote parsed:', parsed);
+
+    // Fill only EMPTY PO fields (never overwrite what the user already typed)
+    const filled = [];
+
+    if (parsed.vendor) {
+      const vSel = $('po-vendor-select');
+      const known = (state.vendors||[]).find(v => v.name.toLowerCase() === parsed.vendor.toLowerCase());
+      if (known) {
+        if (!vSel.value) { vSel.value = known.name; $('po-vendor').value = known.name; autoSetPOType(known.name); filled.push('vendor'); }
+      } else {
+        if (!$('po-vendor').value) {
+          vSel.value = '__other';
+          $('po-vendor').style.display = 'block';
+          $('po-vendor').value = parsed.vendor;
+          filled.push('vendor (new)');
+        }
+      }
+    }
+    if (parsed.amount_due && !$('po-committed').value) {
+      $('po-committed').value = parsed.amount_due;
+      filled.push('amount');
+    }
+    if (parsed.invoice_date && !$('po-issue').value) {
+      $('po-issue').value = parsed.invoice_date;
+      filled.push('date');
+    }
+    if (parsed.cost_code && !$('po-cost-code').value) {
+      $('po-cost-code').value = parsed.cost_code;
+      filled.push('cost code');
+    }
+
+    // Stash so we can pre-fill a new-vendor record with contact info on save
+    $('modal-po')._quoteParserResult = parsed;
+
+    if (filled.length) {
+      status.style.background = '#E8F5E9';
+      status.innerHTML = `✅ Read the quote — filled: <strong>${filled.join(', ')}</strong>. Review and adjust, then add a description &amp; cost code if needed.`;
+    } else {
+      status.style.background = '#FFF3E0';
+      status.innerHTML = `📄 Read the quote, but couldn't confidently extract fields (or they were already filled). Enter details manually.`;
+    }
+
+  } catch (e) {
+    console.error('Quote parse error:', e);
+    status.style.background = '#FFEBEE';
+    status.innerHTML = '⚠️ Could not read the quote: ' + (e.message||'unknown error') + '. Enter details manually.';
+  }
 }
 
 // ── PO DOCUMENT GENERATION ──────────────────────────────────────────

@@ -258,6 +258,21 @@ select.finp{cursor:pointer}
       </div>
       <div class="fgroup"><label class="flbl">Retainage %</label><input class="finp" type="number" id="p-retainage" placeholder="5" value="5" step="0.5"></div>
     </div>
+
+    <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
+      <div style="font-size:12px;font-weight:700;color:var(--navy);margin-bottom:4px">Contract Details</div>
+      <div style="font-size:11px;color:var(--gray600);margin-bottom:10px">Used to auto-fill Purchase Orders and other generated documents for this job.</div>
+      <div class="form-grid">
+        <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Project Name (full, as on contract)</label><input class="finp" id="p-project-name" placeholder="e.g. Edenwald Senior Housing — Phase 2"></div>
+        <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Project Address</label><input class="finp" id="p-project-address" placeholder="e.g. 1140 E 229th St, Bronx NY 10466"></div>
+        <div class="fgroup"><label class="flbl">Owner</label><input class="finp" id="p-owner" placeholder="e.g. NYCHA"></div>
+        <div class="fgroup"><label class="flbl">General Contractor</label><input class="finp" id="p-gc" placeholder="e.g. JEMCO Electrical Contractors, Inc."></div>
+        <div class="fgroup"><label class="flbl">GC Contact Name</label><input class="finp" id="p-gc-contact" placeholder="(optional)"></div>
+        <div class="fgroup"><label class="flbl">GC Contact Email</label><input class="finp" id="p-gc-email" placeholder="(optional)"></div>
+        <div class="fgroup"><label class="flbl">GC Contact Phone</label><input class="finp" id="p-gc-phone" placeholder="(optional)"></div>
+      </div>
+    </div>
+
     <div class="form-actions">
       <button class="btn" onclick="closeModal('modal-project')">Cancel</button>
       <button class="btn btn-red" onclick="saveProject()">Save Project</button>
@@ -460,6 +475,11 @@ select.finp{cursor:pointer}
           <input type="checkbox" id="ve-w9"> W-9 on file
         </label>
       </div>
+      <div class="fgroup" style="grid-column:1/-1">
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer">
+          <input type="checkbox" id="ve-subcontractor"> Subcontractor (POs use the Subcontract template instead of Equipment)
+        </label>
+      </div>
       <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Notes</label><input class="finp" id="ve-notes" placeholder="Any special notes about this vendor"></div>
       <div class="fgroup" style="grid-column:1/-1">
         <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer">
@@ -561,6 +581,12 @@ select.finp{cursor:pointer}
         <input class="finp" id="po-vendor" placeholder="Type vendor name" style="margin-top:4px;display:none">
       </div>
       <div class="fgroup"><label class="flbl">Cost Code</label><select class="finp" id="po-cost-code"><option value="">Select cost code...</option></select></div>
+      <div class="fgroup"><label class="flbl">PO Type</label>
+        <select class="finp" id="po-type">
+          <option value="equipment">Equipment / Material PO</option>
+          <option value="subcontract">Subcontract PO</option>
+        </select>
+      </div>
       <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Description</label><input class="finp" id="po-desc" placeholder="What is this PO for?"></div>
       <div class="fgroup"><label class="flbl">Phase (optional)</label><select class="finp" id="po-phase"><option value="">Select phase...</option></select></div>
       <div class="fgroup"><label class="flbl">Required Date</label><input class="finp" type="date" id="po-expected"></div>
@@ -580,6 +606,7 @@ select.finp{cursor:pointer}
         <button id="po-delete-btn" class="btn btn-sm" style="color:var(--danger);border-color:var(--danger);display:none" onclick="deletePOFromModal()">🗑 Delete</button>
       </div>
       <div style="display:flex;gap:8px">
+        <button id="po-generate-btn" class="btn btn-sm" style="display:none" onclick="openGeneratePO()">📄 Generate PO Document</button>
         <button class="btn" onclick="closeModal('modal-po')">Cancel</button>
         <button class="btn btn-red" onclick="savePO()">Save PO</button>
       </div>
@@ -743,6 +770,36 @@ select.finp{cursor:pointer}
         <button class="btn" onclick="closeModal('modal-import-pos')">Cancel</button>
         <button id="imp-po-confirm-btn" class="btn btn-red" onclick="confirmImportPOs()" disabled style="opacity:.5">Import</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="modal-generate-po">
+  <div class="modal" style="max-width:680px;width:95%">
+    <div class="modal-hd"><div class="modal-title">📄 Generate PO Document</div><button class="modal-close" onclick="closeModal('modal-generate-po')">×</button></div>
+    <div id="gen-po-warnings"></div>
+    <div class="form-grid">
+      <div class="fgroup"><label class="flbl">Document Type</label>
+        <select class="finp" id="gen-po-type">
+          <option value="equipment">Equipment / Material PO</option>
+          <option value="subcontract">Subcontract PO</option>
+        </select>
+      </div>
+      <div class="fgroup"><label class="flbl">Proposal/Quote Date</label><input class="finp" type="date" id="gen-po-proposal-date"></div>
+      <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Scope of Work (editable)</label>
+        <textarea class="finp" id="gen-po-scope" rows="2" style="resize:vertical"></textarea>
+      </div>
+      <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Line Item Description (editable)</label>
+        <textarea class="finp" id="gen-po-items" rows="2" style="resize:vertical"></textarea>
+      </div>
+    </div>
+    <div style="margin-top:12px;padding:10px;background:var(--gray50);border-radius:8px;font-size:11px;color:var(--gray600)">
+      <div id="gen-po-summary"></div>
+    </div>
+    <div class="form-actions" style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+      <button class="btn" onclick="closeModal('modal-generate-po')">Cancel</button>
+      <button class="btn" onclick="generatePODocument('print')">🖨 Preview / Print</button>
+      <button class="btn btn-red" onclick="generatePODocument('email')">✉️ Open in Email</button>
     </div>
   </div>
 </div>
@@ -1132,7 +1189,7 @@ document.querySelectorAll('.sb-item[data-view]').forEach(btn => {
   btn.addEventListener('click', () => navigate(btn.dataset.view));
 });
 $('btn-new-project').addEventListener('click', () => {
-  clearForm(['p-num','p-name','p-client','p-date','p-contract']);
+  clearForm(['p-num','p-name','p-client','p-date','p-contract','p-project-name','p-project-address','p-owner','p-gc','p-gc-contact','p-gc-email','p-gc-phone']);
   $('p-status').value = 'Active';
   $('modal-project-title').textContent = 'New Project';
   openModal('modal-project');
@@ -4808,6 +4865,7 @@ async function openNewVendor(prefill) {
   populateVendorCostCodeDropdown(prefill.default_cost_code || null);
   $('ve-1099').checked = !!prefill.is_1099;
   $('ve-w9').checked = !!prefill.w9_on_file;
+  if ($('ve-subcontractor')) $('ve-subcontractor').checked = !!prefill.is_subcontractor;
   $('ve-notes').value = prefill.notes || '';
   $('ve-active').checked = true;
   $('modal-vendor').dataset.editId = '';
@@ -4838,6 +4896,7 @@ async function openEditVendor(vendorId) {
   populateVendorCostCodeDropdown(v.default_cost_code);
   $('ve-1099').checked = !!v.is_1099;
   $('ve-w9').checked = !!v.w9_on_file;
+  if ($('ve-subcontractor')) $('ve-subcontractor').checked = !!v.is_subcontractor;
   $('ve-notes').value = v.notes || '';
   $('ve-active').checked = v.active !== false;
   $('modal-vendor').dataset.editId = vendorId;
@@ -4872,6 +4931,7 @@ async function saveVendor() {
     default_cost_code: $('ve-cost-code').value || null,
     is_1099: $('ve-1099').checked,
     w9_on_file: $('ve-w9').checked,
+    is_subcontractor: $('ve-subcontractor') ? $('ve-subcontractor').checked : false,
     notes: $('ve-notes').value || null,
     active: $('ve-active').checked,
     approved: true,  // marked approved so they show in the PO dropdown
@@ -4938,6 +4998,13 @@ async function saveProject() {
     base_contract:parseFloat($('p-contract').value)||0,
     payment_terms: parseInt($('p-payment-terms').value)||30,
     retainage_pct: parseFloat($('p-retainage').value)||5,
+    project_name_full: $('p-project-name').value.trim() || null,
+    project_address: $('p-project-address').value.trim() || null,
+    owner_name: $('p-owner').value.trim() || null,
+    general_contractor: $('p-gc').value.trim() || null,
+    gc_contact_name: $('p-gc-contact').value.trim() || null,
+    gc_contact_email: $('p-gc-email').value.trim() || null,
+    gc_contact_phone: $('p-gc-phone').value.trim() || null,
   };
   const editId = $('modal-project').dataset.editId;
   let error;
@@ -4975,6 +5042,13 @@ function editProject(id) {
   $('p-contract').value = p.base_contract||0;
   $('p-payment-terms').value = p.payment_terms||30;
   $('p-retainage').value = p.retainage_pct||5;
+  $('p-project-name').value = p.project_name_full||'';
+  $('p-project-address').value = p.project_address||'';
+  $('p-owner').value = p.owner_name||'';
+  $('p-gc').value = p.general_contractor||'';
+  $('p-gc-contact').value = p.gc_contact_name||'';
+  $('p-gc-email').value = p.gc_contact_email||'';
+  $('p-gc-phone').value = p.gc_contact_phone||'';
   $('modal-project-title').textContent = 'Edit Project';
   $('modal-project').dataset.editId = id;
   openModal('modal-project');
@@ -5978,10 +6052,13 @@ async function openNewPO(projectId) {
     } else {
       $('po-vendor').style.display = 'none';
       $('po-vendor').value = vSel.value;
+      // Auto-set PO type from the vendor's subcontractor flag
+      autoSetPOType(vSel.value);
     }
   };
   $('po-vendor').style.display = 'none';
   $('po-vendor').value = '';
+  $('po-type').value = 'equipment';
 
   $('modal-po').dataset.projectId = projectId||'';
   $('modal-po').dataset.editId = '';
@@ -5991,7 +6068,27 @@ async function openNewPO(projectId) {
   clearPendingAttachFile($('modal-po'));
   resetAttachIndicator('po-attach');
   if ($('po-delete-btn')) $('po-delete-btn').style.display = 'none';
+  // Generate button hidden for brand-new (unsaved) POs
+  if ($('po-generate-btn')) $('po-generate-btn').style.display = 'none';
   openModal('modal-po');
+}
+
+// Set the PO type dropdown based on the selected vendor's is_subcontractor flag.
+// Cost code is a secondary hint (300-499 → subcontract) when vendor flag absent.
+function autoSetPOType(vendorName) {
+  const vendor = (state.vendors||[]).find(v => v.name === vendorName);
+  if (vendor && vendor.is_subcontractor) {
+    $('po-type').value = 'subcontract';
+    return;
+  }
+  // Secondary hint: cost code range
+  const cc = parseInt($('po-cost-code').value);
+  if (cc >= 300 && cc < 500) {
+    $('po-type').value = 'subcontract';
+  } else if (vendor) {
+    // Known vendor, not flagged as sub → equipment
+    $('po-type').value = 'equipment';
+  }
 }
 
 async function openEditPO(poId) {
@@ -6050,6 +6147,14 @@ async function openEditPO(poId) {
   $('po-expected').value = po.expected_date?po.expected_date.substring(0,10):'';
   $('po-status').value = po.status||'Open';
   $('po-invoice-num').value = po.invoice_number||'';
+  // PO type — use saved value, else infer from vendor flag / cost code
+  if (po.po_type) {
+    $('po-type').value = po.po_type;
+  } else {
+    const knownV = (state.vendors||[]).find(v=>v.name===po.vendor);
+    const cc = parseInt(po.cost_code);
+    $('po-type').value = (knownV?.is_subcontractor || (cc>=300 && cc<500)) ? 'subcontract' : 'equipment';
+  }
 
   $('modal-po').dataset.projectId = po.project_id;
   $('modal-po').dataset.editId = poId;
@@ -6060,6 +6165,8 @@ async function openEditPO(poId) {
   if (po.pdf_url) setAttachIndicatorAttached('po-attach', po.pdf_url);
   else setAttachIndicatorEmpty('po-attach');
   if ($('po-delete-btn')) $('po-delete-btn').style.display = 'inline-block';
+  // Show Generate PO Document button (this is a saved PO)
+  if ($('po-generate-btn')) $('po-generate-btn').style.display = 'inline-block';
   openModal('modal-po');
 }
 
@@ -6084,6 +6191,7 @@ async function savePO() {
     expected_date: $('po-expected').value||null,
     status: $('po-status').value,
     invoice_number: $('po-invoice-num').value||null,
+    po_type: $('po-type') ? $('po-type').value : 'equipment',
     notes: isShop ? 'Shop/Overhead' : null,
   };
 
@@ -7160,6 +7268,213 @@ function renderMasterCOsView() {
     </table></div>`}
   </div>`;
   $('topbar-actions').innerHTML = `<button class="btn btn-sm btn-red" onclick="quickAddCO()">+ New CO</button>`;
+}
+
+// ── PO DOCUMENT GENERATION ──────────────────────────────────────────
+// Generates a print-ready PO document (HTML → user prints to PDF or emails).
+// Two templates: Equipment/Material and Subcontract.
+
+let _genPOData = null;  // holds the current PO being generated
+
+// Grab the Tetra logo data URL from the existing letterhead <img> in the DOM
+function getTetraLogoDataURL() {
+  const img = document.querySelector('.logo-area img, img[alt="Tetra Mechanical Services"]');
+  return img ? img.src : '';
+}
+
+async function openGeneratePO() {
+  const editId = $('modal-po').dataset.editId;
+  if (!editId) { toast('Save the PO first, then generate the document','error'); return; }
+
+  // Load full PO + project + vendor data
+  const { data: po } = await db.from('purchase_orders').select('*').eq('id', editId).single();
+  if (!po) { toast('Could not load PO','error'); return; }
+
+  let project = null;
+  if (po.project_id) {
+    const { data: p } = await db.from('projects').select('*').eq('id', po.project_id).single();
+    project = p;
+  }
+  const vendor = (state.vendors||[]).find(v => v.name === po.vendor) || null;
+
+  _genPOData = { po, project, vendor };
+
+  // Warnings if project missing contract details
+  const warnings = [];
+  if (po.project_id && project) {
+    const missing = [];
+    if (!project.owner_name) missing.push('Owner');
+    if (!project.general_contractor) missing.push('General Contractor');
+    if (!project.project_address) missing.push('Project Address');
+    if (missing.length) {
+      warnings.push(`<div style="padding:10px;background:#fff3cd;border:1px solid #ffc107;border-radius:8px;font-size:12px;margin-bottom:12px">
+        ⚠️ This project is missing: <strong>${missing.join(', ')}</strong>. The document will have blanks.
+        <button class="btn btn-sm" style="margin-left:8px" onclick="closeModal('modal-generate-po'); editProject('${po.project_id}')">Fill in Job Setup →</button>
+      </div>`);
+    }
+  } else if (!po.project_id) {
+    warnings.push(`<div style="padding:10px;background:var(--gray50);border:1px solid var(--border);border-radius:8px;font-size:12px;margin-bottom:12px">
+      This is a Shop/Overhead PO with no project — project fields will be blank on the document.
+    </div>`);
+  }
+  $('gen-po-warnings').innerHTML = warnings.join('');
+
+  // Default the document type from the PO's saved type / vendor flag / cost code
+  let docType = po.po_type;
+  if (!docType) {
+    const cc = parseInt(po.cost_code);
+    docType = (vendor?.is_subcontractor || (cc>=300 && cc<500)) ? 'subcontract' : 'equipment';
+  }
+  $('gen-po-type').value = docType;
+  $('gen-po-proposal-date').value = po.issue_date ? po.issue_date.substring(0,10) : today();
+
+  // Default scope + line item text based on type
+  const defaultScope = docType === 'subcontract'
+    ? 'Furnish & Install all labor/material as per all plans, addendums, drawings, and specifications.'
+    : 'Equipment as per all plans, addendums, drawings, and specifications.';
+  const defaultItems = docType === 'subcontract'
+    ? (po.description || 'Scope of Work per drawings & per attached quote')
+    : (po.description || 'Furnish Equipment per drawings, specifications, and approved submittals. Per attached quote.');
+  $('gen-po-scope').value = defaultScope;
+  $('gen-po-items').value = defaultItems;
+
+  // Summary line
+  const fmtAmt = fmt(po.committed_amount||0);
+  $('gen-po-summary').innerHTML = `
+    <strong>PO #${po.po_number}</strong> · Vendor: ${po.vendor||'—'} · Amount: ${fmtAmt}<br>
+    ${project ? 'Project: '+(project.project_name_full||project.job_name)+' (Job '+project.job_number+')' : 'No project'}
+  `;
+
+  // When type changes, update default scope text
+  $('gen-po-type').onchange = () => {
+    const t = $('gen-po-type').value;
+    $('gen-po-scope').value = t === 'subcontract'
+      ? 'Furnish & Install all labor/material as per all plans, addendums, drawings, and specifications.'
+      : 'Equipment as per all plans, addendums, drawings, and specifications.';
+  };
+
+  openModal('modal-generate-po');
+}
+
+// Build the PO document HTML and either open print window or email
+function generatePODocument(mode) {
+  if (!_genPOData) return;
+  const { po, project, vendor } = _genPOData;
+  const docType = $('gen-po-type').value;
+  const proposalDate = $('gen-po-proposal-date').value;
+  const scope = $('gen-po-scope').value;
+  const items = $('gen-po-items').value;
+  const logo = getTetraLogoDataURL();
+
+  const isSubcontract = docType === 'subcontract';
+  const headerTitle = isSubcontract ? 'SUBCONTRACT PURCHASE ORDER' : 'EQUIPMENT PURCHASE ORDER';
+  const partyLabel = isSubcontract ? 'Subcontractor Name' : 'Vendor Name';
+
+  // PO number format: PO# - Job# - CostCode
+  const jobNum = project?.job_number || '';
+  const fullPONum = `${po.po_number}-${jobNum}-${po.cost_code||''}`;
+
+  // Vendor display values
+  const vName = vendor?.contact_name || '';
+  const vCompany = po.vendor || vendor?.name || '';
+  const vAddress = vendor?.address || '';
+  const vPhone = vendor?.phone || '';
+  const vEmail = vendor?.email || '';
+
+  // Project display values
+  const projName = project?.project_name_full || project?.job_name || '';
+  const owner = project?.owner_name || '';
+  const gc = project?.general_contractor || '';
+  const projAddr = project?.project_address || '';
+
+  const amount = fmt(po.committed_amount||0);
+  const propDateFmt = proposalDate ? (() => { const [y,m,d]=proposalDate.split('-'); return `${m}/${d}/${y}`; })() : '____/____/____';
+
+  // Terms paragraph differs by type
+  const termsPara = isSubcontract
+    ? `All work is to be performed according to supplied general requirements, bid specifications, working drawings, modifications / addendums, applicable codes, and OSHA requirements. Invoices for this purchase order will only be paid as per the agreed upon purchase order and must reference the purchase order number on all correspondences. Any additional work requires an approved and executed change order. This purchase order is subject to the terms and conditions of the Tetra Mechanical Services LLC Master Subcontract Agreement and the Prime Contract. Subcontractor shall comply with all applicable labor laws, certified payroll requirements, insurance requirements, and project compliance documentation. Payment to subcontractor shall be made only after receipt of payment by Tetra Mechanical Services LLC from the Owner and/or General Contractor for the corresponding portion of work. Subcontractor acknowledges that Tetra Mechanical Services LLC is a subcontractor to the above referenced General Contractor, and all work is subject to the terms and conditions of the Prime Contract.`
+    : `This purchase order is for furnishing material and/or equipment only unless otherwise stated. Vendor shall supply material and/or equipment in accordance with the project drawings, specifications, approved submittals, and proposal referenced below. Invoices must reference the Purchase Order number on all correspondence. Delivery dates shall be coordinated with Tetra Mechanical Services LLC. Vendor shall notify Tetra of any delays or long lead items immediately. All material shall be new, unused, and in compliance with project specifications and applicable codes. Payment terms shall be per agreed vendor terms unless otherwise stated in writing. Tetra Mechanical Services LLC reserves the right to reject any material not conforming to the contract documents or approved submittals.`;
+
+  const itemRows = items.split('\n').filter(Boolean).map((line,i) =>
+    `<tr><td style="width:50px;text-align:center">${i+1}</td><td>${esc(line)}</td></tr>`
+  ).join('') || '<tr><td style="text-align:center">1</td><td></td></tr>';
+
+  const docHTML = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>PO ${fullPONum}</title>
+<style>
+  @page { size: letter; margin: 0.5in; }
+  * { box-sizing: border-box; }
+  body { font-family: 'Times New Roman', Times, serif; color:#000; margin:0; padding:0; font-size:12px; line-height:1.4; }
+  .logo-wrap { text-align:center; margin-bottom:6px; }
+  .logo-wrap img { height:80px; object-fit:contain; }
+  .header-bar { text-align:center; font-weight:bold; font-size:14px; background:#fff34d; padding:4px; margin:8px 0 16px; text-decoration:underline; }
+  table.info { width:100%; border-collapse:collapse; margin-bottom:14px; }
+  table.info td { border:1px solid #000; padding:4px 8px; vertical-align:top; font-size:12px; }
+  table.info td.label { font-weight:bold; width:130px; }
+  .terms { font-weight:bold; margin:8px 0 4px; }
+  .terms-body { text-align:justify; margin-bottom:14px; }
+  table.items { width:100%; border-collapse:collapse; margin-bottom:18px; }
+  table.items th, table.items td { border:1px solid #000; padding:5px 8px; text-align:left; font-size:12px; }
+  table.items th { background:#f0f0f0; }
+  .scope { margin:10px 0; }
+  .proposal { margin:14px 0; }
+  .total { margin-top:8px; font-size:13px; }
+  .footer { position:fixed; bottom:0.3in; left:0; right:0; text-align:center; font-size:10px; text-decoration:underline; }
+  @media screen { body { max-width:8.5in; margin:0 auto; padding:0.5in; } }
+</style></head><body>
+  <div class="logo-wrap">${logo ? `<img src="${logo}" alt="Tetra Mechanical Services">` : '<div style="font-size:28px;font-weight:bold;color:#1a3a5c">TETRA MECHANICAL SERVICES</div>'}</div>
+  <div class="header-bar">${headerTitle} #${fullPONum}</div>
+
+  <table class="info">
+    <tr><td class="label">${partyLabel}:</td><td>${esc(vName)}</td><td class="label">Project:</td><td>${esc(projName)}</td></tr>
+    <tr><td class="label">Company Name:</td><td>${esc(vCompany)}</td><td class="label">Owner:</td><td>${esc(owner)}</td></tr>
+    <tr><td class="label">Company Address:</td><td>${esc(vAddress)}</td><td class="label">General Contractor:</td><td>${esc(gc)}</td></tr>
+    <tr><td class="label">Phone:</td><td>${esc(vPhone)}</td><td class="label">Mechanical Contractor:</td><td>Tetra Mechanical Services LLC</td></tr>
+    <tr><td class="label">Email:</td><td>${esc(vEmail)}</td><td class="label">Project Address:</td><td>${esc(projAddr)}</td></tr>
+    <tr><td class="label"></td><td></td><td class="label">Job #:</td><td>${esc(jobNum)}</td></tr>
+  </table>
+
+  <div class="terms">Terms &amp; Conditions</div>
+  <div class="terms-body">${esc(termsPara)}</div>
+
+  <table class="items">
+    <thead><tr><th style="width:50px">Item #</th><th>Product Name/Description</th></tr></thead>
+    <tbody>${itemRows}</tbody>
+  </table>
+
+  <div class="scope"><strong>Scope of Work:</strong> ${esc(scope)}</div>
+  <div class="proposal">Please reference proposal dated ${propDateFmt} for ${amount}.</div>
+  <div class="total"><strong>Contract Total: ${amount}</strong></div>
+
+  <div class="footer">1 Plaza Rd. Greenvale, New York 11548 | www.Tetra-Mechanical.Com | (363) 213-1974</div>
+</body></html>`;
+
+  if (mode === 'email') {
+    // Open default email client with vendor email + subject; body explains attachment
+    const to = vEmail || '';
+    const subject = `${headerTitle} #${fullPONum} — Tetra Mechanical Services`;
+    const body = `Please find attached ${headerTitle} #${fullPONum} for ${projName||'our project'}.\n\nContract Total: ${amount}\n\nPlease reference PO #${fullPONum} on all invoices and correspondence.\n\nThank you,\nTetra Mechanical Services LLC\n(363) 213-1974`;
+    // Open the printable doc in a new window first (so they can save the PDF to attach)
+    const w = window.open('', '_blank');
+    w.document.write(docHTML);
+    w.document.close();
+    setTimeout(() => {
+      window.location.href = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    }, 600);
+    toast('Document opened — print to PDF, then attach to the email');
+  } else {
+    // Print / preview mode
+    const w = window.open('', '_blank');
+    w.document.write(docHTML);
+    w.document.close();
+    setTimeout(() => { w.focus(); w.print(); }, 500);
+  }
+  closeModal('modal-generate-po');
+}
+
+// HTML-escape helper for injecting user/db text into generated documents
+function esc(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
 // ── BULK PO IMPORT (from Excel/CSV) ─────────────────────────────────

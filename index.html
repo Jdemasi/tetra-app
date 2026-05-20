@@ -270,6 +270,11 @@ select.finp{cursor:pointer}
         <div class="fgroup"><label class="flbl">GC Contact Name</label><input class="finp" id="p-gc-contact" placeholder="(optional)"></div>
         <div class="fgroup"><label class="flbl">GC Contact Email</label><input class="finp" id="p-gc-email" placeholder="(optional)"></div>
         <div class="fgroup"><label class="flbl">GC Contact Phone</label><input class="finp" id="p-gc-phone" placeholder="(optional)"></div>
+        <div class="fgroup" style="grid-column:1/-1">
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer">
+            <input type="checkbox" id="p-tax-exempt"> Tax-exempt project (materials purchased for this job are sales-tax exempt)
+          </label>
+        </div>
       </div>
     </div>
 
@@ -583,7 +588,8 @@ select.finp{cursor:pointer}
       <div class="fgroup"><label class="flbl">Cost Code</label><select class="finp" id="po-cost-code"><option value="">Select cost code...</option></select></div>
       <div class="fgroup"><label class="flbl">PO Type</label>
         <select class="finp" id="po-type">
-          <option value="equipment">Equipment / Material PO</option>
+          <option value="material">Material PO</option>
+          <option value="equipment">Equipment PO</option>
           <option value="subcontract">Subcontract PO</option>
         </select>
       </div>
@@ -775,24 +781,54 @@ select.finp{cursor:pointer}
 </div>
 
 <div class="modal-bg" id="modal-generate-po">
-  <div class="modal" style="max-width:680px;width:95%">
+  <div class="modal" style="max-width:720px;width:95%">
     <div class="modal-hd"><div class="modal-title">📄 Generate PO Document</div><button class="modal-close" onclick="closeModal('modal-generate-po')">×</button></div>
     <div id="gen-po-warnings"></div>
     <div class="form-grid">
       <div class="fgroup"><label class="flbl">Document Type</label>
-        <select class="finp" id="gen-po-type">
-          <option value="equipment">Equipment / Material PO</option>
+        <select class="finp" id="gen-po-type" onchange="onGenPOTypeChange()">
+          <option value="material">Material PO</option>
+          <option value="equipment">Equipment PO</option>
           <option value="subcontract">Subcontract PO</option>
         </select>
       </div>
-      <div class="fgroup"><label class="flbl">Proposal/Quote Date</label><input class="finp" type="date" id="gen-po-proposal-date"></div>
+      <div class="fgroup" id="gen-po-orderedby-wrap"><label class="flbl">Ordered By</label>
+        <select class="finp" id="gen-po-orderedby"></select>
+      </div>
+    </div>
+
+    <!-- MATERIAL-specific section -->
+    <div id="gen-po-material-section" style="display:none">
+      <div class="form-grid">
+        <div class="fgroup"><label class="flbl">Delivery Date</label><input class="finp" type="date" id="gen-po-delivery-date"></div>
+        <div class="fgroup"><label class="flbl">Delivery Time</label><input class="finp" id="gen-po-delivery-time" placeholder="e.g. 7:00 AM"></div>
+        <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Site Contact Information</label><input class="finp" id="gen-po-site-contact" placeholder="(optional)"></div>
+      </div>
+      <label class="flbl" style="margin-top:8px;display:block">Line Items — leave blank for the vendor/field to fill in</label>
+      <div style="max-height:240px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:6px;margin-bottom:8px">
+        <table style="width:100%;font-size:11px" id="gen-po-lineitems">
+          <thead><tr style="background:var(--gray50)">
+            <th style="width:70px;padding:4px">Qty</th><th style="width:90px;padding:4px">Size</th><th style="padding:4px">Description</th>
+          </tr></thead>
+          <tbody id="gen-po-lineitems-body"></tbody>
+        </table>
+      </div>
+      <button class="btn btn-sm" onclick="addGenPOLineItem()" style="margin-bottom:8px">+ Add row</button>
+    </div>
+
+    <!-- EQUIPMENT/SUBCONTRACT-specific section -->
+    <div id="gen-po-contract-section" style="display:none">
+      <div class="form-grid">
+        <div class="fgroup"><label class="flbl">Proposal/Quote Date</label><input class="finp" type="date" id="gen-po-proposal-date"></div>
+      </div>
       <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Scope of Work (editable)</label>
         <textarea class="finp" id="gen-po-scope" rows="2" style="resize:vertical"></textarea>
       </div>
-      <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Line Item Description (editable)</label>
+      <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Line Item Description (editable, one per line)</label>
         <textarea class="finp" id="gen-po-items" rows="2" style="resize:vertical"></textarea>
       </div>
     </div>
+
     <div style="margin-top:12px;padding:10px;background:var(--gray50);border-radius:8px;font-size:11px;color:var(--gray600)">
       <div id="gen-po-summary"></div>
     </div>
@@ -1191,6 +1227,7 @@ document.querySelectorAll('.sb-item[data-view]').forEach(btn => {
 $('btn-new-project').addEventListener('click', () => {
   clearForm(['p-num','p-name','p-client','p-date','p-contract','p-project-name','p-project-address','p-owner','p-gc','p-gc-contact','p-gc-email','p-gc-phone']);
   $('p-status').value = 'Active';
+  if ($('p-tax-exempt')) $('p-tax-exempt').checked = false;
   $('modal-project-title').textContent = 'New Project';
   openModal('modal-project');
 });
@@ -5005,6 +5042,7 @@ async function saveProject() {
     gc_contact_name: $('p-gc-contact').value.trim() || null,
     gc_contact_email: $('p-gc-email').value.trim() || null,
     gc_contact_phone: $('p-gc-phone').value.trim() || null,
+    tax_exempt: $('p-tax-exempt') ? $('p-tax-exempt').checked : false,
   };
   const editId = $('modal-project').dataset.editId;
   let error;
@@ -5049,6 +5087,7 @@ function editProject(id) {
   $('p-gc-contact').value = p.gc_contact_name||'';
   $('p-gc-email').value = p.gc_contact_email||'';
   $('p-gc-phone').value = p.gc_contact_phone||'';
+  if ($('p-tax-exempt')) $('p-tax-exempt').checked = !!p.tax_exempt;
   $('modal-project-title').textContent = 'Edit Project';
   $('modal-project').dataset.editId = id;
   openModal('modal-project');
@@ -6058,7 +6097,13 @@ async function openNewPO(projectId) {
   };
   $('po-vendor').style.display = 'none';
   $('po-vendor').value = '';
-  $('po-type').value = 'equipment';
+  $('po-type').value = 'material';
+  // Re-infer PO type when cost code changes
+  $('po-cost-code').onchange = () => {
+    const vName = $('po-vendor-select').value && $('po-vendor-select').value !== '__other' ? $('po-vendor-select').value : $('po-vendor').value;
+    const vendor = (state.vendors||[]).find(v => v.name === vName);
+    $('po-type').value = inferPOType(vendor, $('po-cost-code').value);
+  };
 
   $('modal-po').dataset.projectId = projectId||'';
   $('modal-po').dataset.editId = '';
@@ -6073,22 +6118,26 @@ async function openNewPO(projectId) {
   openModal('modal-po');
 }
 
-// Set the PO type dropdown based on the selected vendor's is_subcontractor flag.
-// Cost code is a secondary hint (300-499 → subcontract) when vendor flag absent.
+// Determine the best default PO type from vendor flag + cost code.
+// Priority: subcontractor flag → cost code ranges.
+//   300-499        → subcontract
+//   410, 5xx       → equipment (major equipment + rentals)
+//   2xx (210/250/270 etc) and everything else → material
+function inferPOType(vendor, costCode) {
+  if (vendor && vendor.is_subcontractor) return 'subcontract';
+  const cc = parseInt(costCode);
+  // Equipment: major equipment (410) + rentals (5xx) — check before the
+  // 300-499 subcontract range so 410 isn't swallowed by it.
+  if (cc === 410 || (cc >= 500 && cc < 600)) return 'equipment';
+  if (cc >= 300 && cc < 500) return 'subcontract';
+  // Default: material (pipe/fittings/hangers, consumables, tooling, etc.)
+  return 'material';
+}
+
+// Set the PO type dropdown based on the selected vendor + current cost code.
 function autoSetPOType(vendorName) {
   const vendor = (state.vendors||[]).find(v => v.name === vendorName);
-  if (vendor && vendor.is_subcontractor) {
-    $('po-type').value = 'subcontract';
-    return;
-  }
-  // Secondary hint: cost code range
-  const cc = parseInt($('po-cost-code').value);
-  if (cc >= 300 && cc < 500) {
-    $('po-type').value = 'subcontract';
-  } else if (vendor) {
-    // Known vendor, not flagged as sub → equipment
-    $('po-type').value = 'equipment';
-  }
+  $('po-type').value = inferPOType(vendor, $('po-cost-code').value);
 }
 
 async function openEditPO(poId) {
@@ -6152,8 +6201,7 @@ async function openEditPO(poId) {
     $('po-type').value = po.po_type;
   } else {
     const knownV = (state.vendors||[]).find(v=>v.name===po.vendor);
-    const cc = parseInt(po.cost_code);
-    $('po-type').value = (knownV?.is_subcontractor || (cc>=300 && cc<500)) ? 'subcontract' : 'equipment';
+    $('po-type').value = inferPOType(knownV, po.cost_code);
   }
 
   $('modal-po').dataset.projectId = po.project_id;
@@ -7321,14 +7369,14 @@ async function openGeneratePO() {
 
   // Default the document type from the PO's saved type / vendor flag / cost code
   let docType = po.po_type;
-  if (!docType) {
-    const cc = parseInt(po.cost_code);
-    docType = (vendor?.is_subcontractor || (cc>=300 && cc<500)) ? 'subcontract' : 'equipment';
-  }
+  if (!docType) docType = inferPOType(vendor, po.cost_code);
   $('gen-po-type').value = docType;
-  $('gen-po-proposal-date').value = po.issue_date ? po.issue_date.substring(0,10) : today();
 
-  // Default scope + line item text based on type
+  // Load "Ordered By" names list into the dropdown
+  await loadOrderedByNames();
+
+  // Contract-doc fields (Equipment/Subcontract)
+  $('gen-po-proposal-date').value = po.issue_date ? po.issue_date.substring(0,10) : today();
   const defaultScope = docType === 'subcontract'
     ? 'Furnish & Install all labor/material as per all plans, addendums, drawings, and specifications.'
     : 'Equipment as per all plans, addendums, drawings, and specifications.';
@@ -7338,22 +7386,102 @@ async function openGeneratePO() {
   $('gen-po-scope').value = defaultScope;
   $('gen-po-items').value = defaultItems;
 
+  // Material-doc fields
+  $('gen-po-delivery-date').value = '';
+  $('gen-po-delivery-time').value = '';
+  $('gen-po-site-contact').value = project?.gc_contact_name ? `${project.gc_contact_name} ${project.gc_contact_phone||''}`.trim() : '';
+  // Seed line items: if PO has a description, put it in row 1, plus blank rows
+  buildGenPOLineItems(po.description ? [{qty:'',size:'',desc:po.description}] : []);
+
+  // Show/hide the right section
+  onGenPOTypeChange();
+
   // Summary line
   const fmtAmt = fmt(po.committed_amount||0);
+  const taxNote = project?.tax_exempt ? ' · <span style="color:var(--green)">TAX EXEMPT</span>' : '';
   $('gen-po-summary').innerHTML = `
-    <strong>PO #${po.po_number}</strong> · Vendor: ${po.vendor||'—'} · Amount: ${fmtAmt}<br>
+    <strong>PO #${po.po_number}</strong> · Vendor: ${po.vendor||'—'} · Amount: ${fmtAmt}${taxNote}<br>
     ${project ? 'Project: '+(project.project_name_full||project.job_name)+' (Job '+project.job_number+')' : 'No project'}
   `;
 
-  // When type changes, update default scope text
-  $('gen-po-type').onchange = () => {
-    const t = $('gen-po-type').value;
+  openModal('modal-generate-po');
+}
+
+// Toggle which section shows based on document type
+function onGenPOTypeChange() {
+  const t = $('gen-po-type').value;
+  const isMaterial = t === 'material';
+  $('gen-po-material-section').style.display = isMaterial ? 'block' : 'none';
+  $('gen-po-contract-section').style.display = isMaterial ? 'none' : 'block';
+  // Ordered By only matters for material POs
+  $('gen-po-orderedby-wrap').style.display = isMaterial ? 'block' : 'none';
+  // Update default scope text for contract types
+  if (!isMaterial && $('gen-po-scope')) {
     $('gen-po-scope').value = t === 'subcontract'
       ? 'Furnish & Install all labor/material as per all plans, addendums, drawings, and specifications.'
       : 'Equipment as per all plans, addendums, drawings, and specifications.';
-  };
+  }
+}
 
-  openModal('modal-generate-po');
+// ── Ordered-By names (stored in app_settings) ───────────────────────
+const DEFAULT_ORDERED_BY = ['Anthony Papasodero', 'Joseph DeMasi', 'Robert Covelli', 'Gabriela Covelli'];
+
+async function loadOrderedByNames() {
+  let names = DEFAULT_ORDERED_BY;
+  try {
+    const { data } = await db.from('app_settings').select('value').eq('key', 'ordered_by_names').single();
+    if (data?.value && Array.isArray(data.value) && data.value.length) names = data.value;
+  } catch (e) { /* table may be empty — use defaults */ }
+  state.orderedByNames = names;
+  const sel = $('gen-po-orderedby');
+  sel.innerHTML = names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('')
+    + '<option value="__add">+ Add name…</option>';
+  sel.onchange = async () => {
+    if (sel.value === '__add') {
+      const newName = prompt('Add a name to the "Ordered By" list:');
+      if (newName && newName.trim()) {
+        const updated = [...(state.orderedByNames||DEFAULT_ORDERED_BY), newName.trim()];
+        await db.from('app_settings').upsert({ key:'ordered_by_names', value: updated });
+        await loadOrderedByNames();
+        $('gen-po-orderedby').value = newName.trim();
+      } else {
+        sel.value = (state.orderedByNames||DEFAULT_ORDERED_BY)[0];
+      }
+    }
+  };
+}
+
+// ── Material PO line items ───────────────────────────────────────────
+function buildGenPOLineItems(seedRows) {
+  const body = $('gen-po-lineitems-body');
+  body.innerHTML = '';
+  const rows = (seedRows && seedRows.length) ? seedRows : [];
+  // Always show at least 8 rows
+  while (rows.length < 8) rows.push({qty:'',size:'',desc:''});
+  rows.forEach(r => addGenPOLineItem(r));
+}
+
+function addGenPOLineItem(row) {
+  const body = $('gen-po-lineitems-body');
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td style="padding:2px"><input class="finp gen-li-qty" style="padding:3px;font-size:11px" value="${row&&row.qty?esc(row.qty):''}"></td>
+    <td style="padding:2px"><input class="finp gen-li-size" style="padding:3px;font-size:11px" value="${row&&row.size?esc(row.size):''}"></td>
+    <td style="padding:2px"><input class="finp gen-li-desc" style="padding:3px;font-size:11px" value="${row&&row.desc?esc(row.desc):''}"></td>
+  `;
+  body.appendChild(tr);
+}
+
+function collectGenPOLineItems() {
+  const rows = [];
+  const body = $('gen-po-lineitems-body');
+  body.querySelectorAll('tr').forEach(tr => {
+    const qty = tr.querySelector('.gen-li-qty')?.value || '';
+    const size = tr.querySelector('.gen-li-size')?.value || '';
+    const desc = tr.querySelector('.gen-li-desc')?.value || '';
+    rows.push({ qty, size, desc });
+  });
+  return rows;
 }
 
 // Build the PO document HTML and either open print window or email
@@ -7361,51 +7489,123 @@ function generatePODocument(mode) {
   if (!_genPOData) return;
   const { po, project, vendor } = _genPOData;
   const docType = $('gen-po-type').value;
-  const proposalDate = $('gen-po-proposal-date').value;
-  const scope = $('gen-po-scope').value;
-  const items = $('gen-po-items').value;
   const logo = getTetraLogoDataURL();
 
-  const isSubcontract = docType === 'subcontract';
-  const headerTitle = isSubcontract ? 'SUBCONTRACT PURCHASE ORDER' : 'EQUIPMENT PURCHASE ORDER';
-  const partyLabel = isSubcontract ? 'Subcontractor Name' : 'Vendor Name';
-
-  // PO number format: PO# - Job# - CostCode
+  // Common values
   const jobNum = project?.job_number || '';
   const fullPONum = `${po.po_number}-${jobNum}-${po.cost_code||''}`;
-
-  // Vendor display values
-  const vName = vendor?.contact_name || '';
   const vCompany = po.vendor || vendor?.name || '';
+  const vName = vendor?.contact_name || '';
   const vAddress = vendor?.address || '';
   const vPhone = vendor?.phone || '';
   const vEmail = vendor?.email || '';
-
-  // Project display values
   const projName = project?.project_name_full || project?.job_name || '';
-  const owner = project?.owner_name || '';
-  const gc = project?.general_contractor || '';
   const projAddr = project?.project_address || '';
-
   const amount = fmt(po.committed_amount||0);
-  const propDateFmt = proposalDate ? (() => { const [y,m,d]=proposalDate.split('-'); return `${m}/${d}/${y}`; })() : '____/____/____';
 
-  // Terms paragraph differs by type
-  const termsPara = isSubcontract
-    ? `All work is to be performed according to supplied general requirements, bid specifications, working drawings, modifications / addendums, applicable codes, and OSHA requirements. Invoices for this purchase order will only be paid as per the agreed upon purchase order and must reference the purchase order number on all correspondences. Any additional work requires an approved and executed change order. This purchase order is subject to the terms and conditions of the Tetra Mechanical Services LLC Master Subcontract Agreement and the Prime Contract. Subcontractor shall comply with all applicable labor laws, certified payroll requirements, insurance requirements, and project compliance documentation. Payment to subcontractor shall be made only after receipt of payment by Tetra Mechanical Services LLC from the Owner and/or General Contractor for the corresponding portion of work. Subcontractor acknowledges that Tetra Mechanical Services LLC is a subcontractor to the above referenced General Contractor, and all work is subject to the terms and conditions of the Prime Contract.`
-    : `This purchase order is for furnishing material and/or equipment only unless otherwise stated. Vendor shall supply material and/or equipment in accordance with the project drawings, specifications, approved submittals, and proposal referenced below. Invoices must reference the Purchase Order number on all correspondence. Delivery dates shall be coordinated with Tetra Mechanical Services LLC. Vendor shall notify Tetra of any delays or long lead items immediately. All material shall be new, unused, and in compliance with project specifications and applicable codes. Payment terms shall be per agreed vendor terms unless otherwise stated in writing. Tetra Mechanical Services LLC reserves the right to reject any material not conforming to the contract documents or approved submittals.`;
+  const footer = `<div class="footer">1 Plaza Rd. Greenvale, New York 11548 | www.Tetra-Mechanical.Com | (363) 213-1974</div>`;
+  const logoBlock = `<div class="logo-wrap">${logo ? `<img src="${logo}" alt="Tetra Mechanical Services">` : '<div style="font-size:28px;font-weight:bold;color:#1a3a5c">TETRA MECHANICAL SERVICES</div>'}</div>`;
+  const commonCSS = `
+    @page { size: letter; margin: 0.5in; }
+    * { box-sizing: border-box; }
+    body { font-family: 'Times New Roman', Times, serif; color:#000; margin:0; padding:0; font-size:12px; line-height:1.4; }
+    .logo-wrap { text-align:center; margin-bottom:6px; }
+    .logo-wrap img { height:80px; object-fit:contain; }
+    .footer { position:fixed; bottom:0.3in; left:0; right:0; text-align:center; font-size:10px; text-decoration:underline; }
+    @media screen { body { max-width:8.5in; margin:0 auto; padding:0.5in; } }`;
 
-  const itemRows = items.split('\n').filter(Boolean).map((line,i) =>
-    `<tr><td style="width:50px;text-align:center">${i+1}</td><td>${esc(line)}</td></tr>`
-  ).join('') || '<tr><td style="text-align:center">1</td><td></td></tr>';
+  let docHTML, headerTitle, emailSubject, emailBody;
 
-  const docHTML = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>PO ${fullPONum}</title>
-<style>
-  @page { size: letter; margin: 0.5in; }
-  * { box-sizing: border-box; }
-  body { font-family: 'Times New Roman', Times, serif; color:#000; margin:0; padding:0; font-size:12px; line-height:1.4; }
-  .logo-wrap { text-align:center; margin-bottom:6px; }
-  .logo-wrap img { height:80px; object-fit:contain; }
+  if (docType === 'material') {
+    // ── MATERIAL PO (simple ordering form) ──────────────────────────
+    headerTitle = 'PURCHASE ORDER';
+    const orderedBy = $('gen-po-orderedby').value || '';
+    const deliveryDate = $('gen-po-delivery-date').value;
+    const deliveryDateFmt = deliveryDate ? (() => { const [y,m,d]=deliveryDate.split('-'); return `${m}/${d}/${y}`; })() : '';
+    const deliveryTime = $('gen-po-delivery-time').value || '';
+    const siteContact = $('gen-po-site-contact').value || '';
+    const taxExempt = project?.tax_exempt ? 'Yes' : 'No';
+    const todayFmt = (() => { const d=new Date(); return `${d.getMonth()+1}/${d.getDate()}/${d.getFullYear()}`; })();
+    const lineItems = collectGenPOLineItems();
+    const liRows = lineItems.map(r =>
+      `<tr><td style="height:22px">${esc(r.qty)}</td><td>${esc(r.size)}</td><td>${esc(r.desc)}</td></tr>`
+    ).join('');
+
+    docHTML = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>PO ${po.po_number}</title>
+<style>${commonCSS}
+  .po-head { text-align:right; margin-bottom:8px; }
+  .po-head .title { font-size:20px; font-weight:bold; letter-spacing:1px; }
+  .po-head .num { font-size:13px; margin-top:2px; }
+  .po-head .note { font-size:9px; color:#333; }
+  table.meta { width:100%; border-collapse:collapse; margin:10px 0; }
+  table.meta td { padding:3px 6px; font-size:12px; vertical-align:top; }
+  table.meta td.lbl { font-weight:bold; width:120px; }
+  .tax { font-weight:bold; }
+  table.items { width:100%; border-collapse:collapse; margin-top:10px; }
+  table.items th, table.items td { border:1px solid #000; padding:5px 8px; text-align:left; font-size:12px; }
+  table.items th { background:#f0f0f0; }
+</style></head><body>
+  ${logoBlock}
+  <div class="po-head">
+    <div class="title">PURCHASE ORDER</div>
+    <div class="num">P.O. NUMBER: <strong>${esc(po.po_number)}</strong></div>
+    <div class="note">SHOW THIS P.O. # ON ALL CORRESPONDENCE, INVOICES, SHIPPING PAPERS, PACKAGES, ETC.</div>
+  </div>
+  <table class="meta">
+    <tr>
+      <td class="lbl">VENDOR:</td><td>${esc(vCompany)}</td>
+      <td class="lbl">Date:</td><td>${todayFmt}</td>
+      <td class="lbl">Job No.:</td><td>${esc(jobNum)}</td>
+    </tr>
+    <tr>
+      <td class="lbl">ATT:</td><td>${esc(vName)}</td>
+      <td class="lbl">Ship to:</td><td colspan="3">${esc(projAddr)}</td>
+    </tr>
+    <tr>
+      <td class="lbl">DELIVERY DATE:</td><td>${esc(deliveryDateFmt)}</td>
+      <td class="lbl">TAX EXEMPT:</td><td class="tax">${taxExempt}</td>
+      <td></td><td></td>
+    </tr>
+    <tr>
+      <td class="lbl">DELIVERY TIME:</td><td>${esc(deliveryTime)}</td>
+      <td class="lbl">ORDERED BY:</td><td>${esc(orderedBy)}</td>
+      <td></td><td></td>
+    </tr>
+    <tr>
+      <td class="lbl">SITE CONTACT:</td><td colspan="5">${esc(siteContact)}</td>
+    </tr>
+  </table>
+  <table class="items">
+    <thead><tr><th style="width:80px">QUANTITY</th><th style="width:100px">SIZE</th><th>DESCRIPTION</th></tr></thead>
+    <tbody>${liRows}</tbody>
+  </table>
+  ${footer}
+</body></html>`;
+    emailSubject = `Purchase Order #${po.po_number} — Tetra Mechanical Services`;
+    emailBody = `Please find attached Purchase Order #${po.po_number}${projName?' for '+projName:''}.\n\nPlease reference PO #${po.po_number} on all invoices, shipping papers, and correspondence.\n\nThank you,\nTetra Mechanical Services LLC\n(363) 213-1974`;
+
+  } else {
+    // ── EQUIPMENT / SUBCONTRACT PO (formal contract document) ───────
+    const isSubcontract = docType === 'subcontract';
+    headerTitle = isSubcontract ? 'SUBCONTRACT PURCHASE ORDER' : 'EQUIPMENT PURCHASE ORDER';
+    const partyLabel = isSubcontract ? 'Subcontractor Name' : 'Vendor Name';
+    const proposalDate = $('gen-po-proposal-date').value;
+    const scope = $('gen-po-scope').value;
+    const items = $('gen-po-items').value;
+    const owner = project?.owner_name || '';
+    const gc = project?.general_contractor || '';
+    const propDateFmt = proposalDate ? (() => { const [y,m,d]=proposalDate.split('-'); return `${m}/${d}/${y}`; })() : '____/____/____';
+
+    const termsPara = isSubcontract
+      ? `All work is to be performed according to supplied general requirements, bid specifications, working drawings, modifications / addendums, applicable codes, and OSHA requirements. Invoices for this purchase order will only be paid as per the agreed upon purchase order and must reference the purchase order number on all correspondences. Any additional work requires an approved and executed change order. This purchase order is subject to the terms and conditions of the Tetra Mechanical Services LLC Master Subcontract Agreement and the Prime Contract. Subcontractor shall comply with all applicable labor laws, certified payroll requirements, insurance requirements, and project compliance documentation. Payment to subcontractor shall be made only after receipt of payment by Tetra Mechanical Services LLC from the Owner and/or General Contractor for the corresponding portion of work. Subcontractor acknowledges that Tetra Mechanical Services LLC is a subcontractor to the above referenced General Contractor, and all work is subject to the terms and conditions of the Prime Contract.`
+      : `This purchase order is for furnishing material and/or equipment only unless otherwise stated. Vendor shall supply material and/or equipment in accordance with the project drawings, specifications, approved submittals, and proposal referenced below. Invoices must reference the Purchase Order number on all correspondence. Delivery dates shall be coordinated with Tetra Mechanical Services LLC. Vendor shall notify Tetra of any delays or long lead items immediately. All material shall be new, unused, and in compliance with project specifications and applicable codes. Payment terms shall be per agreed vendor terms unless otherwise stated in writing. Tetra Mechanical Services LLC reserves the right to reject any material not conforming to the contract documents or approved submittals.`;
+
+    const itemRows = items.split('\n').filter(Boolean).map((line,i) =>
+      `<tr><td style="width:50px;text-align:center">${i+1}</td><td>${esc(line)}</td></tr>`
+    ).join('') || '<tr><td style="text-align:center">1</td><td></td></tr>';
+
+    docHTML = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>PO ${fullPONum}</title>
+<style>${commonCSS}
   .header-bar { text-align:center; font-weight:bold; font-size:14px; background:#fff34d; padding:4px; margin:8px 0 16px; text-decoration:underline; }
   table.info { width:100%; border-collapse:collapse; margin-bottom:14px; }
   table.info td { border:1px solid #000; padding:4px 8px; vertical-align:top; font-size:12px; }
@@ -7418,12 +7618,9 @@ function generatePODocument(mode) {
   .scope { margin:10px 0; }
   .proposal { margin:14px 0; }
   .total { margin-top:8px; font-size:13px; }
-  .footer { position:fixed; bottom:0.3in; left:0; right:0; text-align:center; font-size:10px; text-decoration:underline; }
-  @media screen { body { max-width:8.5in; margin:0 auto; padding:0.5in; } }
 </style></head><body>
-  <div class="logo-wrap">${logo ? `<img src="${logo}" alt="Tetra Mechanical Services">` : '<div style="font-size:28px;font-weight:bold;color:#1a3a5c">TETRA MECHANICAL SERVICES</div>'}</div>
+  ${logoBlock}
   <div class="header-bar">${headerTitle} #${fullPONum}</div>
-
   <table class="info">
     <tr><td class="label">${partyLabel}:</td><td>${esc(vName)}</td><td class="label">Project:</td><td>${esc(projName)}</td></tr>
     <tr><td class="label">Company Name:</td><td>${esc(vCompany)}</td><td class="label">Owner:</td><td>${esc(owner)}</td></tr>
@@ -7432,37 +7629,31 @@ function generatePODocument(mode) {
     <tr><td class="label">Email:</td><td>${esc(vEmail)}</td><td class="label">Project Address:</td><td>${esc(projAddr)}</td></tr>
     <tr><td class="label"></td><td></td><td class="label">Job #:</td><td>${esc(jobNum)}</td></tr>
   </table>
-
   <div class="terms">Terms &amp; Conditions</div>
   <div class="terms-body">${esc(termsPara)}</div>
-
   <table class="items">
     <thead><tr><th style="width:50px">Item #</th><th>Product Name/Description</th></tr></thead>
     <tbody>${itemRows}</tbody>
   </table>
-
   <div class="scope"><strong>Scope of Work:</strong> ${esc(scope)}</div>
   <div class="proposal">Please reference proposal dated ${propDateFmt} for ${amount}.</div>
   <div class="total"><strong>Contract Total: ${amount}</strong></div>
-
-  <div class="footer">1 Plaza Rd. Greenvale, New York 11548 | www.Tetra-Mechanical.Com | (363) 213-1974</div>
+  ${footer}
 </body></html>`;
+    emailSubject = `${headerTitle} #${fullPONum} — Tetra Mechanical Services`;
+    emailBody = `Please find attached ${headerTitle} #${fullPONum} for ${projName||'our project'}.\n\nContract Total: ${amount}\n\nPlease reference PO #${fullPONum} on all invoices and correspondence.\n\nThank you,\nTetra Mechanical Services LLC\n(363) 213-1974`;
+  }
 
   if (mode === 'email') {
-    // Open default email client with vendor email + subject; body explains attachment
     const to = vEmail || '';
-    const subject = `${headerTitle} #${fullPONum} — Tetra Mechanical Services`;
-    const body = `Please find attached ${headerTitle} #${fullPONum} for ${projName||'our project'}.\n\nContract Total: ${amount}\n\nPlease reference PO #${fullPONum} on all invoices and correspondence.\n\nThank you,\nTetra Mechanical Services LLC\n(363) 213-1974`;
-    // Open the printable doc in a new window first (so they can save the PDF to attach)
     const w = window.open('', '_blank');
     w.document.write(docHTML);
     w.document.close();
     setTimeout(() => {
-      window.location.href = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+      window.location.href = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(emailSubject)}&body=${encodeURIComponent(emailBody)}`;
     }, 600);
     toast('Document opened — print to PDF, then attach to the email');
   } else {
-    // Print / preview mode
     const w = window.open('', '_blank');
     w.document.write(docHTML);
     w.document.close();

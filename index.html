@@ -7521,8 +7521,10 @@ function generatePODocument(mode) {
   const logo = getTetraLogoDataURL();
 
   // Common values
-  const jobNum = project?.job_number || '';
-  const fullPONum = `${po.po_number}-${jobNum}-${po.cost_code||''}`;
+  // Shop/Overhead POs (no project) use job number 1000 by convention
+  const jobNum = project?.job_number || '1000';
+  // PO number format: 2021-2600-240 (shop = 2021-1000-240)
+  const fullPONum = [po.po_number, jobNum, po.cost_code].filter(Boolean).join('-');
   const vCompany = po.vendor || vendor?.name || '';
   const vName = vendor?.contact_name || '';
   const vAddress = vendor?.address || '';
@@ -7577,7 +7579,7 @@ function generatePODocument(mode) {
   ${logoBlock}
   <div class="po-head">
     <div class="title">PURCHASE ORDER</div>
-    <div class="num">P.O. NUMBER: <strong>${esc(po.po_number)}</strong></div>
+    <div class="num">P.O. NUMBER: <strong>${esc(fullPONum)}</strong></div>
     <div class="note">SHOW THIS P.O. # ON ALL CORRESPONDENCE, INVOICES, SHIPPING PAPERS, PACKAGES, ETC.</div>
   </div>
   <table class="meta">
@@ -7610,8 +7612,8 @@ function generatePODocument(mode) {
   </table>
   ${footer}
 </body></html>`;
-    emailSubject = `Purchase Order #${po.po_number} — Tetra Mechanical Services`;
-    emailBody = `Please find attached Purchase Order #${po.po_number}${projName?' for '+projName:''}.\n\nPlease reference PO #${po.po_number} on all invoices, shipping papers, and correspondence.\n\nThank you,\nTetra Mechanical Services LLC\n(363) 213-1974`;
+    emailSubject = `Purchase Order #${fullPONum} — Tetra Mechanical Services`;
+    emailBody = `Please find attached Purchase Order #${fullPONum}${projName?' for '+projName:''}.\n\nPlease reference PO #${fullPONum} on all invoices, shipping papers, and correspondence.\n\nThank you,\nTetra Mechanical Services LLC\n(363) 213-1974`;
 
   } else {
     // ── EQUIPMENT / SUBCONTRACT PO (formal contract document) ───────

@@ -7650,7 +7650,7 @@ function generatePODocument(mode) {
   const projAddr = project?.project_address || '';
   const amount = fmt(po.committed_amount||0);
 
-  const footer = `<div class="footer">1 Plaza Rd. Greenvale, New York 11548 | www.Tetra-Mechanical.Com | (363) 213-1974</div>`;
+  const footer = `<div class="footer">1 Plaza Rd. Greenvale, New York 11548 | www.Tetra-Mechanical.Com | (516) 898-6894</div>`;
   const logoBlock = `<div class="logo-wrap">${logo ? `<img src="${logo}" alt="Tetra Mechanical Services">` : '<div style="font-size:28px;font-weight:bold;color:#1a3a5c">TETRA MECHANICAL SERVICES</div>'}</div>`;
   const commonCSS = `
     @page { size: letter; margin: 0.5in; }
@@ -7729,7 +7729,7 @@ function generatePODocument(mode) {
   ${footer}
 </body></html>`;
     emailSubject = `Purchase Order #${fullPONum} — Tetra Mechanical Services`;
-    emailBody = `Please find attached Purchase Order #${fullPONum}${projName?' for '+projName:''}.\n\nPlease reference PO #${fullPONum} on all invoices, shipping papers, and correspondence.\n\nThank you,\nTetra Mechanical Services LLC\n(363) 213-1974`;
+    emailBody = `Please find attached Purchase Order #${fullPONum}${projName?' for '+projName:''}.\n\nPlease reference PO #${fullPONum} on all invoices, shipping papers, and correspondence.\n\nThank you,\nTetra Mechanical Services LLC\n(516) 898-6894`;
 
   } else {
     // ── EQUIPMENT / SUBCONTRACT PO (formal contract document) ───────
@@ -7788,7 +7788,7 @@ function generatePODocument(mode) {
   ${footer}
 </body></html>`;
     emailSubject = `${headerTitle} #${fullPONum} — Tetra Mechanical Services`;
-    emailBody = `Please find attached ${headerTitle} #${fullPONum} for ${projName||'our project'}.\n\nContract Total: ${amount}\n\nPlease reference PO #${fullPONum} on all invoices and correspondence.\n\nThank you,\nTetra Mechanical Services LLC\n(363) 213-1974`;
+    emailBody = `Please find attached ${headerTitle} #${fullPONum} for ${projName||'our project'}.\n\nContract Total: ${amount}\n\nPlease reference PO #${fullPONum} on all invoices and correspondence.\n\nThank you,\nTetra Mechanical Services LLC\n(516) 898-6894`;
   }
 
   if (mode === 'email') {

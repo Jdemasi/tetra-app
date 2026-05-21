@@ -7901,13 +7901,25 @@ function generatePODocument(mode) {
 
   if (mode === 'email') {
     const to = vEmail || '';
+    // Open the PO in a new tab and auto-trigger the Save-as-PDF print dialog so the
+    // file is ready to attach. We do NOT touch window.location (that would navigate
+    // the app's own tab away). The mailto is handed off via a hidden, transient
+    // anchor so Outlook (the user's default handler) opens without disturbing the app.
     const w = window.open('', '_blank');
     w.document.write(docHTML);
     w.document.close();
+    setTimeout(() => { try { w.focus(); w.print(); } catch(e){} }, 500);
+
+    const mailtoUrl = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(emailSubject)}&body=${encodeURIComponent(emailBody)}`;
     setTimeout(() => {
-      window.location.href = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(emailSubject)}&body=${encodeURIComponent(emailBody)}`;
-    }, 600);
-    toast('Document opened — print to PDF, then attach to the email');
+      const a = document.createElement('a');
+      a.href = mailtoUrl;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }, 700);
+    toast('Save the PO as PDF in the print dialog, then attach it to the Outlook email');
   } else {
     const w = window.open('', '_blank');
     w.document.write(docHTML);

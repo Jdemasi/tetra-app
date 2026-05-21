@@ -7857,11 +7857,16 @@ async function poHtmlToPdfBase64(docHTML) {
   iframe.contentDocument.open();
   iframe.contentDocument.write(docHTML);
   iframe.contentDocument.close();
+  // Force a clean white sheet: neutralize any stray panel/row fills the capture
+  // might pick up, and tell html2canvas to render on white.
+  const fix = iframe.contentDocument.createElement('style');
+  fix.textContent = 'html,body{background:#fff!important;} table.meta,table.meta td,table.meta tr{background:#fff!important;}';
+  iframe.contentDocument.head.appendChild(fix);
   await new Promise(r => setTimeout(r, 450)); // let logo/styles settle
   const opt = {
     margin: 0,
     image: { type: 'jpeg', quality: 0.98 },
-    html2canvas: { scale: 2, useCORS: true },
+    html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff' },
     jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' },
   };
   // Render from the document element so the body's own max-width/padding apply,

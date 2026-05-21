@@ -338,7 +338,7 @@ select.finp{cursor:pointer}
             <input type="radio" name="pu-job-type" value="shop" onchange="togglePUJobType(this.value)"> 🏪 Shop / Overhead (no job)
           </label>
         </div>
-        <select class="finp" id="pu-job-select" style="display:block"><option value="">Select job...</option></select>
+        <select class="finp" id="pu-job-select" style="display:block" onchange="onPuJobSelectChange()"><option value="">Select job...</option></select>
         <div id="pu-shop-label" style="display:none;padding:6px 10px;background:var(--gray50);border-radius:7px;border:1px solid var(--border);font-size:12px;color:var(--gray600)">🏪 Shop / Stock / Consumables — not tied to a job</div>
       </div>
       <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Link to PO (optional — auto-fills vendor & cost code)</label>
@@ -2246,6 +2246,12 @@ async function readInvoiceFile(input) {
         '📋 Copy extracted text (for debugging)</button>';
     }
 
+    // ── TAX-ON-EXEMPT-JOB ALERT ──────────────────────────────────────
+    // Warn (but don't block) if the invoice has a sales-tax charge and the
+    // selected job is tax-exempt. The job may have been auto-picked from a PO
+    // match above, or chosen by the user.
+    maybeWarnTaxOnExemptJob(inv);
+
   } catch(e) {
     status.style.background = '#FFF0F0';
     status.style.color = 'var(--danger)';
@@ -2258,6 +2264,44 @@ async function readInvoiceFile(input) {
 
 // Backward compat — old onchange handler name
 const readInvoicePDF = readInvoiceFile;
+
+// Re-check the tax-exempt warning when the job is (re)selected, using the last
+// parsed invoice result stashed on the modal.
+function onPuJobSelectChange() {
+  const inv = $('modal-purchase')?._lastParserResult;
+  if (inv) maybeWarnTaxOnExemptJob(inv);
+}
+
+// Warn (non-blocking) when an invoice carries sales tax on a tax-exempt job.
+// Re-checked on job-select change too, so it fires even if the job is picked
+// after the invoice is read. Renders a distinct red banner under the status box.
+function maybeWarnTaxOnExemptJob(inv) {
+  const warnId = 'pu-tax-warning';
+  const existing = $(warnId);
+  if (existing) existing.remove();
+
+  const tax = inv && parseFloat(inv.sales_tax || 0);
+  if (!tax || tax <= 0) return;  // no tax detected → nothing to warn about
+
+  // Find the selected job (shop purchases have no job and can't be exempt).
+  const jobId = $('pu-job-select') ? $('pu-job-select').value : '';
+  if (!jobId) return;
+  const proj = (state.projects || []).find(p => p.id === jobId);
+  if (!proj || !proj.tax_exempt) return;  // job isn't exempt → no warning
+
+  const status = $('pu-ai-status');
+  const warn = document.createElement('div');
+  warn.id = warnId;
+  warn.style.cssText = 'margin-top:8px;padding:10px 12px;border-radius:7px;font-size:12px;'
+    + 'background:#FFEBEE;color:#B71C1C;border:1px solid #F1B0B0;font-weight:500';
+  warn.innerHTML = `🚫 <strong>Sales tax on a tax-exempt job.</strong> This invoice appears to charge `
+    + `sales tax of <strong>$${tax.toFixed(2)}</strong>, but <strong>${esc(proj.job_number)} — ${esc(proj.job_name)}</strong> `
+    + `is marked tax-exempt. Verify the charge and request a corrected invoice / credit if it shouldn't have tax. `
+    + `You can still save this entry.`;
+  if (status && status.parentNode) {
+    status.parentNode.insertBefore(warn, status.nextSibling);
+  }
+}
 
 // ────────────────────────────────────────────────────────────────────
 // INVOICE PARSER — PIPELINE ARCHITECTURE
@@ -2657,6 +2701,32 @@ function step_vendorContact(rawText, result) {
 // ────────────────────────────────────────────────────────────────────
 // Run all strategies in order. Returns a flat object compatible with
 // the old parseInvoiceText shape, plus _confidence map for the banner.
+// ── STRATEGY 14: SALES TAX LINE (for tax-exempt-job alert) ──────────
+// Finds an explicit sales-tax CHARGE on the invoice. Used only to warn when a
+// tax-exempt job is billed sales tax — never auto-fills any amount field.
+// Deliberately conservative: matches "Sales Tax", "Tax", "NYS Tax" followed by a
+// dollar amount, while avoiding false hits like "Taxable", "Tax Exempt",
+// "Tax ID", "Tax Rate %", and zero-dollar tax lines.
+function step_salesTax(t, result) {
+  // Normalize spacing already done by caller (t is whitespace-collapsed).
+  // Look for a tax label immediately followed by a currency value.
+  const patterns = [
+    /\b(?:sales\s*tax|sales\s*&?\s*use\s*tax|ny[cs]?\s*sales?\s*tax|state\s*tax)\b[^$%\d\-]{0,12}\$?\s*([\d,]+\.\d{2})/i,
+    /\btax\b(?!\s*(?:able|\s*exempt|\s*id|\s*rate|\s*#|\s*no))[^$%\d\-]{0,8}\$?\s*([\d,]+\.\d{2})/i,
+  ];
+  for (const pat of patterns) {
+    const m = t.match(pat);
+    if (m) {
+      const val = parseFloat(m[1].replace(/,/g, ''));
+      // Ignore $0.00 tax and absurd values (likely a misread total).
+      if (val > 0 && val < 1e7) {
+        upd(result, 'sales_tax', val, CONF.MED, 'tax-line');
+        return;
+      }
+    }
+  }
+}
+
 function parseInvoiceText(text, filename, knownPOs) {
   const t = text.replace(/\s+/g, ' ');
   const result = {};  // each field: {value, confidence, source}
@@ -2675,6 +2745,7 @@ function parseInvoiceText(text, filename, knownPOs) {
   step_paymentTerms(t, result);
   step_paymentReceipt(t, result);
   step_vendorContact(text, result);  // Use RAW text with newlines for address parsing
+  step_salesTax(t, result);          // detect a sales-tax line (for exempt-job alert)
 
   // Flatten to the shape the rest of the code expects.
   // Also stash confidence map under _confidence so the banner can show it.
@@ -2733,6 +2804,8 @@ async function openNewPurchase(projectId) {
   // Reset upload UI
   $('pu-ai-status').style.display = 'none';
   $('pu-ai-status').innerHTML = '';
+  // Clear any leftover tax-on-exempt-job warning from a previous entry
+  if ($('pu-tax-warning')) $('pu-tax-warning').remove();
   // Reset attach-file UI (hide "currently attached" indicator)
   const attachIndicator = $('pu-attach-indicator');
   if (attachIndicator) attachIndicator.style.display = 'none';

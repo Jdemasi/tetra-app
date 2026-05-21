@@ -7658,6 +7658,7 @@ async function openGeneratePO() {
   `;
 
   openModal('modal-generate-po');
+  primeMSAL();  // pre-load MSAL so the sign-in popup fires as a direct click result
 }
 
 // Toggle which section shows based on document type
@@ -7773,6 +7774,11 @@ async function ensureMSAL() {
     cache: { cacheLocation: 'sessionStorage', storeAuthStateInCookie: false },
   });
   await _msalInstance.initialize();
+  // If we just came back from a redirect sign-in, process it and set the account.
+  try {
+    const resp = await _msalInstance.handleRedirectPromise();
+    if (resp?.account) _msalInstance.setActiveAccount(resp.account);
+  } catch (e) { console.error('MSAL redirect handling error:', e); }
   return _msalInstance;
 }
 
@@ -7780,18 +7786,29 @@ async function ensureMSAL() {
 async function getGraphToken() {
   const pca = await ensureMSAL();
   const req = { scopes: GRAPH_CONFIG.scopes };
-  let account = pca.getAllAccounts()[0];
+  let account = pca.getActiveAccount() || pca.getAllAccounts()[0];
   if (account) {
     try {
       const r = await pca.acquireTokenSilent({ ...req, account });
       return r.accessToken;
     } catch (e) { /* fall through to interactive */ }
   }
-  const r = await pca.loginPopup(req);
-  if (r?.account) pca.setActiveAccount(r.account);
-  const t = await pca.acquireTokenSilent({ ...req, account: pca.getAllAccounts()[0] });
-  return t.accessToken;
+  try {
+    const r = await pca.loginPopup(req);
+    if (r?.account) pca.setActiveAccount(r.account);
+    const t = await pca.acquireTokenSilent({ ...req, account: pca.getActiveAccount() });
+    return t.accessToken;
+  } catch (e) {
+    const code = e?.errorCode || e?.name || '';
+    if (String(code).toLowerCase().includes('popup') || String(code).toLowerCase().includes('block')) {
+      throw new Error('Sign-in popup was blocked. Allow popups for this site (icon in the address bar), then click Open in Email again.');
+    }
+    throw e;
+  }
 }
+
+// Pre-load MSAL when the PO modal opens so sign-in can fire promptly on click.
+async function primeMSAL() { try { await ensureMSAL(); } catch (e) {} }
 
 let _html2pdfLoaded = false;
 async function ensureHtml2Pdf() {

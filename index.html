@@ -634,7 +634,8 @@ select.finp{cursor:pointer}
 
 <div class="modal-bg" id="modal-sub">
   <div class="modal" style="max-width:580px">
-    <div class="modal-hd"><div class="modal-title">Add Subcontractor</div><button class="modal-close" onclick="closeModal('modal-sub')">×</button></div>
+    <div class="modal-hd"><div class="modal-title" id="sub-modal-title">Add Subcontractor</div><button class="modal-close" onclick="closeModal('modal-sub')">×</button></div>
+    <input type="hidden" id="sub-edit-id">
     <div class="form-grid">
       <div class="fgroup"><label class="flbl">Company Name</label><input class="finp" id="sub-name" placeholder="e.g. ABC Plumbing Inc."></div>
       <div class="fgroup"><label class="flbl">Trade</label><input class="finp" id="sub-trade" placeholder="e.g. Plumbing, HVAC"></div>
@@ -647,6 +648,7 @@ select.finp{cursor:pointer}
       <div class="fgroup"><label class="flbl">Workers Comp Expiry</label><input class="finp" type="date" id="sub-wc"></div>
     </div>
     <div class="form-actions">
+      <button class="btn" id="sub-delete-btn" style="display:none;margin-right:auto" onclick="deleteSub()">🗑 Delete</button>
       <button class="btn" onclick="closeModal('modal-sub')">Cancel</button>
       <button class="btn btn-red" onclick="saveSub()">Save Subcontractor</button>
     </div>
@@ -6479,7 +6481,41 @@ async function saveAssignSub() {
 
 function openNewSub() {
   clearForm(['sub-name','sub-contact','sub-email','sub-phone','sub-trade','sub-coi','sub-gl','sub-wc','sub-license']);
+  $('sub-edit-id').value = '';
+  $('sub-modal-title').textContent = 'Add Subcontractor';
+  $('sub-delete-btn').style.display = 'none';
   openModal('modal-sub');
+}
+
+// Open the modal pre-filled to edit an existing roster entry.
+async function editSub(id) {
+  const { data: s, error } = await db.from('subcontractors').select('*').eq('id', id).single();
+  if (error || !s) { toast('Could not load that subcontractor','error'); return; }
+  $('sub-edit-id').value = s.id;
+  $('sub-name').value = s.company_name || '';
+  $('sub-trade').value = s.trade || '';
+  $('sub-contact').value = s.contact_name || '';
+  $('sub-phone').value = s.contact_phone || '';
+  $('sub-email').value = s.contact_email || '';
+  $('sub-license').value = s.license_number || '';
+  $('sub-coi').value = s.coi_expiry || '';
+  $('sub-gl').value = s.gl_expiry || '';
+  $('sub-wc').value = s.wc_expiry || '';
+  $('sub-modal-title').textContent = 'Edit Subcontractor';
+  $('sub-delete-btn').style.display = 'inline-block';
+  openModal('modal-sub');
+}
+
+async function deleteSub() {
+  const id = $('sub-edit-id').value;
+  if (!id) return;
+  const name = $('sub-name').value || 'this subcontractor';
+  if (!confirm(`Remove ${name} from the subcontractor roster?\n\nThis only removes the roster/insurance record. It does not affect their vendor record or any POs.`)) return;
+  const { error } = await db.from('subcontractors').delete().eq('id', id);
+  if (error) { toast('Error: '+error.message,'error'); return; }
+  closeModal('modal-sub');
+  toast('Subcontractor removed from roster');
+  render();
 }
 
 // ── SUBCONTRACTOR ROSTER SYNC ────────────────────────────────────────
@@ -6511,7 +6547,8 @@ async function syncVendorToRoster(vendorName, fields = {}) {
 async function saveSub() {
   const name = $('sub-name').value.trim();
   if (!name) { toast('Enter company name','error'); return; }
-  const { error } = await db.from('subcontractors').insert({
+  const editId = $('sub-edit-id').value;
+  const fields = {
     company_name: name,
     contact_name: $('sub-contact').value,
     contact_email: $('sub-email').value,
@@ -6521,11 +6558,16 @@ async function saveSub() {
     gl_expiry: $('sub-gl').value||null,
     wc_expiry: $('sub-wc').value||null,
     license_number: $('sub-license').value,
-    active: true,
-  });
+  };
+  let error;
+  if (editId) {
+    ({ error } = await db.from('subcontractors').update(fields).eq('id', editId));
+  } else {
+    ({ error } = await db.from('subcontractors').insert({ ...fields, active: true }));
+  }
   if (error) { toast('Error: '+error.message,'error'); return; }
   closeModal('modal-sub');
-  toast('Subcontractor added');
+  toast(editId ? 'Subcontractor updated' : 'Subcontractor added');
   render();
 }
 
@@ -7154,7 +7196,7 @@ async function renderMasterSubs() {
     </div>
     <p class="section-sub">Red = expired. Amber = expiring within 30 days. Green = current.</p>
     ${(subs||[]).length===0?'<div class="tbl-empty">No subcontractors in the system yet.</div>':
-    `<table><thead><tr><th>Company</th><th>Trade</th><th>Contact</th><th>COI Expiry</th><th>GL Expiry</th><th>WC Expiry</th><th>Status</th></tr></thead><tbody>
+    `<table><thead><tr><th>Company</th><th>Trade</th><th>Contact</th><th>COI Expiry</th><th>GL Expiry</th><th>WC Expiry</th><th>Status</th><th></th></tr></thead><tbody>
     ${(subs||[]).map((sub,i)=>{
       const bg=i%2===0?'#FFF':'var(--gray50)';
       const expColor = (dateStr) => {
@@ -7170,7 +7212,7 @@ async function renderMasterSubs() {
         const suffix = days<0?` (${Math.abs(days)}d exp)`:days<30?` (${days}d)`:'';
         return dateStr+suffix;
       };
-      return `<tr style="background:${bg}">
+      return `<tr style="background:${bg};cursor:pointer" onclick="editSub('${sub.id}')">
         <td class="font-600">${sub.company_name}</td>
         <td>${sub.trade||'—'}</td>
         <td style="font-size:11px;color:var(--gray600)">${sub.contact_name||'—'}${sub.contact_phone?' · '+sub.contact_phone:''}</td>
@@ -7178,6 +7220,7 @@ async function renderMasterSubs() {
         <td style="color:${expColor(sub.gl_expiry)};font-weight:600;font-size:11px">${expLabel(sub.gl_expiry)}</td>
         <td style="color:${expColor(sub.wc_expiry)};font-weight:600;font-size:11px">${expLabel(sub.wc_expiry)}</td>
         <td><span class="badge ${sub.active?'b-active':'b-hold'}">${sub.active?'Active':'Inactive'}</span></td>
+        <td onclick="event.stopPropagation()"><button class="btn btn-sm" onclick="editSub('${sub.id}')">Edit</button></td>
       </tr>`;
     }).join('')}
     </tbody></table>`}

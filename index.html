@@ -7848,17 +7848,24 @@ async function ensureHtml2Pdf() {
 async function poHtmlToPdfBase64(docHTML) {
   await ensureHtml2Pdf();
   // Render in an offscreen iframe so the PO's own <style> applies cleanly.
+  // Letter @ 96dpi = 816x1056px. We force the body to that width and strip the
+  // screen-only max-width/padding so html2canvas captures at true page size and
+  // html2pdf doesn't up-scale it (which was making the PDF look oversized).
   const iframe = document.createElement('iframe');
-  iframe.style.cssText = 'position:fixed;left:-9999px;top:0;width:8.5in;height:11in;border:0';
+  iframe.style.cssText = 'position:fixed;left:-9999px;top:0;width:816px;height:1056px;border:0';
   document.body.appendChild(iframe);
   iframe.contentDocument.open();
   iframe.contentDocument.write(docHTML);
   iframe.contentDocument.close();
+  // Neutralize the screen-centering/padding so capture matches the print page.
+  const fix = iframe.contentDocument.createElement('style');
+  fix.textContent = 'body{max-width:none!important;margin:0!important;padding:0.5in!important;width:816px!important;}';
+  iframe.contentDocument.head.appendChild(fix);
   await new Promise(r => setTimeout(r, 400)); // let logo/styles settle
   const opt = {
     margin: 0,
     image: { type: 'jpeg', quality: 0.98 },
-    html2canvas: { scale: 2, useCORS: true },
+    html2canvas: { scale: 2, useCORS: true, windowWidth: 816, width: 816 },
     jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' },
   };
   const dataUri = await window.html2pdf().set(opt).from(iframe.contentDocument.body).outputPdf('datauristring');

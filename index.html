@@ -7906,7 +7906,12 @@ async function createPODraft({ to, subject, body, docHTML, fileName }) {
     throw new Error('Graph error ' + resp.status + ': ' + err.slice(0, 300));
   }
   const created = await resp.json();
-  return { ok: true, webLink: created.webLink || null };
+  // The returned webLink opens drafts in READ mode (shows blank for a draft).
+  // Build a COMPOSE deeplink from the message id so it opens ready to edit/send.
+  const composeLink = created.id
+    ? `https://outlook.office365.com/mail/deeplink/compose/${encodeURIComponent(created.id)}?ItemID=${encodeURIComponent(created.id)}&exvsurl=1`
+    : (created.webLink || null);
+  return { ok: true, webLink: composeLink };
 }
 
 // Build the PO document HTML and either open print window or email

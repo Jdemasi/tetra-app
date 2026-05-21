@@ -863,6 +863,11 @@ select.finp{cursor:pointer}
     <div style="margin-top:12px;padding:10px;background:var(--gray50);border-radius:8px;font-size:11px;color:var(--gray600)">
       <div id="gen-po-summary"></div>
     </div>
+    <div id="gen-po-st120-wrap" style="display:none;margin-top:10px">
+      <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer">
+        <input type="checkbox" id="gen-po-attach-st120" checked> Attach tax-exempt certificate (ST-120.1) to the PO email
+      </label>
+    </div>
     <div class="form-actions" style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
       <button class="btn" onclick="closeModal('modal-generate-po')">Cancel</button>
       <button class="btn" id="gen-po-package-btn" style="display:none" onclick="generateSubcontractPackage()">📑 Generate Subcontract Package (Word)</button>
@@ -3038,33 +3043,37 @@ async function savePurchase() {
   closeModal('modal-purchase');
   toast(editId ? 'Invoice updated' : 'Invoice logged');
 
-  // Check if this is a NEW vendor (not in vendors table yet) — prompt to add
+  // Auto-add NEW vendors to the vendor log from the invoice's OCR'd details.
+  // Additive only, deduped by name (case-insensitive). No prompt — it just
+  // happens, and a toast confirms it. You can edit the vendor later if needed.
   if (!editId && puData.vendor) {
     const vendorName = puData.vendor.trim();
     const known = (state.vendors||[]).find(v => (v.name||'').toLowerCase() === vendorName.toLowerCase());
     if (!known) {
-      // Fresh load in case state.vendors is stale
-      const { data: dbVendors } = await db.from('vendors').select('name').ilike('name', vendorName);
+      const { data: dbVendors } = await db.from('vendors').select('id').ilike('name', vendorName);
       if (!dbVendors || dbVendors.length === 0) {
-        // Truly new — prompt with parser-extracted info pre-filled
-        const prefill = {
+        const newVendor = {
           name: vendorName,
-          phone: parserResult?.vendor_phone || '',
-          email: parserResult?.vendor_email || '',
-          address: parserResult?.vendor_address || '',
+          phone: parserResult?.vendor_phone || null,
+          email: parserResult?.vendor_email || null,
+          address: parserResult?.vendor_address || null,
           payment_terms: parserResult?.payment_terms != null ? parserResult.payment_terms : 30,
           default_cost_code: puData.cost_code || null,
+          approved: true,
+          active: true,
         };
-        setTimeout(() => {
+        const { error: vErr } = await db.from('vendors').insert(newVendor);
+        if (!vErr) {
+          // refresh the in-memory vendor list so it's immediately available
+          const { data: refreshed } = await db.from('vendors').select('*').eq('approved', true).order('name');
+          if (refreshed) state.vendors = refreshed;
           const extras = [];
-          if (prefill.phone) extras.push('phone');
-          if (prefill.address) extras.push('address');
-          if (prefill.email) extras.push('email');
-          const extraNote = extras.length ? `\n\nI also extracted: ${extras.join(', ')} — these will pre-fill the vendor form.` : '';
-          if (confirm(`"${vendorName}" is a new vendor. Add to your vendor list?${extraNote}`)) {
-            openNewVendor(prefill);
-          }
-        }, 300);
+          if (newVendor.phone) extras.push('phone');
+          if (newVendor.address) extras.push('address');
+          if (newVendor.email) extras.push('email');
+          const extraNote = extras.length ? ` (with ${extras.join(', ')})` : '';
+          toast(`Added "${vendorName}" to your vendor log${extraNote}.`);
+        }
       }
     }
   }
@@ -7863,6 +7872,12 @@ async function openGeneratePO() {
     ${project ? 'Project: '+(project.project_name_full||project.job_name)+' (Job '+project.job_number+')' : 'No project'}
   `;
 
+  // Tax-exempt cert checkbox only relevant on tax-exempt jobs
+  if ($('gen-po-st120-wrap')) {
+    $('gen-po-st120-wrap').style.display = project?.tax_exempt ? 'block' : 'none';
+    if ($('gen-po-attach-st120')) $('gen-po-attach-st120').checked = !!project?.tax_exempt;
+  }
+
   openModal('modal-generate-po');
   primeMSAL();  // pre-load MSAL so the sign-in popup fires as a direct click result
 }
@@ -8090,22 +8105,32 @@ async function poHtmlToPdfBase64(docHTML) {
 }
 
 // Create an Outlook DRAFT with the PO PDF attached. Returns true on success.
-async function createPODraft({ to, subject, body, docHTML, fileName }) {
+async function createPODraft({ to, subject, body, docHTML, fileName, extraAttachments }) {
   const token = await getGraphToken();
   const pdfB64 = await poHtmlToPdfBase64(docHTML);
   const base = GRAPH_CONFIG.sendFrom === 'me'
     ? 'https://graph.microsoft.com/v1.0/me/messages'
     : `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(GRAPH_CONFIG.sendFrom)}/messages`;
+  const attachments = [{
+    '@odata.type': '#microsoft.graph.fileAttachment',
+    name: fileName,
+    contentType: 'application/pdf',
+    contentBytes: pdfB64,
+  }];
+  // Optional additional PDFs (e.g. the ST-120.1 tax-exempt cert)
+  (extraAttachments || []).forEach(a => {
+    if (a && a.base64) attachments.push({
+      '@odata.type': '#microsoft.graph.fileAttachment',
+      name: a.fileName || 'attachment.pdf',
+      contentType: 'application/pdf',
+      contentBytes: a.base64,
+    });
+  });
   const message = {
     subject,
     body: { contentType: 'Text', content: body },
     toRecipients: to ? [{ emailAddress: { address: to } }] : [],
-    attachments: [{
-      '@odata.type': '#microsoft.graph.fileAttachment',
-      name: fileName,
-      contentType: 'application/pdf',
-      contentBytes: pdfB64,
-    }],
+    attachments,
   };
   const resp = await fetch(base, {
     method: 'POST',
@@ -8321,14 +8346,24 @@ async function generateST120() {
   if (!vendor) { toast('Could not load that vendor.'); return; }
 
   toast('Generating ST-120.1… loading PDF engine');
-  let PDFLib;
-  try { PDFLib = await ensurePdfLib(); }
-  catch (e) { toast(e.message); return; }
+  try {
+    const { bytes } = await buildST120Bytes(project, vendor);
+    const safeVendor = (vendor.name || 'vendor').replace(/[^\w]+/g, '_');
+    _downloadBlob(new Blob([bytes], { type: 'application/pdf' }), `ST-120.1 ${safeVendor} ${project.job_number}.pdf`);
+    closeModal('modal-st120');
+    toast('ST-120.1 generated — opening download.');
+  } catch (e) {
+    console.error(e);
+    toast('Sorry — generating the ST-120.1 failed: ' + (e.message || e));
+  }
+}
 
-  // Parse the vendor address into street / city / state / zip (best effort).
+// Build a filled, signed ST-120.1 for a given project + vendor.
+// Returns { bytes, base64, fileName }. Throws on failure (caller handles toast).
+// Used by both the standalone generator (download) and the PO email flow (attach).
+async function buildST120Bytes(project, vendor) {
+  const PDFLib = await ensurePdfLib();
   const { street, city, st, zip } = _splitAddress(vendor.address || '');
-
-  // Format prime contract date as MM-DD-YYYY (stored as YYYY-MM-DD)
   let primeDate = project.prime_contract_date || '';
   if (/^\d{4}-\d{2}-\d{2}$/.test(primeDate)) {
     const [y,m,d] = primeDate.split('-'); primeDate = `${m}-${d}-${y}`;
@@ -8341,47 +8376,30 @@ async function generateST120() {
   const today = new Date();
   const datePrepared = `${String(today.getMonth()+1).padStart(2,'0')}/${String(today.getDate()).padStart(2,'0')}/${today.getFullYear()}`;
 
-  try {
-    const { PDFDocument } = PDFLib;
-    const doc = await PDFDocument.load(_b64ToBytes(ST120_BLANK_B64));
-    const form = doc.getForm();
-    const set = (n, v) => { try { form.getTextField(n).setText(v || ''); } catch (e) { console.warn('ST120 field miss:', n); } };
-
-    // Seller = the vendor we're sending to
-    set('name of vendor', vendor.name || '');
-    set('street address1', street);
-    set('city1', city); set('state1', st); set('zip code 1', zip);
-    // Purchasing contractor = Tetra (fixed)
-    set('name of purchasing contractor', 'Tetra Mechanical Services LLC');
-    set('street address2', '1 Plaza Rd'); set('city2', 'Greenvale'); set('state2', 'NY'); set('zip code 2', '11548');
-    // Cert of Authority # (from job)
-    set('enter your sales tax vendor id number', project.coa_number || '');
-    // Project block
-    set('line 2 1', projName);
-    set('line 2 2', projAddr);
-    set('line 2 3', forWith);
-    set('line 2 4', primeDate);
-    // Certification
-    set('type or print name and title of owner', 'Joseph DeMasi');
-    set('date prepared', datePrepared);
-    // Box A
-    try { form.getCheckBox('box a').check(); } catch (e) { console.warn('box a miss'); }
-
-    // Signature overlay on page 2 (index 1), at the dialed-in position.
-    const png = await doc.embedPng(_b64ToBytes(ST120_SIG_B64));
-    const w = 160, h = 160 * (png.height / png.width);
-    doc.getPages()[1].drawImage(png, { x: 46, y: 38, width: w, height: h });
-
-    form.flatten();
-    const bytes = await doc.save();
-    const safeVendor = (vendor.name || 'vendor').replace(/[^\w]+/g, '_');
-    _downloadBlob(new Blob([bytes], { type: 'application/pdf' }), `ST-120.1 ${safeVendor} ${project.job_number}.pdf`);
-    closeModal('modal-st120');
-    toast('ST-120.1 generated — opening download.');
-  } catch (e) {
-    console.error(e);
-    toast('Sorry — generating the ST-120.1 failed: ' + (e.message || e));
-  }
+  const { PDFDocument } = PDFLib;
+  const doc = await PDFDocument.load(_b64ToBytes(ST120_BLANK_B64));
+  const form = doc.getForm();
+  const set = (n, v) => { try { form.getTextField(n).setText(v || ''); } catch (e) { console.warn('ST120 field miss:', n); } };
+  set('name of vendor', vendor.name || '');
+  set('street address1', street); set('city1', city); set('state1', st); set('zip code 1', zip);
+  set('name of purchasing contractor', 'Tetra Mechanical Services LLC');
+  set('street address2', '1 Plaza Rd'); set('city2', 'Greenvale'); set('state2', 'NY'); set('zip code 2', '11548');
+  set('enter your sales tax vendor id number', project.coa_number || '');
+  set('line 2 1', projName); set('line 2 2', projAddr); set('line 2 3', forWith); set('line 2 4', primeDate);
+  set('type or print name and title of owner', 'Joseph DeMasi');
+  set('date prepared', datePrepared);
+  try { form.getCheckBox('box a').check(); } catch (e) { console.warn('box a miss'); }
+  const png = await doc.embedPng(_b64ToBytes(ST120_SIG_B64));
+  const w = 160, h = 160 * (png.height / png.width);
+  doc.getPages()[1].drawImage(png, { x: 46, y: 38, width: w, height: h });
+  form.flatten();
+  const bytes = await doc.save();
+  // base64 (chunked to avoid call-stack limits on large arrays)
+  let bin = ''; const CH = 0x8000;
+  for (let i = 0; i < bytes.length; i += CH) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+  const base64 = btoa(bin);
+  const safeVendor = (vendor.name || 'vendor').replace(/[^\w]+/g, '_');
+  return { bytes, base64, fileName: `ST-120.1 ${safeVendor} ${project.job_number}.pdf` };
 }
 
 // Best-effort split of a one-line address into street / city / state / zip.
@@ -8864,8 +8882,26 @@ async function generatePODocument(mode) {
     const to = vEmail || '';
     const fileName = `PO ${fullPONum}.pdf`;
     toast('Preparing PO draft… you may be asked to sign in to Microsoft');
+
+    // On tax-exempt jobs, optionally attach the ST-120.1 cert (checkbox, default on).
+    let extraAttachments = [];
+    const wantCert = project?.tax_exempt && $('gen-po-attach-st120') && $('gen-po-attach-st120').checked;
+    if (wantCert) {
+      if (!project.coa_number || !project.prime_contract_date) {
+        toast('Tax-exempt cert skipped — add Certificate of Authority # and Prime Contract Date in Job Setup. Sending PO only.');
+      } else if (vendor) {
+        try {
+          const cert = await buildST120Bytes(project, vendor);
+          extraAttachments.push({ base64: cert.base64, fileName: cert.fileName });
+        } catch (e) {
+          console.error('ST-120.1 build failed:', e);
+          toast('Could not build the tax-exempt cert — sending PO only.');
+        }
+      }
+    }
+
     try {
-      const result = await createPODraft({ to, subject: emailSubject, body: emailBody, docHTML, fileName });
+      const result = await createPODraft({ to, subject: emailSubject, body: emailBody, docHTML, fileName, extraAttachments });
       // The draft is reliably saved to Outlook Drafts (syncs to desktop + web).
       // Auto-opening the web compose deeplink proved flaky, so we point the user
       // to Drafts — one click, works every time. webLink kept on the result for

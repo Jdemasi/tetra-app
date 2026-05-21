@@ -7848,27 +7848,27 @@ async function ensureHtml2Pdf() {
 async function poHtmlToPdfBase64(docHTML) {
   await ensureHtml2Pdf();
   // Render in an offscreen iframe so the PO's own <style> applies cleanly.
-  // Letter @ 96dpi = 816x1056px. We force the body to that width and strip the
-  // screen-only max-width/padding so html2canvas captures at true page size and
-  // html2pdf doesn't up-scale it (which was making the PDF look oversized).
+  // The PO HTML is already designed for letter paper (@page margin:0.5in). We let
+  // html2pdf use that page geometry and DON'T force pixel widths (which skewed
+  // the layout). margin:0 here because the PO body supplies its own padding.
   const iframe = document.createElement('iframe');
-  iframe.style.cssText = 'position:fixed;left:-9999px;top:0;width:816px;height:1056px;border:0';
+  iframe.style.cssText = 'position:fixed;left:-9999px;top:0;width:8.5in;height:11in;border:0';
   document.body.appendChild(iframe);
   iframe.contentDocument.open();
   iframe.contentDocument.write(docHTML);
   iframe.contentDocument.close();
-  // Neutralize the screen-centering/padding so capture matches the print page.
-  const fix = iframe.contentDocument.createElement('style');
-  fix.textContent = 'body{max-width:none!important;margin:0!important;padding:0.5in!important;width:816px!important;}';
-  iframe.contentDocument.head.appendChild(fix);
-  await new Promise(r => setTimeout(r, 400)); // let logo/styles settle
+  await new Promise(r => setTimeout(r, 450)); // let logo/styles settle
   const opt = {
     margin: 0,
     image: { type: 'jpeg', quality: 0.98 },
-    html2canvas: { scale: 2, useCORS: true, windowWidth: 816, width: 816 },
+    html2canvas: { scale: 2, useCORS: true },
     jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' },
   };
-  const dataUri = await window.html2pdf().set(opt).from(iframe.contentDocument.body).outputPdf('datauristring');
+  // Render from the document element so the body's own max-width/padding apply,
+  // matching the on-screen PO exactly.
+  const dataUri = await window.html2pdf().set(opt)
+    .from(iframe.contentDocument.documentElement)
+    .outputPdf('datauristring');
   document.body.removeChild(iframe);
   return dataUri.split(',')[1]; // strip "data:application/pdf;base64,"
 }

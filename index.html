@@ -7755,15 +7755,33 @@ const GRAPH_CONFIG = {
 };
 
 let _msalInstance = null;
+function loadScriptFrom(src) {
+  return new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = res;
+    s.onerror = () => rej(new Error('load failed: ' + src));
+    document.head.appendChild(s);
+  });
+}
 async function ensureMSAL() {
   if (window.msal && _msalInstance) return _msalInstance;
   if (!window.msal) {
-    await new Promise((res, rej) => {
-      const s = document.createElement('script');
-      s.src = 'https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js';
-      s.onload = res; s.onerror = rej;
-      document.head.appendChild(s);
-    });
+    // MSAL v2 ships a drop-in browser bundle. Try jsDelivr first, then the
+    // Microsoft-hosted CDN, so a single blocked/unreachable CDN can't kill sign-in.
+    const sources = [
+      'https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.38.4/lib/msal-browser.min.js',
+      'https://alcdn.msauth.net/browser/2.38.1/js/msal-browser.min.js',
+      'https://unpkg.com/@azure/msal-browser@2.38.4/lib/msal-browser.min.js',
+    ];
+    let loaded = false;
+    for (const src of sources) {
+      try { await loadScriptFrom(src); if (window.msal) { loaded = true; break; } }
+      catch (e) { console.warn('MSAL CDN failed, trying next:', src); }
+    }
+    if (!loaded || !window.msal) {
+      throw new Error('Could not load the Microsoft sign-in library from any CDN. Check your network/ad-blocker, or try a different browser.');
+    }
   }
   _msalInstance = new msal.PublicClientApplication({
     auth: {
@@ -7773,7 +7791,10 @@ async function ensureMSAL() {
     },
     cache: { cacheLocation: 'sessionStorage', storeAuthStateInCookie: false },
   });
-  await _msalInstance.initialize();
+  // v3 requires initialize(); v2 has no such method. Call it only if present.
+  if (typeof _msalInstance.initialize === 'function') {
+    await _msalInstance.initialize();
+  }
   // If we just came back from a redirect sign-in, process it and set the account.
   try {
     const resp = await _msalInstance.handleRedirectPromise();

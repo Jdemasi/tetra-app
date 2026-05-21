@@ -7737,8 +7737,132 @@ function collectGenPOLineItems() {
   return rows;
 }
 
+// ── OUTLOOK / MICROSOFT GRAPH EMAIL (one-shot PO draft w/ attached PDF) ──
+// Browser SPA flow: MSAL.js (Auth Code + PKCE, no client secret) signs the user
+// in against Tetra's tenant, then Graph creates a DRAFT email from the signed-in
+// mailbox (sign in as accounting@tetra-mechanical.com) with the PO rendered to a
+// real PDF and attached, named by PO number. User reviews the draft and hits Send.
+const GRAPH_CONFIG = {
+  clientId: '22b9b333-14d5-4258-9b23-9766adbaedf5',
+  tenantId: 'da9399a8-a1a3-47db-ac62-8b06eabd2109',
+  redirectUri: 'https://tetra-app-seven.vercel.app/',
+  scopes: ['Mail.Send', 'Mail.ReadWrite'],  // ReadWrite needed to create a draft
+  // 'me' = send/draft from whoever is signed in (sign in as accounting@).
+  // To draft from a shared mailbox while signed in as someone else, set this to
+  // 'accounting@tetra-mechanical.com' and add Mail.Send.Shared + Send-As rights.
+  sendFrom: 'me',
+};
+
+let _msalInstance = null;
+async function ensureMSAL() {
+  if (window.msal && _msalInstance) return _msalInstance;
+  if (!window.msal) {
+    await new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = 'https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js';
+      s.onload = res; s.onerror = rej;
+      document.head.appendChild(s);
+    });
+  }
+  _msalInstance = new msal.PublicClientApplication({
+    auth: {
+      clientId: GRAPH_CONFIG.clientId,
+      authority: 'https://login.microsoftonline.com/' + GRAPH_CONFIG.tenantId,
+      redirectUri: GRAPH_CONFIG.redirectUri,
+    },
+    cache: { cacheLocation: 'sessionStorage', storeAuthStateInCookie: false },
+  });
+  await _msalInstance.initialize();
+  return _msalInstance;
+}
+
+// Get a Graph access token: silent if a session exists, else interactive popup.
+async function getGraphToken() {
+  const pca = await ensureMSAL();
+  const req = { scopes: GRAPH_CONFIG.scopes };
+  let account = pca.getAllAccounts()[0];
+  if (account) {
+    try {
+      const r = await pca.acquireTokenSilent({ ...req, account });
+      return r.accessToken;
+    } catch (e) { /* fall through to interactive */ }
+  }
+  const r = await pca.loginPopup(req);
+  if (r?.account) pca.setActiveAccount(r.account);
+  const t = await pca.acquireTokenSilent({ ...req, account: pca.getAllAccounts()[0] });
+  return t.accessToken;
+}
+
+let _html2pdfLoaded = false;
+async function ensureHtml2Pdf() {
+  if (_html2pdfLoaded && window.html2pdf) return window.html2pdf;
+  await new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
+    s.onload = res; s.onerror = rej;
+    document.head.appendChild(s);
+  });
+  _html2pdfLoaded = true;
+  return window.html2pdf;
+}
+
+// Render PO HTML to a PDF and return base64 (no data: prefix) for Graph attachment.
+async function poHtmlToPdfBase64(docHTML) {
+  await ensureHtml2Pdf();
+  // Render in an offscreen iframe so the PO's own <style> applies cleanly.
+  const iframe = document.createElement('iframe');
+  iframe.style.cssText = 'position:fixed;left:-9999px;top:0;width:8.5in;height:11in;border:0';
+  document.body.appendChild(iframe);
+  iframe.contentDocument.open();
+  iframe.contentDocument.write(docHTML);
+  iframe.contentDocument.close();
+  await new Promise(r => setTimeout(r, 400)); // let logo/styles settle
+  const opt = {
+    margin: 0,
+    image: { type: 'jpeg', quality: 0.98 },
+    html2canvas: { scale: 2, useCORS: true },
+    jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' },
+  };
+  const dataUri = await window.html2pdf().set(opt).from(iframe.contentDocument.body).outputPdf('datauristring');
+  document.body.removeChild(iframe);
+  return dataUri.split(',')[1]; // strip "data:application/pdf;base64,"
+}
+
+// Create an Outlook DRAFT with the PO PDF attached. Returns true on success.
+async function createPODraft({ to, subject, body, docHTML, fileName }) {
+  const token = await getGraphToken();
+  const pdfB64 = await poHtmlToPdfBase64(docHTML);
+  const base = GRAPH_CONFIG.sendFrom === 'me'
+    ? 'https://graph.microsoft.com/v1.0/me/messages'
+    : `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(GRAPH_CONFIG.sendFrom)}/messages`;
+  const message = {
+    subject,
+    body: { contentType: 'Text', content: body },
+    toRecipients: to ? [{ emailAddress: { address: to } }] : [],
+    attachments: [{
+      '@odata.type': '#microsoft.graph.fileAttachment',
+      name: fileName,
+      contentType: 'application/pdf',
+      contentBytes: pdfB64,
+    }],
+  };
+  const resp = await fetch(base, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+    body: JSON.stringify(message),
+  });
+  if (!resp.ok) {
+    const err = await resp.text();
+    throw new Error('Graph error ' + resp.status + ': ' + err.slice(0, 300));
+  }
+  const created = await resp.json();
+  // Open the draft in Outlook on the web for review + send.
+  if (created.webLink) window.open(created.webLink, '_blank');
+  return true;
+}
+
 // Build the PO document HTML and either open print window or email
-function generatePODocument(mode) {
+async function generatePODocument(mode) {
   if (!_genPOData) return;
   const { po, project, vendor } = _genPOData;
   const docType = $('gen-po-type').value;
@@ -7901,25 +8025,26 @@ function generatePODocument(mode) {
 
   if (mode === 'email') {
     const to = vEmail || '';
-    // Open the PO in a new tab and auto-trigger the Save-as-PDF print dialog so the
-    // file is ready to attach. We do NOT touch window.location (that would navigate
-    // the app's own tab away). The mailto is handed off via a hidden, transient
-    // anchor so Outlook (the user's default handler) opens without disturbing the app.
-    const w = window.open('', '_blank');
-    w.document.write(docHTML);
-    w.document.close();
-    setTimeout(() => { try { w.focus(); w.print(); } catch(e){} }, 500);
-
-    const mailtoUrl = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(emailSubject)}&body=${encodeURIComponent(emailBody)}`;
-    setTimeout(() => {
-      const a = document.createElement('a');
-      a.href = mailtoUrl;
-      a.style.display = 'none';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-    }, 700);
-    toast('Save the PO as PDF in the print dialog, then attach it to the Outlook email');
+    const fileName = `PO ${fullPONum}.pdf`;
+    toast('Preparing PO draft… you may be asked to sign in to Microsoft');
+    try {
+      await createPODraft({ to, subject: emailSubject, body: emailBody, docHTML, fileName });
+      toast('Draft created in Outlook with the PO attached — review and send' + (to ? '' : ' (add the vendor email — none on file)'), 'success');
+    } catch (e) {
+      console.error('Graph draft failed, falling back to print + mailto:', e);
+      // Fallback: original behavior — open the doc, print-to-PDF, hand off mailto.
+      const w = window.open('', '_blank');
+      w.document.write(docHTML);
+      w.document.close();
+      setTimeout(() => { try { w.focus(); w.print(); } catch(err){} }, 500);
+      const mailtoUrl = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(emailSubject)}&body=${encodeURIComponent(emailBody)}`;
+      setTimeout(() => {
+        const a = document.createElement('a');
+        a.href = mailtoUrl; a.style.display = 'none';
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      }, 700);
+      toast('Couldn\'t auto-create the draft (' + (e.message||'sign-in/permission issue') + '). Falling back: save the PDF, then attach to the email.', 'error');
+    }
   } else {
     const w = window.open('', '_blank');
     w.document.write(docHTML);

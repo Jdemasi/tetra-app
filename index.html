@@ -847,6 +847,7 @@ select.finp{cursor:pointer}
     <div class="form-actions" style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
       <button class="btn" onclick="closeModal('modal-generate-po')">Cancel</button>
       <button class="btn" id="gen-po-package-btn" style="display:none" onclick="generateSubcontractPackage()">📑 Generate Subcontract Package (Word)</button>
+      <button class="btn" id="gen-po-package-email-btn" style="display:none" onclick="emailFinishedPackage()">📧 Upload Finished Package &amp; Email</button>
       <button class="btn" onclick="generatePODocument('print')">🖨 Preview / Print</button>
       <button class="btn btn-red" onclick="generatePODocument('email')">✉️ Open in Email</button>
     </div>
@@ -1409,12 +1410,25 @@ async function renderDashboard() {
   const estProfit = totalContract - totalEstCost;
   const actProfit = totalContract - totalCost;
 
-  // COI alerts
+  // Insurance alerts — check COI, General Liability, and Workers' Comp expiry
+  // for every active sub. Surfaces anything expired or expiring within 30 days,
+  // matching the roster page's red/amber logic. One alert per lapsing policy.
   const now = new Date();
-  const coiAlerts = (subs||[]).filter(s => {
-    const exp = s.coi_expiry ? new Date(s.coi_expiry) : null;
-    return exp && Math.ceil((exp-now)/86400000) < 30;
+  const insAlerts = [];
+  (subs||[]).forEach(s => {
+    const checks = [
+      { label: 'COI', date: s.coi_expiry },
+      { label: 'General Liability', date: s.gl_expiry },
+      { label: "Workers' Comp", date: s.wc_expiry },
+    ];
+    checks.forEach(c => {
+      if (!c.date) return;
+      const days = Math.ceil((new Date(c.date) - now) / 86400000);
+      if (days < 30) insAlerts.push({ company: s.company_name, label: c.label, date: c.date, days });
+    });
   });
+  // Most urgent first (expired before expiring; soonest first)
+  insAlerts.sort((a,b) => a.days - b.days);
 
   $('content').innerHTML = `
   <div class="kgrid">
@@ -1457,14 +1471,13 @@ async function renderDashboard() {
     </div>
     <div class="card">
       <div class="card-hd"><div class="card-title"><svg viewBox="0 0 24 24" style="width:15px;height:15px;stroke:var(--navy);fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>Alerts</div></div>
-      ${coiAlerts.length===0 && (purchases||[]).filter(p=>p.status==='Overdue').length===0 ? '<div class="tbl-empty" style="padding:16px">No alerts. Everything looks good.</div>' :
-      [...coiAlerts.map(s=>{
-        const days = Math.ceil((new Date(s.coi_expiry)-now)/86400000);
+      ${insAlerts.length===0 && (purchases||[]).filter(p=>p.status==='Overdue').length===0 ? '<div class="tbl-empty" style="padding:16px">No alerts. Everything looks good.</div>' :
+      [...insAlerts.map(a=>{
         return `<div class="row-item">
           <div style="width:28px;height:28px;border-radius:6px;background:#FCEBEB;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:13px">⚠️</div>
           <div class="ri-info">
-            <div class="ri-name">${s.company_name} — COI ${days<0?'EXPIRED':'expiring soon'}</div>
-            <div class="ri-sub">${days<0?Math.abs(days)+'d expired':days+'d remaining'} · Exp: ${s.coi_expiry}</div>
+            <div class="ri-name">${a.company} — ${a.label} ${a.days<0?'EXPIRED':'expiring soon'}</div>
+            <div class="ri-sub">${a.days<0?Math.abs(a.days)+'d expired':a.days+'d remaining'} · Exp: ${a.date}</div>
           </div>
         </div>`;
       }),
@@ -6358,6 +6371,17 @@ async function savePO() {
   closeModal('modal-po');
   toast(editId ? 'PO updated' : 'PO '+poData.po_number+' created');
 
+  // Subcontract POs: make sure the sub is on the roster (insurance tracker).
+  // Additive only; pulls contact info from the matching vendor record if found.
+  if (poData.po_type === 'subcontract' && vendor) {
+    const vRec = (state.vendors||[]).find(v => (v.name||'').toLowerCase() === vendor.toLowerCase());
+    syncVendorToRoster(vendor, {
+      contact_name: vRec?.contact_name || '',
+      email: vRec?.email || '',
+      phone: vRec?.phone || '',
+    }).catch(()=>{});
+  }
+
   // If the vendor typed isn't in the vendor list, offer to add it
   if (vendor) {
     const known = (state.vendors||[]).find(v => (v.name||'').toLowerCase() === vendor.toLowerCase());
@@ -6456,6 +6480,32 @@ async function saveAssignSub() {
 function openNewSub() {
   clearForm(['sub-name','sub-contact','sub-email','sub-phone','sub-trade','sub-coi','sub-gl','sub-wc','sub-license']);
   openModal('modal-sub');
+}
+
+// ── SUBCONTRACTOR ROSTER SYNC ────────────────────────────────────────
+// The roster (subcontractors table) auto-populates from subcontract POs:
+// when a subcontract PO is saved, the sub is added to the roster if missing.
+// Additive only — never overwrites or deletes. Match is by company name
+// (case-insensitive) to avoid duplicates. Insurance dates start blank and
+// are filled in on the roster as COIs come in.
+async function syncVendorToRoster(vendorName, fields = {}) {
+  const name = (vendorName || '').trim();
+  if (!name) return { added: false };
+  // Already in the roster? (case-insensitive name match) — if so, leave it alone.
+  const { data: existing } = await db.from('subcontractors')
+    .select('id').ilike('company_name', name).limit(1);
+  if (existing && existing.length) return { added: false };
+  const { error } = await db.from('subcontractors').insert({
+    company_name: name,
+    contact_name: fields.contact_name || null,
+    contact_email: fields.email || null,
+    contact_phone: fields.phone || null,
+    trade: fields.trade || null,
+    coi_expiry: null, gl_expiry: null, wc_expiry: null,
+    license_number: null,
+    active: true,
+  });
+  return { added: !error, error };
 }
 
 async function saveSub() {
@@ -7746,6 +7796,8 @@ function onGenPOTypeChange() {
   // The full Subcontract Package (Word) is only for subcontract POs
   const pkgBtn = $('gen-po-package-btn');
   if (pkgBtn) pkgBtn.style.display = (t === 'subcontract') ? 'inline-block' : 'none';
+  const pkgEmailBtn = $('gen-po-package-email-btn');
+  if (pkgEmailBtn) pkgEmailBtn.style.display = (t === 'subcontract') ? 'inline-block' : 'none';
   // Update default scope text for contract types
   if (!isMaterial && $('gen-po-scope')) {
     $('gen-po-scope').value = t === 'subcontract'
@@ -7989,6 +8041,135 @@ async function createPODraft({ to, subject, body, docHTML, fileName }) {
     ? `https://outlook.office365.com/mail/deeplink/compose/${encodeURIComponent(created.id)}?ItemID=${encodeURIComponent(created.id)}&exvsurl=1`
     : (created.webLink || null);
   return { ok: true, webLink: composeLink };
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// SUBCONTRACT PACKAGE — UPLOAD FINISHED PDF & EMAIL
+// After generating the package (Word), the user edits it and saves it as a
+// PDF on their computer. This flow lets them upload that finished PDF and
+// creates an Outlook DRAFT (never auto-sends) to the subcontractor with the
+// PDF attached, subject/body pre-filled from the PO. User reviews & sends.
+// ═══════════════════════════════════════════════════════════════════════
+
+// Create an Outlook draft attaching an already-prepared PDF (bytes supplied,
+// not rendered from HTML). Mirrors createPODraft but for an uploaded file.
+async function createDraftWithPdf({ token, to, subject, body, pdfBase64, fileName }) {
+  if (!token) token = await getGraphToken();
+  const base = GRAPH_CONFIG.sendFrom === 'me'
+    ? 'https://graph.microsoft.com/v1.0/me/messages'
+    : `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(GRAPH_CONFIG.sendFrom)}/messages`;
+  const message = {
+    subject,
+    body: { contentType: 'Text', content: body },
+    toRecipients: to ? [{ emailAddress: { address: to } }] : [],
+    attachments: [{
+      '@odata.type': '#microsoft.graph.fileAttachment',
+      name: fileName,
+      contentType: 'application/pdf',
+      contentBytes: pdfBase64,
+    }],
+  };
+  const resp = await fetch(base, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+    body: JSON.stringify(message),
+  });
+  if (!resp.ok) {
+    const err = await resp.text();
+    throw new Error('Graph error ' + resp.status + ': ' + err.slice(0, 300));
+  }
+  const created = await resp.json();
+  const composeLink = created.id
+    ? `https://outlook.office365.com/mail/deeplink/compose/${encodeURIComponent(created.id)}?ItemID=${encodeURIComponent(created.id)}&exvsurl=1`
+    : (created.webLink || null);
+  return { ok: true, webLink: composeLink };
+}
+
+// Read a File object into a base64 string (no data: prefix), for Graph attachment.
+function _fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => {
+      const res = r.result || '';
+      const comma = res.indexOf(',');
+      resolve(comma >= 0 ? res.slice(comma + 1) : res);
+    };
+    r.onerror = () => reject(new Error('Could not read the selected file.'));
+    r.readAsDataURL(file);
+  });
+}
+
+// Triggered by the "Upload finished package & email" button on a subcontract PO.
+// Opens a file picker for the finished PDF, then drafts the Outlook email.
+async function emailFinishedPackage() {
+  if (!_genPOData) return;
+  const { po, project, vendor } = _genPOData;
+  if ($('gen-po-type').value !== 'subcontract') {
+    toast('The package email is only for Subcontract POs.');
+    return;
+  }
+  const jobNum = project?.job_number || '1000';
+  const fullPONum = [po.po_number, jobNum, po.cost_code].filter(Boolean).join('-');
+  const projName = project?.project_name_full || project?.job_name || 'our project';
+  const toEmail = vendor?.email || '';
+
+  // IMPORTANT: get the Microsoft token NOW, while we still have the direct
+  // click gesture. If we waited until after the file picker, the sign-in
+  // popup would be blocked (the file dialog consumes the user-gesture). If
+  // already signed in (shared session with the PO email), this is silent.
+  let token;
+  try {
+    toast('Checking Microsoft sign-in… you may be asked to sign in');
+    token = await getGraphToken();
+  } catch (e) {
+    toast(e.message || 'Could not sign in to Microsoft.');
+    return;
+  }
+
+  // Build a hidden file input on demand, accept PDF only.
+  let input = document.getElementById('_pkg-pdf-input');
+  if (input) input.remove();
+  input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'application/pdf,.pdf';
+  input.id = '_pkg-pdf-input';
+  input.style.display = 'none';
+  document.body.appendChild(input);
+
+  input.onchange = async () => {
+    const file = input.files && input.files[0];
+    input.remove();
+    if (!file) return;
+    if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') {
+      toast('Please choose a PDF file (save your edited package as PDF first).');
+      return;
+    }
+    // Guard against oversized attachments (Graph simple-attach limit ~3 MB safe).
+    if (file.size > 3 * 1024 * 1024) {
+      toast('That PDF is larger than 3 MB. Outlook drafts here support up to ~3 MB attachments — try reducing the PDF size, or attach it manually in Outlook.');
+      return;
+    }
+    toast('Preparing package email…');
+    try {
+      const pdfBase64 = await _fileToBase64(file);
+      const subject = `Subcontract Package #${fullPONum} — Tetra Mechanical Services`;
+      const body = `Please find attached the executed subcontract package #${fullPONum} for ${projName}.\n\n`
+        + `Please review, sign where indicated, and return the fully executed package along with your certificate of insurance.\n\n`
+        + `Please reference PO #${fullPONum} on all invoices and correspondence.\n\nThank you,\nTetra Mechanical Services LLC\n(516) 898-6894`;
+      const fileName = file.name || `Subcontract Package ${fullPONum}.pdf`;
+      const res = await createDraftWithPdf({ token, to: toEmail, subject, body, pdfBase64, fileName });
+      if (res && res.ok) {
+        toast('Package draft created in Outlook (Drafts folder) — PDF attached. Open Drafts to review and send.');
+      } else {
+        toast('Could not create the draft. You can attach the PDF manually in Outlook.');
+      }
+    } catch (e) {
+      console.error(e);
+      toast('Sorry — creating the package email failed: ' + (e.message || e));
+    }
+  };
+  input.click();
 }
 
 // ═══════════════════════════════════════════════════════════════════════

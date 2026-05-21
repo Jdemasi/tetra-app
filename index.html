@@ -7906,9 +7906,7 @@ async function createPODraft({ to, subject, body, docHTML, fileName }) {
     throw new Error('Graph error ' + resp.status + ': ' + err.slice(0, 300));
   }
   const created = await resp.json();
-  // Open the draft in Outlook on the web for review + send.
-  if (created.webLink) window.open(created.webLink, '_blank');
-  return true;
+  return { ok: true, webLink: created.webLink || null };
 }
 
 // Build the PO document HTML and either open print window or email
@@ -8078,8 +8076,19 @@ async function generatePODocument(mode) {
     const fileName = `PO ${fullPONum}.pdf`;
     toast('Preparing PO draft… you may be asked to sign in to Microsoft');
     try {
-      await createPODraft({ to, subject: emailSubject, body: emailBody, docHTML, fileName });
-      toast('Draft created in Outlook with the PO attached — review and send' + (to ? '' : ' (add the vendor email — none on file)'), 'success');
+      const result = await createPODraft({ to, subject: emailSubject, body: emailBody, docHTML, fileName });
+      // Try to open the draft for immediate review. webLink opens Outlook on the
+      // web; if blocked or you use the desktop app, the draft is already waiting
+      // in your Outlook Drafts (it syncs there automatically).
+      let opened = false;
+      if (result?.webLink) {
+        const win = window.open(result.webLink, '_blank');
+        opened = !!win;
+      }
+      toast(opened
+        ? 'Draft opened in Outlook with the PO attached — review and send' + (to ? '' : ' (no vendor email on file — add it)')
+        : 'PO draft created — it\'s in your Outlook Drafts, with the PDF attached' + (to ? '' : ' (no vendor email on file)'),
+        'success');
     } catch (e) {
       console.error('Graph draft failed, falling back to print + mailto:', e);
       // Fallback: original behavior — open the doc, print-to-PDF, hand off mailto.

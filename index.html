@@ -846,6 +846,7 @@ select.finp{cursor:pointer}
     </div>
     <div class="form-actions" style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
       <button class="btn" onclick="closeModal('modal-generate-po')">Cancel</button>
+      <button class="btn" id="gen-po-package-btn" style="display:none" onclick="generateSubcontractPackage()">📑 Generate Subcontract Package (Word)</button>
       <button class="btn" onclick="generatePODocument('print')">🖨 Preview / Print</button>
       <button class="btn btn-red" onclick="generatePODocument('email')">✉️ Open in Email</button>
     </div>
@@ -7742,6 +7743,9 @@ function onGenPOTypeChange() {
   $('gen-po-contract-section').style.display = isMaterial ? 'none' : 'block';
   // Ordered By only matters for material POs
   $('gen-po-orderedby-wrap').style.display = isMaterial ? 'block' : 'none';
+  // The full Subcontract Package (Word) is only for subcontract POs
+  const pkgBtn = $('gen-po-package-btn');
+  if (pkgBtn) pkgBtn.style.display = (t === 'subcontract') ? 'inline-block' : 'none';
   // Update default scope text for contract types
   if (!isMaterial && $('gen-po-scope')) {
     $('gen-po-scope').value = t === 'subcontract'
@@ -7986,6 +7990,297 @@ async function createPODraft({ to, subject, body, docHTML, fileName }) {
     : (created.webLink || null);
   return { ok: true, webLink: composeLink };
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// SUBCONTRACT PACKAGE GENERATOR (Word .docx, generated in-browser)
+// Assembles: PO + Master Subcontract Agreement (verbatim) + Exhibit A
+// Work Order + Subcontract Addendum + Insurance Request, auto-filled from
+// the current subcontract PO. Per-job editable fields are highlighted.
+// User edits in Word, saves as PDF, then uses the email/upload flow to send.
+// ═══════════════════════════════════════════════════════════════════════
+let _docxLib = null;
+async function ensureDocx() {
+  if (window.docx) { _docxLib = window.docx; return _docxLib; }
+  const sources = [
+    'https://cdn.jsdelivr.net/npm/docx@9.0.3/build/index.umd.min.js',
+    'https://unpkg.com/docx@9.0.3/build/index.umd.min.js',
+    'https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js',
+  ];
+  let loaded = false;
+  for (const src of sources) {
+    try { await loadScriptFrom(src); if (window.docx) { loaded = true; break; } }
+    catch (e) { console.warn('docx CDN failed, trying next:', src); }
+  }
+  if (!loaded || !window.docx) {
+    throw new Error('Could not load the document library from any CDN. Check your network/ad-blocker, or try a different browser.');
+  }
+  _docxLib = window.docx;
+  return _docxLib;
+}
+
+async function generateSubcontractPackage() {
+  if (!_genPOData) return;
+  const { po, project, vendor } = _genPOData;
+  if ($('gen-po-type').value !== 'subcontract') {
+    toast('The subcontract package is only for Subcontract POs.');
+    return;
+  }
+  toast('Building subcontract package… loading document engine');
+  let D;
+  try { D = await ensureDocx(); }
+  catch (e) { toast(e.message || 'Could not load document engine.'); return; }
+
+  const {
+    Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, ImageRun,
+    AlignmentType, BorderStyle, WidthType, ShadingType, PageBreak, Header, Footer
+  } = D;
+
+  // ---- Gather auto-fill data (same fields the PO generator uses) ----
+  const jobNum = project?.job_number || '1000';
+  const fullPONum = [po.po_number, jobNum, po.cost_code].filter(Boolean).join('-');
+  const subName = vendor?.contact_name || '';
+  const company = po.vendor || vendor?.name || '';
+  const address = vendor?.address || '';
+  const phone = vendor?.phone || '';
+  const email = vendor?.email || '';
+  const projName = project?.project_name_full || project?.job_name || '';
+  const projAddr = project?.project_address || '';
+  const owner = project?.owner_name || '';
+  const gc = project?.general_contractor || '';
+  const amount = fmt(po.committed_amount || 0);
+  const scope = $('gen-po-scope').value || '';
+  const itemsRaw = $('gen-po-items').value || '';
+  const pd = $('gen-po-proposal-date').value;
+  const proposalDate = pd ? (() => { const [y,m,dd]=pd.split('-'); return `${m}/${dd}/${y}`; })() : '';
+  const today = new Date().toLocaleDateString('en-US');
+  const contractor = 'Tetra Mechanical Services LLC';
+  const contractorAddr = '1 Plaza Rd, Greenvale, New York 11548';
+
+  const logoDataUrl = getTetraLogoDataURL();
+  const logoBytes = logoDataUrl ? _dataUrlToUint8(logoDataUrl) : null;
+
+  // ---- Helpers ----
+  const HL = 'yellow';
+  const SZ = 16; // half-points => 8pt? No: docx size is half-points; 16 = 8pt. Use 18=9pt? We'll use 18.
+  const B = 18;  // body 9pt
+  const body = (t,o={}) => new Paragraph({ alignment: AlignmentType.JUSTIFIED, spacing:{after:100}, children:[new TextRun({text:t, size:B, ...o})] });
+  const h = (t) => new Paragraph({ spacing:{before:140, after:60}, children:[new TextRun({text:t, bold:true, size:B+1})] });
+  const hl = (t) => new TextRun({ text:t||'', size:B, highlight:HL });
+  const run = (t,o={}) => new TextRun({ text:t, size:B, ...o });
+  const blank = () => new Paragraph({ text:'', spacing:{after:80} });
+  const bd = { style: BorderStyle.SINGLE, size:4, color:'000000' };
+  const cbAll = { top:bd, bottom:bd, left:bd, right:bd };
+  const cbNone = { top:{style:BorderStyle.NONE}, bottom:{style:BorderStyle.NONE}, left:{style:BorderStyle.NONE}, right:{style:BorderStyle.NONE} };
+
+  const children = [];
+
+  // ===== PAGE 1: PO =====
+  const Lw=4680, Rw=4680;
+  const infoCell = (label,value,w,doHL) => new TableCell({ borders:cbAll, width:{size:w,type:WidthType.DXA}, margins:{top:40,bottom:40,left:100,right:100}, children:[new Paragraph({children:[new TextRun({text:label+' ',bold:true,size:B}), doHL?hl(value):new TextRun({text:value||'',size:B})]})] });
+  if (logoBytes) children.push(new Paragraph({ alignment:AlignmentType.CENTER, spacing:{after:60}, children:[new ImageRun({type:'jpg', data:logoBytes, transformation:{width:260,height:59}})] }));
+  children.push(new Paragraph({ alignment:AlignmentType.CENTER, spacing:{after:140}, shading:{fill:'FFF34D',type:ShadingType.CLEAR}, children:[new TextRun({text:`SUBCONTRACT PURCHASE ORDER #${fullPONum}`, bold:true, size:22, underline:{}})] }));
+  children.push(new Table({ width:{size:9360,type:WidthType.DXA}, columnWidths:[Lw,Rw], rows:[
+    new TableRow({children:[infoCell('Subcontractor Name:',subName,Lw,true), infoCell('Project:',projName,Rw,true)]}),
+    new TableRow({children:[infoCell('Company Name:',company,Lw,true), infoCell('Owner:',owner,Rw,true)]}),
+    new TableRow({children:[infoCell('Company Address:',address,Lw,true), infoCell('General Contractor:',gc,Rw,true)]}),
+    new TableRow({children:[infoCell('Phone:',phone,Lw,true), infoCell('Mechanical Contractor:',contractor,Rw,false)]}),
+    new TableRow({children:[infoCell('Email:',email,Lw,true), infoCell('Project Address:',projAddr,Rw,true)]}),
+    new TableRow({children:[infoCell('',' ',Lw,false), infoCell('Job #:',jobNum,Rw,true)]}),
+  ]}));
+  children.push(blank());
+  children.push(body('All work is to be performed according to supplied general requirements, bid specifications, working drawings, modifications / addendums, applicable codes, and OSHA requirements. Invoices for this purchase order will only be paid as per the agreed upon purchase order and must reference the purchase order number on all correspondences. Any additional work requires an approved and executed change order. This purchase order is subject to the terms and conditions of the Tetra Mechanical Services LLC Master Subcontract Agreement and the Prime Contract. Subcontractor shall comply with all applicable labor laws, certified payroll requirements, insurance requirements, and project compliance documentation. Payment to subcontractor shall be made only after receipt of payment by Tetra Mechanical Services LLC from the Owner and/or General Contractor for the corresponding portion of work. Subcontractor acknowledges that Tetra Mechanical Services LLC is a subcontractor to the above referenced General Contractor, and all work is subject to the terms and conditions of the Prime Contract.'));
+  const itemLines = itemsRaw.split('\n').filter(x=>x.trim());
+  const itHdr = new TableRow({children:[
+    new TableCell({borders:cbAll,width:{size:1200,type:WidthType.DXA},shading:{fill:'F0F0F0',type:ShadingType.CLEAR},margins:{top:40,bottom:40,left:100,right:100},children:[new Paragraph({children:[new TextRun({text:'Item #',bold:true,size:B})]})]}),
+    new TableCell({borders:cbAll,width:{size:8160,type:WidthType.DXA},shading:{fill:'F0F0F0',type:ShadingType.CLEAR},margins:{top:40,bottom:40,left:100,right:100},children:[new Paragraph({children:[new TextRun({text:'Product Name/Description',bold:true,size:B})]})]}),
+  ]});
+  const itBody = (itemLines.length?itemLines:['']).map((it,i)=>new TableRow({children:[
+    new TableCell({borders:cbAll,width:{size:1200,type:WidthType.DXA},margins:{top:40,bottom:40,left:100,right:100},children:[new Paragraph({alignment:AlignmentType.CENTER,children:[new TextRun({text:String(i+1),size:B})]})]}),
+    new TableCell({borders:cbAll,width:{size:8160,type:WidthType.DXA},margins:{top:40,bottom:40,left:100,right:100},children:[new Paragraph({children:[hl(it)]})]}),
+  ]}));
+  children.push(new Table({width:{size:9360,type:WidthType.DXA},columnWidths:[1200,8160],rows:[itHdr,...itBody]}));
+  children.push(blank());
+  children.push(new Paragraph({spacing:{after:100},children:[new TextRun({text:'Scope of Work: ',bold:true,size:B}), hl(scope)]}));
+  children.push(new Paragraph({spacing:{after:100},children:[run('Please reference proposal dated '), hl(proposalDate||'____/____/____'), run(' for '), hl(amount), run('.')]}));
+  children.push(new Paragraph({spacing:{after:100},children:[new TextRun({text:`Contract Total: ${amount}`,bold:true,size:B})]}));
+  children.push(new Paragraph({children:[new PageBreak()]}));
+
+  // ===== MSA BODY (verbatim; opening blanks auto-filled & highlighted) =====
+  const MSA_START = children.length;
+  children.push(new Paragraph({alignment:AlignmentType.CENTER,spacing:{after:120},children:[new TextRun({text:'MASTER SUBCONTRACT AGREEMENT (Short Form)',bold:true,size:20,underline:{}})]}));
+  children.push(new Paragraph({alignment:AlignmentType.JUSTIFIED,spacing:{after:100},children:[
+    run('This Master Subcontract Agreement (\u201CSubcontract\u201D), made this '), hl(today), run(' by and between '), hl(contractor),
+    run(' (hereinafter "Contractor"), with an office and principal place of business at '), hl(contractorAddr),
+    run(' and '), hl(company), run(' (hereinafter "Subcontractor") with an office and principal place of business at '), hl(address),
+    run(' (hereinafter collectively "Parties").'),
+  ]}));
+  children.push(body('WITNESSETH:',{bold:true}));
+  children.push(body('WHEREAS, Contractor contemplates that from time to time it will enter into prime construction contracts with various clients (\u201COwner\u201D) for the performance of certain construction services with respect to certain projects (each \u201CProject\u201D); and'));
+  children.push(body('WHEREAS, Contractor desires to enter into a master subcontract agreement with Subcontractor whereby Contractor at its discretion may from time to time contract with Subcontractor, and Subcontractor desires to perform said work at the prices and upon the terms and conditions hereinafter expressed;'));
+  children.push(body('NOW, THEREFORE, in consideration of the mutual agreements herein expressed, the Parties contract, covenant and agree as follows:'));
+  children.push(h('1. Scope of the Subcontract'));
+  children.push(body('The Contractor and Subcontractor agree that this Subcontract is a nonexclusive master agreement and that the Contractor may from time to time authorize the Subcontractor to perform certain construction services (\u201CWork\u201D) for the Contractor pursuant to this Agreement but only upon the execution by Contractor and Subcontractor of a work order (\u201CWork Order\u201D) in a form attached hereto as Exhibit A. This Subcontract does not require either the Contractor or Subcontractor to issue or accept any particular Work Order; however, if fully executed, each Work Order shall be governed by the terms and conditions of this Subcontract, as it may be amended by mutual agreement, and whether or nor the Work Order specifically refers to it.'));
+  children.push(h('2. Subcontractor\u2019s Work (hereinafter "Work")'));
+  children.push(body('Subcontractor shall perform all work and shall furnish all supervision, labor, materials, plant, hoisting, scaffolding, tools, equipment, supplies and all other things necessary for the construction and completion of the work described in each individual Work Order, including work incidental thereto and reasonably inferable therefrom, in strict accordance and full compliance with the terms of this Subcontract, and to the satisfaction of Contractor and the Owner.'));
+  children.push(h('3. Payment'));
+  children.push(body('Contractor shall pay Subcontractor for performance of the Work, subject to additions and deductions by written change order, a liquidated sum which shall be calculated and agreed to by the Parties to each individual Work Order.'));
+  children.push(h('4. Indemnification and Subcontractor\u2019s Liability'));
+  children.push(body('a. Subcontractor hereby assumes the entire responsibility and liability for all Work, supervision, labor and materials provided under any Work Order issued pursuant to this Subcontract, whether or not erected in place and for all plant, scaffolding, tools, equipment, supplies and other things provided by Subcontractor until final acceptance of the entirety of the Work by Owner. In the event of any loss, damage or destruction thereof from any cause of the Work as a result of the acts or omissions of Subcontractor, its employees, sub-subcontractors, suppliers or agents of any type, Subcontractor shall be liable therefor, and shall repair, rebuild and make good said loss, damage or destruction at Subcontractor\u2019s cost, subject only to the extent that any net proceeds are payable under any builder\u2019s risk property insurance that may be maintained by Owner or Contractor, if any.'));
+  children.push(body('b. Subcontractor shall be liable to Contractor for all costs Contractor incurs as a result of any failure of Subcontractor, or any of its suppliers, vendors or subcontractors of any tier, to fully and properly perform their obligations and duties with respect to the Work.'));
+  children.push(body('c. To the fullest extent permitted by law, the Subcontractor shall indemnify, defend, and hold harmless the Contractor, Owner and their respective officers, directors, employees and agents (\u201CIndemnified Parties\u201D) from and against all claims, damages, demands, losses, expenses, fines, causes of action, suits or other liabilities, (including all costs reasonable attorneys\u2019 fees, consequential damages, and punitive damages), arising out of or resulting from, or alleged to arise out of or arise from, the performance of Subcontractor\u2019s Work under the Subcontract, and any Work Order whether such claim, damage, demand, loss or expense is attributable to bodily injury, personal injury, sickness, disease or death, or to injury to or destruction of tangible property, including the loss of use resulting therefrom; but only to the extent attributable to the negligence of the Subcontractor or any entity for which it is legally responsible or vicariously liable: regardless of whether the claim is presented by an employee of Subcontractor. The indemnity obligations referenced herein shall not be construed to negate, abridge or otherwise limit any other obligations of the Subcontractor or rights of Contractor hereunder. This indemnification shall not be limited in any way by any limitation on the amount or type of damages, compensation or benefits payable by or for the Subcontractor under any workers\u2019 compensation act, disability benefits acts or other employee benefits act and includes any loss or injury suffered by an employee of the subcontractor. This indemnification shall be in addition to any indemnity liability imposed by the Contract Documents, and shall survive the completion of the Work or the termination of the Subcontract.'));
+  children.push(body('d. To the fullest extent permitted by law, the Subcontractor shall also indemnify, defend, and hold harmless the Indemnified Parties from and against all claims, damages, demands, losses, expenses, fines, causes of action, suits or other liabilities, (including all costs reasonable attorneys\u2019 fees, consequential damages, and punitive damages), arising out of or resulting from, or alleged to arise out of, the failure of Subcontractor, or any of its suppliers or subcontractors of any tier, to compensate any of its employees or independent contractors in accordance with any applicable federal, state or local law regarding the payment of wages.'));
+  children.push(body('Subcontractor\u2019s assumption of liability is independent from, and not limited in any manner by, the Subcontractor\u2019s insurance coverage obtained pursuant to Article 5 or otherwise.'));
+  children.push(h('5. Subcontractor\u2019s Insurance'));
+  children.push(body('Prior to commencing the Work, Subcontractor shall procure, and thereafter maintain, at its own expense, until final acceptance of the Work or later as required by the terms of the Subcontract or any individual Work Order, insurance coverage required by this Subcontract. At a minimum, and subject to modification in individual Work Orders, the types of insurance and minimum policy limits specified shall be maintained in a form and from insurers acceptable to Contractor as set forth below. All insurers shall have at least an A- (excellent) rating by A.M. Best and be qualified to do business in the state where the project is located.'));
+  children.push(body('This insurance will provide a defense and indemnify the Contractor, but only with respect to liability for bodily injury, property damage and personal and advertising injury caused in whole or in part by the Subcontractor\u2019s acts or omissions or the acts or omissions of those acting on the Subcontractor\u2019s behalf.'));
+  children.push(body('Proof of this insurance shall be provided to the Contractor before the Work commences, as set forth below. To the extent that the Subcontractor subcontracts with any other entity or individual to perform all or part of the Subcontractor\u2019s Work, the Subcontractor shall require the other Sub-Subcontractors to furnish evidence of equivalent insurance coverage, in all respects, terms and conditions as set forth herein, prior to the commencement of work by the Sub-Subcontractor. In no event shall the failure to provide this proof, prior to the commencement of the Work, be deemed a waiver by the Contractor of Subcontractor\u2019s or the Sub-Subcontractor\u2019s insurance obligations set forth herein.'));
+  children.push(body('In the event that the insurance company(ies) issuing the policy(ies) required by this exhibit deny coverage to the Contractor, the Subcontractor or the Sub-Subcontractor will, upon demand by the Contractor, defend and indemnify the Contractor at the Subcontractor\u2019s or Sub-Subcontractor\u2019s expense.'));
+  const insLine = (label,amt) => new Paragraph({spacing:{after:40},children:[new TextRun({text:label+': ',size:B}), hl(amt)]});
+  children.push(new Paragraph({spacing:{before:60,after:40},children:[new TextRun({text:'Commercial General Liability Insurance',bold:true,size:B})]}));
+  children.push(insLine('Each Occurrence Limit (Bodily Injury and Property Damage)','$1,000,000'));
+  children.push(insLine('General Aggregate per Project','$2,000,000'));
+  children.push(insLine('Products & Completed Operations Aggregate','$2,000,000'));
+  children.push(insLine('Personal and Advertising Injury Limit','$1,000,000'));
+  children.push(new Paragraph({spacing:{before:60,after:40},children:[new TextRun({text:'Business or Commercial Automobile Liability Insurance',bold:true,size:B})]}));
+  children.push(insLine('Combined single limit per accident','$1,000,000'));
+  children.push(new Paragraph({spacing:{before:60,after:40},children:[new TextRun({text:'Workers\u2019 Compensation and Employers\u2019 Liability Insurance',bold:true,size:B})]}));
+  children.push(insLine('Each Accident / Each Employee for Injury by Disease / Aggregate for Injury by Disease','$1,000,000'));
+  children.push(new Paragraph({spacing:{before:60,after:40},children:[new TextRun({text:'Excess or Umbrella Liability',bold:true,size:B})]}));
+  children.push(insLine('Occurrence / Aggregate','$1,000,000'));
+  children.push(body('The Subcontractor\u2019s Commercial General Liability policy shall not contain an exclusion or restriction of coverage for any of the following: (1) claims by one insured against another insured where coverage would otherwise exist; (2) claims for property damage to the Contractor\u2019s Work arising out of the products-completed operations hazard where the damaged Work was performed by a Subcontractor; (3) claims for bodily injury other than to employees of the insured; (4) claims for indemnity under Article 4 arising out of injury to employees of the insured; (5) claims excluded under a prior work endorsement; (6) claims due to physical damage under a prior injury endorsement; (7) claims related to residential, multi-family or other habitational projects, if applicable; (8) claims related to roofing, if applicable; (9) claims related to exterior insulation finish systems (EIFS) or similar coatings, if applicable; (10) claims related to earth subsidence or movement, where applicable; and (11) claims related to explosion, collapse and underground hazards, where applicable.'));
+  children.push(h('6. Additional Insureds'));
+  children.push(body('The Contractor and Owner, along with their respective officers, agents and employees, shall be named as additional insureds for Ongoing Operations and Products/Completed Operations on the Subcontractor\u2019s and any Sub-Subcontractor\u2019s Commercial General Liability Policy and Excess or Umbrella Policy, all of which must be primary and noncontributory with respect to these additional insureds. The Subcontractor shall continue to carry Completed Operations Liability Insurance for at least the length of the Statute of Repose in the state where the subject work is performed after either ninety (90) days following Substantial Completion of the Work or final payment to the Contractor on any individual Project, whichever is later.'));
+  children.push(body('The Contractor and Owner shall also be named as additional Insureds on the Business or Commercial Automobile Liability Policy, primary and noncontributory. It is expressly understood that any insurance obtained by the Contractor is deemed excess, non-contributory and not co-primary in relation to the coverage(s) procured by the Subcontractor or Sub-Subcontractor. To the fullest extent permitted by applicable state law, a Waiver of Subrogation Clause shall be added to the General Liability, Automobile, Excess or Umbrella and Workers Compensation policies in favor of Contractor and Owner. Prior to commencement of Work on any individual Project, Subcontractor shall submit a Certificate of Insurance in favor of Contractor and an Additional Insured Endorsement in a form acceptable to the Contractor. The Subcontractor\u2019s Insurance policies shall provide for thirty (30) days\u2019 written notice to Contractor for cancellation or any change in coverage and be evidenced by the Certificate of Insurance.'));
+  children.push(h('7. Time of Performance / Safety'));
+  children.push(body('Subcontractor will commence Work when directed by Contractor and will proceed with the Work in a prompt and diligent manner in accordance with the Project Schedule attached to the individual Work Order as such Schedule may be amended from time to time by Contractor. TIME IS OF THE ESSENCE. Subcontractor shall be entitled to additional compensation for compliance with Schedule amendments only to the extent, if any, that Contractor receives reimbursement from the Owner. The Contractor makes no representation with respect to the physical conditions or safety of any Project Site. The Subcontractor shall, at its own expense, preserve and protect from injury its employees engaged in the performance of the Work and all property and persons which may be affected by its operations. The prevention of accidents and/or exposure of workers and others to hazardous materials is the responsibility of Subcontractor, and Subcontractor shall comply with all safety measures initiated by Contractor and all federal, state, labor and local laws, regulations and codes concerning safety. Subcontractor shall notify Contractor within three (3) days of any injury to an employee or agent of Subcontractor that occurred at the Project Site.'));
+  children.push(h('8. Clean-up'));
+  children.push(body('Subcontractor shall clean up the areas used by Subcontractor for its Work on a daily basis and remove from each Project site, or to a specified location on the Project site as directed by Contractor, and in a manner that will not impede either the progress of the Project or of other trades, all rubbish, waste material, excess material and debris resulting from the Work.'));
+  children.push(new Paragraph({spacing:{before:160,after:100},children:[new TextRun({text:'IN WITNESS WHEREOF, the Parties, by their duly authorized representatives, have hereunto executed this Subcontract on the day and year first above written.',size:B})]}));
+  const sigCell = (who,nameVal) => new TableCell({borders:cbNone,width:{size:4680,type:WidthType.DXA},margins:{top:40,bottom:40,left:100,right:100},children:[
+    new Paragraph({spacing:{after:160},children:[new TextRun({text:who,bold:true,size:B})]}),
+    new Paragraph({spacing:{after:40},children:[new TextRun({text:'By: ______________________________',size:B})]}),
+    new Paragraph({children:[new TextRun({text:'Name: ',size:B}), nameVal?hl(nameVal):run('______________________')]}),
+    new Paragraph({children:[new TextRun({text:'Title: ______________________',size:B})]}),
+    new Paragraph({children:[new TextRun({text:'Date: ______________________',size:B})]}),
+  ]});
+  children.push(new Table({width:{size:9360,type:WidthType.DXA},columnWidths:[4680,4680],rows:[new TableRow({children:[sigCell('SUBCONTRACTOR',subName),sigCell('CONTRACTOR',contractor)]})]}));
+  children.push(new Paragraph({children:[new PageBreak()]}));
+
+  // ===== EXHIBIT A — WORK ORDER (auto-filled) =====
+  const sigPair = (nameVal) => {
+    const sc=(who,nv)=>new TableCell({borders:cbNone,width:{size:4680,type:WidthType.DXA},margins:{top:40,bottom:40,left:100,right:100},children:[
+      new Paragraph({spacing:{after:160},children:[new TextRun({text:who,bold:true,size:B})]}),
+      new Paragraph({spacing:{after:40},children:[new TextRun({text:'By: ______________________________',size:B})]}),
+      new Paragraph({children:[new TextRun({text:'Name: ',size:B}), nv?hl(nv):run('______________________')]}),
+      new Paragraph({children:[new TextRun({text:'Title: ______________________',size:B})]}),
+      new Paragraph({children:[new TextRun({text:'Date: ______________________',size:B})]}),
+    ]});
+    return new Table({width:{size:9360,type:WidthType.DXA},columnWidths:[4680,4680],rows:[new TableRow({children:[sc('CONTRACTOR',contractor),sc('SUBCONTRACTOR',nameVal)]})]});
+  };
+  children.push(new Paragraph({alignment:AlignmentType.CENTER,spacing:{after:40},children:[new TextRun({text:'EXHIBIT A',bold:true,size:20,underline:{}})]}));
+  children.push(new Paragraph({alignment:AlignmentType.CENTER,spacing:{after:140},children:[new TextRun({text:'WORK ORDER FORM NO. ',bold:true,size:18}), hl('________')]}));
+  children.push(new Paragraph({spacing:{after:60},children:[new TextRun({text:'Date: ',bold:true,size:B}), hl(today)]}));
+  children.push(new Paragraph({spacing:{after:60},children:[new TextRun({text:'Project: ',bold:true,size:B}), hl(projName)]}));
+  children.push(new Paragraph({spacing:{after:60},children:[new TextRun({text:'Owner: ',bold:true,size:B}), hl(owner)]}));
+  children.push(new Paragraph({spacing:{after:100},children:[new TextRun({text:'Dear ',size:B}), hl(subName), run(':')]}));
+  children.push(new Paragraph({alignment:AlignmentType.JUSTIFIED,spacing:{after:100},children:[
+    hl(contractor), run(' (\u201CContractor\u201D) would like '), hl(company), run(' (\u201CSubcontractor\u201D) to perform certain construction services for the above identified Project in accordance with the scope of work as set forth below (\u201CWork\u201D). This Work Order is being issued in accordance with that certain Master Subcontract Agreement dated as '), hl(today), run(' entered into between Contractor and Subcontractor (\u201CMaster Agreement\u201D).'),
+  ]}));
+  children.push(new Paragraph({spacing:{after:60},children:[new TextRun({text:'The Work must be completed in accordance with the following Project Schedule: ',size:B}), hl('[Enter project schedule]')]}));
+  children.push(h('Compensation:'));
+  children.push(new Paragraph({spacing:{after:100},children:[run('The Contractor shall pay the Subcontractor, subject to the terms of this Work Order, the liquidated sum of '), hl(amount), run(' inclusive of any and all Reimbursable Expenses.')]}));
+  children.push(h('Scope of Work:'));
+  children.push(new Paragraph({spacing:{after:100},children:[run('The following Work is required to be performed pursuant to this Work Order: '), hl(scope)]}));
+  children.push(h('Contract Documents:'));
+  children.push(new Paragraph({spacing:{after:120},children:[run('The Contract Documents include the following: '), hl('[List applicable plans, specifications, addenda, and prime contract documents]')]}));
+  children.push(sigPair(subName));
+  children.push(new Paragraph({children:[new PageBreak()]}));
+
+  // ===== SUBCONTRACT ADDENDUM (standard template, highlighted) =====
+  children.push(new Paragraph({alignment:AlignmentType.CENTER,spacing:{after:60},children:[new TextRun({text:'SUBCONTRACT ADDENDUM',bold:true,size:20,underline:{}})]}));
+  children.push(new Paragraph({spacing:{after:100},shading:{fill:'FFF34D',type:ShadingType.CLEAR},children:[new TextRun({text:'NOTE: Tailor the terms below to match the Prime Contract received from the General Contractor for this job. Highlighted text is the standard starting template \u2014 edit as required.',size:14,italics:true})]}));
+  children.push(body('This Addendum is incorporated into and made part of the Master Subcontract Agreement between Contractor and Subcontractor. In the event of conflict, this Addendum shall control.'));
+  const addSec=(title,txt)=>{children.push(h(title));children.push(new Paragraph({alignment:AlignmentType.JUSTIFIED,spacing:{after:100},children:[hl(txt)]}));};
+  addSec('FLOW-DOWN REQUIREMENTS','Subcontractor shall be bound to Contractor by the same terms and conditions that Contractor is bound to the Owner and/or General Contractor under the Prime Contract. Subcontractor agrees to comply with all Contract Documents, including drawings, specifications, general conditions, supplementary conditions, schedules, and project requirements, insofar as they apply to Subcontractor\u2019s work. Subcontractor assumes toward Contractor all obligations and responsibilities that Contractor assumes toward the Owner or General Contractor.');
+  addSec('PAYMENT TERMS','Payment to Subcontractor is expressly contingent upon payment received by Contractor from the Owner and/or General Contractor for Subcontractor\u2019s work. Subcontractor shall submit applications for payment based on percentage of work completed in accordance with the approved Schedule of Values. Contractor shall have no obligation to make payment to Subcontractor until payment is received from the Owner or General Contractor.');
+  addSec('RETAINAGE','Retainage shall be withheld from Subcontractor in the same percentage as retainage withheld from Contractor by the Owner or General Contractor. Final payment to Subcontractor shall not be due until Contractor receives final payment for Subcontractor\u2019s work.');
+  addSec('CERTIFIED PAYROLL / PUBLIC WORK COMPLIANCE','For projects subject to prevailing wage, labor law, or public agency requirements, Subcontractor shall submit certified payroll, compliance forms, insurance certificates, affidavits, and all required documentation with each application for payment. Contractor may withhold payment until all required documentation is received and approved.');
+  addSec('BILLING REQUIREMENTS','Subcontractor shall submit invoices in a format acceptable to Contractor and consistent with the Schedule of Values approved for the project. All billing shall reflect percentage of work completed and shall include required backup documentation.');
+  addSec('INSURANCE AND LOWER-TIER SUBCONTRACTORS','Subcontractor shall require all lower-tier subcontractors to maintain insurance, indemnification, and contractual obligations equal to those required of Subcontractor under the Master Subcontract Agreement. Subcontractor shall provide proof of such insurance upon request.');
+  addSec('INCORPORATION','All other terms of the Master Subcontract Agreement remain in full force and effect.');
+  children.push(blank());
+  children.push(sigPair(subName));
+  children.push(new Paragraph({children:[new PageBreak()]}));
+
+  // ===== INSURANCE REQUEST (auto-filled; insureds highlighted) =====
+  if (logoBytes) children.push(new Paragraph({alignment:AlignmentType.CENTER,spacing:{after:40},children:[new ImageRun({type:'jpg',data:logoBytes,transformation:{width:200,height:46}})]}));
+  children.push(new Paragraph({alignment:AlignmentType.CENTER,spacing:{after:20},children:[new TextRun({text:'1 Plaza Rd. Suite 105A, Greenvale, NY 11548',size:14})]}));
+  children.push(new Paragraph({alignment:AlignmentType.CENTER,spacing:{after:20},children:[new TextRun({text:'Phone: 363-213-1974  |  Admin@Tetra-Mechanical.com',size:14})]}));
+  children.push(new Paragraph({alignment:AlignmentType.CENTER,spacing:{after:120},children:[new TextRun({text:'Full Service Mechanical Contractor  \u2022  Insured & Bonded',size:14,italics:true})]}));
+  children.push(new Paragraph({alignment:AlignmentType.CENTER,spacing:{after:120},children:[new TextRun({text:'INSURANCE REQUEST',bold:true,size:20,underline:{}})]}));
+  children.push(new Paragraph({spacing:{after:40},children:[new TextRun({text:'Date: ',bold:true,size:B}), hl(today)]}));
+  children.push(new Paragraph({spacing:{after:40},children:[new TextRun({text:'To: ',bold:true,size:B}), hl(company)]}));
+  children.push(new Paragraph({spacing:{after:100},children:[new TextRun({text:'Re: ',bold:true,size:B}), hl(projName)]}));
+  children.push(new Paragraph({spacing:{before:60,after:40},children:[new TextRun({text:'Insurance Certificates Requested:',bold:true,size:B})]}));
+  ['General Liability','Automobile','Workers Comp. (Form-105.2)','Disability (Form DB-120.1)'].forEach(t=>children.push(new Paragraph({spacing:{after:20},indent:{left:360},children:[new TextRun({text:'\u2022  '+t,size:B})]})));
+  children.push(new Paragraph({spacing:{before:80,after:60},children:[new TextRun({text:'Your Liability Certificate must include the following information in the Description Box:',bold:true,size:B})]}));
+  children.push(new Paragraph({spacing:{after:80},children:[new TextRun({text:'Project Name: ',bold:true,size:B}), hl(projName)]}));
+  children.push(new Paragraph({spacing:{after:40},children:[new TextRun({text:'Additional Insured \u2014 Please provide a copy of the additional insured endorsement:',bold:true,size:B})]}));
+  // Auto-fill what we know (Tetra, GC, Owner); leave a highlighted line for project-specific entities (CM, architects).
+  const knownInsureds = ['Tetra Mechanical Services LLC'];
+  if (gc) knownInsureds.push(gc);
+  if (owner) knownInsureds.push(owner);
+  knownInsureds.forEach(t=>children.push(new Paragraph({spacing:{after:30},indent:{left:360},children:[hl(t)]})));
+  children.push(new Paragraph({spacing:{after:30},indent:{left:360},children:[hl('[Add any project-specific additional insureds \u2014 e.g., Construction Manager, Architect/Engineer, agencies \u2014 per the Prime Contract]')]}));
+  children.push(new Paragraph({spacing:{before:100,after:20},children:[new TextRun({text:'Certificate Holder #1',bold:true,size:B})]}));
+  ['Tetra Mechanical Services LLC','1 Plaza Rd. Suite 105A','Greenvale, NY 11548'].forEach(t=>children.push(new Paragraph({spacing:{after:20},children:[new TextRun({text:t,size:B})]})));
+  children.push(new Paragraph({alignment:AlignmentType.CENTER,spacing:{before:140},children:[new TextRun({text:'Please EMAIL original certificates to our office as soon as possible',italics:true,size:B})]}));
+
+  // ===== ASSEMBLE =====
+  // Per-page "Subcontractor Initial & Date" box appears on MSA pages via the
+  // page header. Because docx applies headers per-section, we keep one section
+  // and place the initials note in the default header; it appears on every page,
+  // which matches the executed copies (initialed on each page).
+  const initialsHeader = new Header({ children:[ new Paragraph({ alignment:AlignmentType.RIGHT, children:[ new TextRun({text:'Subcontractor Initial & Date: ______ / ___ / ___', size:12, italics:true}) ] }) ] });
+  const footer = new Footer({ children:[ new Paragraph({ alignment:AlignmentType.CENTER, children:[ new TextRun({text:'1 Plaza Rd. Greenvale, New York 11548 | www.Tetra-Mechanical.Com | (516) 898-6894', size:12, underline:{}}) ] }) ] });
+
+  const doc = new Document({
+    styles: { default: { document: { run: { font:'Times New Roman', size:B } } } },
+    sections: [{
+      properties: { page: { size:{ width:12240, height:15840 }, margin:{ top:1080, right:720, bottom:864, left:720 } } },
+      headers: { default: initialsHeader },
+      footers: { default: footer },
+      children,
+    }],
+  });
+
+  try {
+    const blob = await Packer.toBlob(doc);
+    const fileName = `Subcontract Package ${fullPONum}.docx`;
+    _downloadBlob(blob, fileName);
+    toast('Subcontract package generated — opening download. Edit in Word, then Save as PDF to send.');
+  } catch (e) {
+    console.error(e);
+    toast('Sorry — building the package failed: ' + (e.message||e));
+  }
+}
+
+// data URL -> Uint8Array (for embedding the logo image in the docx)
+function _dataUrlToUint8(dataUrl) {
+  const b64 = dataUrl.split(',')[1] || '';
+  const bin = atob(b64);
+  const arr = new Uint8Array(bin.length);
+  for (let i=0;i<bin.length;i++) arr[i] = bin.charCodeAt(i);
+  return arr;
+}
+function _downloadBlob(blob, fileName) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = fileName;
+  document.body.appendChild(a); a.click();
+  setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(url); }, 1500);
+}
+
 
 // Build the PO document HTML and either open print window or email
 async function generatePODocument(mode) {

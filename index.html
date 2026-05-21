@@ -208,6 +208,9 @@ select.finp{cursor:pointer}
     <button class="sb-item" data-view="vendors">
       <svg viewBox="0 0 24 24"><path d="M3 9l2-5h14l2 5"/><path d="M3 9v11a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1V9"/><line x1="9" y1="13" x2="15" y2="13"/></svg>Vendors
     </button>
+    <button class="sb-item" data-view="trash">
+      <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>Trash
+    </button>
   </div>
 </div>
 
@@ -1056,43 +1059,39 @@ async function deletePurchaseFromModal() {
   const id = $('modal-purchase').dataset.editId;
   const projectId = $('modal-purchase').dataset.projectId;
   if (!id) return;
-  if (!confirm('Delete this invoice entry? This cannot be undone.')) return;
-  // Inline delete (avoid the existing confirm which would double-prompt)
-  const { data: pu } = await db.from('purchases').select('pdf_url').eq('id', id).single();
-  if (pu?.pdf_url) await deleteFile(pu.pdf_url);
-  const { error } = await db.from('purchases').delete().eq('id', id);
+  if (!confirm('Move this invoice entry to Trash? You can restore it later from Trash.')) return;
+  // Soft delete: flag deleted_at, keep the row + PDF so it can be restored
+  const { error } = await db.from('purchases').update({ deleted_at: new Date().toISOString() }).eq('id', id);
   if (error) { toast('Error: '+error.message,'error'); return; }
   delete $('modal-purchase').dataset.editId;
   closeModal('modal-purchase');
-  toast('Invoice deleted');
+  toast('Invoice moved to Trash');
   render();
 }
 
 async function deleteLaborFromModal() {
   const id = $('modal-labor').dataset.editId;
   if (!id) return;
-  if (!confirm('Delete this labor entry? This cannot be undone.')) return;
-  const { error } = await db.from('labor_entries').delete().eq('id', id);
+  if (!confirm('Move this labor entry to Trash? You can restore it later from Trash.')) return;
+  const { error } = await db.from('labor_entries').update({ deleted_at: new Date().toISOString() }).eq('id', id);
   if (error) { toast('Error: '+error.message,'error'); return; }
   delete $('modal-labor').dataset.editId;
   delete $('modal-labor').dataset.lockedRate;
   $('la-emp').disabled = false;
   closeModal('modal-labor');
-  toast('Labor entry deleted');
+  toast('Labor entry moved to Trash');
   render();
 }
 
 async function deleteClientInvoiceFromModal() {
   const id = $('modal-invoice').dataset.editId;
   if (!id) return;
-  if (!confirm('Delete this client invoice / pay app? This cannot be undone.')) return;
-  const { data: i } = await db.from('invoices').select('pdf_url').eq('id', id).single();
-  if (i?.pdf_url) await deleteFile(i.pdf_url);
-  const { error } = await db.from('invoices').delete().eq('id', id);
+  if (!confirm('Move this client invoice / pay app to Trash? You can restore it later from Trash.')) return;
+  const { error } = await db.from('invoices').update({ deleted_at: new Date().toISOString() }).eq('id', id);
   if (error) { toast('Error: '+error.message,'error'); return; }
   delete $('modal-invoice').dataset.editId;
   closeModal('modal-invoice');
-  toast('Invoice deleted');
+  toast('Invoice moved to Trash');
   render();
 }
 
@@ -1124,14 +1123,12 @@ async function deleteCOFromModal() {
 async function deletePOFromModal() {
   const id = $('modal-po').dataset.editId;
   if (!id) return;
-  if (!confirm('Delete this PO? This cannot be undone.')) return;
-  const { data: po } = await db.from('purchase_orders').select('pdf_url').eq('id', id).single();
-  if (po?.pdf_url) await deleteFile(po.pdf_url);
-  const { error } = await db.from('purchase_orders').delete().eq('id', id);
+  if (!confirm('Move this PO to Trash? You can restore it later from Trash.')) return;
+  const { error } = await db.from('purchase_orders').update({ deleted_at: new Date().toISOString() }).eq('id', id);
   if (error) { toast('Error: '+error.message,'error'); return; }
   delete $('modal-po').dataset.editId;
   closeModal('modal-po');
-  toast('PO deleted');
+  toast('PO moved to Trash');
   render();
 }
 
@@ -1272,6 +1269,7 @@ async function render() {
   else if (state.view === 'ar-aging') await renderARaging();
   else if (state.view === 'employees') await renderEmployees();
   else if (state.view === 'vendors') await renderVendors();
+  else if (state.view === 'trash') await renderTrash();
   else if (state.view === 'ap-aging') await renderAPAging();
   else if (state.view === 'master-pos') await renderMasterPOs();
   else if (state.view === 'master-ap') await renderMasterAP();
@@ -1307,6 +1305,7 @@ function updateBreadcrumb() {
   else if (state.view === 'master-subs') html = '<span>Logs</span><span class="sep">/</span><span class="cur">Subcontractors</span>';
   else if (state.view === 'employees') html = '<span>Setup</span><span class="sep">/</span><span class="cur">Employees</span>';
   else if (state.view === 'vendors') html = '<span>Setup</span><span class="sep">/</span><span class="cur">Vendors</span>';
+  else if (state.view === 'trash') html = '<span>Setup</span><span class="sep">/</span><span class="cur">Trash</span>';
   else if (state.view === 'project' && state.activeProject) {
     const p = state.activeProject;
     const modNames = {setup:'Job Setup',purchases:'Purchases & AP',labor:'Time & Labor',cos:'Change Orders',invoices:'Invoices & AR',payapps:'Pay Applications',phases:'Phase Breakdown',bva:'Budget vs Actual',pos:'Purchase Orders',subs:'Subcontractors',liens:'Lien Waivers',profit:'Profit & Cost Report'};
@@ -1382,10 +1381,10 @@ function openProject(id) {
 // ── DASHBOARD ────────────────────────────────────────────────────────
 async function renderDashboard() {
   const [{ data: projects }, { data: purchases }, { data: invoices }, { data: labor }, { data: subs }, { data: phases }, { data: budgets }, { data: lineItems }] = await Promise.all([
-    db.from('projects').select('*').order('created_at'),
-    db.from('purchases').select('*'),
-    db.from('invoices').select('*'),
-    db.from('labor_entries').select('*'),
+    db.from('projects').select('*').is('deleted_at',null).order('created_at'),
+    db.from('purchases').select('*').is('deleted_at',null),
+    db.from('invoices').select('*').is('deleted_at',null),
+    db.from('labor_entries').select('*').is('deleted_at',null),
     db.from('subcontractors').select('*').eq('active',true),
     db.from('phases').select('*'),
     db.from('project_budgets').select('*'),
@@ -1826,35 +1825,24 @@ function openSOVImport(projectId) {
 }
 
 async function deleteProject(projectId, jobNumber, jobName) {
-  const confirm1 = confirm(`Delete ${jobNumber} — ${jobName}?\n\nThis will permanently delete the job and ALL associated data including phases, purchases, labor entries, invoices, and change orders.\n\nThis cannot be undone.`);
+  const confirm1 = confirm(`Move ${jobNumber} — ${jobName} to Trash?\n\nThe job and everything in it (POs, invoices, purchases, labor) will be hidden but kept. You can restore the whole job later from Trash.`);
   if (!confirm1) return;
-  const confirm2 = prompt(`Type the job number "${jobNumber}" to confirm deletion:`);
+  const confirm2 = prompt(`Type the job number "${jobNumber}" to confirm:`);
   if (confirm2 !== jobNumber) {
-    if (confirm2 !== null) toast('Job number did not match — deletion cancelled', 'error');
+    if (confirm2 !== null) toast('Job number did not match — cancelled', 'error');
     return;
   }
-  toast('Deleting job...');
-  // Delete all related data in order
-  await db.from('pay_app_line_items').delete().eq('project_id', projectId);
-  await db.from('pay_applications').delete().eq('project_id', projectId);
-  await db.from('sov_line_items').delete().eq('project_id', projectId);
-  await db.from('lien_waivers').delete().eq('project_id', projectId);
-  await db.from('change_orders').delete().eq('project_id', projectId);
-  await db.from('labor_entries').delete().eq('project_id', projectId);
-  await db.from('purchases').delete().eq('project_id', projectId);
-  await db.from('purchase_orders').delete().eq('project_id', projectId);
-  await db.from('invoices').delete().eq('project_id', projectId);
-  await db.from('cost_line_items').delete().eq('project_id', projectId);
-  await db.from('project_budgets').delete().eq('project_id', projectId);
-  await db.from('phases').delete().eq('project_id', projectId);
-  await db.from('project_subs').delete().eq('project_id', projectId);
-  const { error } = await db.from('projects').delete().eq('id', projectId);
-  if (error) { toast('Error deleting job: ' + error.message, 'error'); return; }
+  toast('Moving job to Trash...');
+  // Soft delete: flag the project only. Children stay in place (still tagged with
+  // this project_id) so a restore brings the whole job back intact. Children are
+  // hidden automatically because the project no longer appears in any list.
+  const { error } = await db.from('projects').update({ deleted_at: new Date().toISOString() }).eq('id', projectId);
+  if (error) { toast('Error: ' + error.message, 'error'); return; }
   // Update state and navigate to dashboard
   state.projects = state.projects.filter(p => p.id !== projectId);
   state.activeProject = null;
   state.activeModule = null;
-  toast(jobNumber + ' — ' + jobName + ' deleted successfully');
+  toast(jobNumber + ' — ' + jobName + ' moved to Trash');
   navigate('dashboard');
 }
 
@@ -1954,9 +1942,9 @@ async function savePhase() {
 async function renderPurchases() {
   const p = state.activeProject;
   const [{ data: purchases }, { data: phases }, { data: pos }, { data: costCodes }] = await Promise.all([
-    db.from('purchases').select('*').eq('project_id', p.id).order('invoice_date', {ascending:false}),
+    db.from('purchases').select('*').is('deleted_at',null).eq('project_id', p.id).order('invoice_date', {ascending:false}),
     db.from('phases').select('*').eq('project_id', p.id).order('sort_order'),
-    db.from('purchase_orders').select('*').eq('project_id', p.id).order('po_number'),
+    db.from('purchase_orders').select('*').is('deleted_at',null).eq('project_id', p.id).order('po_number'),
     db.from('cost_codes').select('*').order('code'),
   ]);
   state.purchases = purchases || [];
@@ -2758,7 +2746,7 @@ async function openNewPurchase(projectId) {
   // Always load ALL POs (across all jobs) — user might switch jobs in modal
   // and we want a fresh complete list
   const [{ data: allPOs }, { data: costCodes }] = await Promise.all([
-    db.from('purchase_orders').select('*').order('po_number'),
+    db.from('purchase_orders').select('*').is('deleted_at',null).order('po_number'),
     db.from('cost_codes').select('*').order('code'),
   ]);
   state.allPOs = allPOs || [];
@@ -2988,7 +2976,7 @@ async function editPurchase(purchaseId, projectId) {
 
   // Load all data needed for dropdowns
   const [{ data: allPOs }, { data: costCodes }] = await Promise.all([
-    db.from('purchase_orders').select('*').order('po_number'),
+    db.from('purchase_orders').select('*').is('deleted_at',null).order('po_number'),
     db.from('cost_codes').select('*').order('code'),
   ]);
   state.allPOs = allPOs || [];
@@ -3077,9 +3065,9 @@ async function editPurchase(purchaseId, projectId) {
 }
 
 async function deletePurchase(purchaseId, projectId) {
-  if (!confirm('Delete this invoice entry? This cannot be undone.')) return;
-  await db.from('purchases').delete().eq('id', purchaseId);
-  toast('Invoice deleted');
+  if (!confirm('Move this invoice entry to Trash? You can restore it later from Trash.')) return;
+  await db.from('purchases').update({ deleted_at: new Date().toISOString() }).eq('id', purchaseId);
+  toast('Invoice moved to Trash');
   navigate('project', projectId, 'purchases');
 }
 
@@ -3110,7 +3098,7 @@ async function renderLabor() {
   const p = state.activeProject;
   const burdenRate = parseFloat(p.burden_rate||160);
   const [{ data: labor }, { data: phases }, { data: employees }] = await Promise.all([
-    db.from('labor_entries').select('*').eq('project_id', p.id).order('created_at', {ascending:false}),
+    db.from('labor_entries').select('*').is('deleted_at',null).eq('project_id', p.id).order('created_at', {ascending:false}),
     db.from('phases').select('*').eq('project_id', p.id).order('sort_order'),
     db.from('employees').select('*').eq('active', true).order('name'),
   ]);
@@ -3267,10 +3255,10 @@ async function openEditLabor(entryId, projectId) {
 }
 
 async function deleteLaborEntry(entryId, projectId) {
-  if (!confirm('Delete this labor entry? This cannot be undone.')) return;
-  const { error } = await db.from('labor_entries').delete().eq('id', entryId);
+  if (!confirm('Move this labor entry to Trash? You can restore it later from Trash.')) return;
+  const { error } = await db.from('labor_entries').update({ deleted_at: new Date().toISOString() }).eq('id', entryId);
   if (error) { toast('Error: '+error.message,'error'); return; }
-  toast('Labor entry deleted');
+  toast('Labor entry moved to Trash');
   navigate('project', projectId, 'labor');
 }
 
@@ -3987,7 +3975,7 @@ async function openPayApp(payAppId) {
 
 async function renderInvoices() {
   const p = state.activeProject;
-  const { data: invoices } = await db.from('invoices').select('*').eq('project_id', p.id).order('created_at', {ascending:false});
+  const { data: invoices } = await db.from('invoices').select('*').is('deleted_at',null).eq('project_id', p.id).order('created_at', {ascending:false});
   state.invoices = invoices || [];
   const totalBilled = state.invoices.reduce((s,i)=>s+parseFloat(i.billed_amount||0),0);
   const totalRet = state.invoices.reduce((s,i)=>s+parseFloat(i.billed_amount||0)*(parseFloat(i.retainage_pct||0)/100),0);
@@ -4094,13 +4082,10 @@ async function openEditInvoice(invoiceId, projectId) {
 }
 
 async function deleteClientInvoice(invoiceId, projectId) {
-  if (!confirm('Delete this client invoice / pay app? This cannot be undone.')) return;
-  // Delete file too if attached
-  const { data: i } = await db.from('invoices').select('pdf_url').eq('id', invoiceId).single();
-  if (i?.pdf_url) await deleteFile(i.pdf_url);
-  const { error } = await db.from('invoices').delete().eq('id', invoiceId);
+  if (!confirm('Move this client invoice / pay app to Trash? You can restore it later from Trash.')) return;
+  const { error } = await db.from('invoices').update({ deleted_at: new Date().toISOString() }).eq('id', invoiceId);
   if (error) { toast('Error: '+error.message,'error'); return; }
-  toast('Invoice deleted');
+  toast('Invoice moved to Trash');
   render();
 }
 
@@ -4163,8 +4148,8 @@ async function renderPhaseBreakdown() {
   const burdenRate = parseFloat(p.burden_rate||160);
   const [{ data: phases }, { data: purchases }, { data: labor }] = await Promise.all([
     db.from('phases').select('*').eq('project_id', p.id).order('sort_order'),
-    db.from('purchases').select('*').eq('project_id', p.id),
-    db.from('labor_entries').select('*').eq('project_id', p.id),
+    db.from('purchases').select('*').is('deleted_at',null).eq('project_id', p.id),
+    db.from('labor_entries').select('*').is('deleted_at',null).eq('project_id', p.id),
   ]);
   const laborCost = l => (parseFloat(l.st_hours||0)*parseFloat(l.st_rate||0))+(parseFloat(l.ot15_hours||0)*parseFloat(l.st_rate||0)*1.5)+(parseFloat(l.ot2_hours||0)*parseFloat(l.st_rate||0)*2);
   const laborHrs = l => parseFloat(l.st_hours||0)+parseFloat(l.ot15_hours||0)+parseFloat(l.ot2_hours||0);
@@ -4266,8 +4251,8 @@ async function renderBVA() {
   const p = state.activeProject;
   const [{ data: budgets }, { data: purchases }, { data: labor }] = await Promise.all([
     db.from('project_budgets').select('*').eq('project_id', p.id),
-    db.from('purchases').select('*').eq('project_id', p.id),
-    db.from('labor_entries').select('*').eq('project_id', p.id),
+    db.from('purchases').select('*').is('deleted_at',null).eq('project_id', p.id),
+    db.from('labor_entries').select('*').is('deleted_at',null).eq('project_id', p.id),
   ]);
   const cats = ['Materials','Labor','Subcontractors','Equipment','Rentals','Misc.'];
   const budMap = {};
@@ -4537,10 +4522,10 @@ async function saveCO() {
 // ── WIP SCHEDULE ─────────────────────────────────────────────────────
 async function renderWIP() {
   const [{ data: projects }, { data: purchases }, { data: labor }, { data: invoices }, { data: budgets }] = await Promise.all([
-    db.from('projects').select('*').eq('status','Active'),
-    db.from('purchases').select('*'),
-    db.from('labor_entries').select('*'),
-    db.from('invoices').select('*'),
+    db.from('projects').select('*').is('deleted_at',null).eq('status','Active'),
+    db.from('purchases').select('*').is('deleted_at',null),
+    db.from('labor_entries').select('*').is('deleted_at',null),
+    db.from('invoices').select('*').is('deleted_at',null),
     db.from('project_budgets').select('*'),
   ]);
   const laborCost = l => (parseFloat(l.st_hours||0)*parseFloat(l.st_rate||0))+(parseFloat(l.ot15_hours||0)*parseFloat(l.st_rate||0)*1.5)+(parseFloat(l.ot2_hours||0)*parseFloat(l.st_rate||0)*2);
@@ -4575,9 +4560,9 @@ async function renderWIP() {
 // ── AR AGING ─────────────────────────────────────────────────────────
 async function renderARaging() {
   const [{ data: invoices }, { data: payApps }, { data: projects }] = await Promise.all([
-    db.from('invoices').select('*'),
+    db.from('invoices').select('*').is('deleted_at',null),
     db.from('pay_applications').select('*').in('status',['Submitted','Approved','Paid']),
-    db.from('projects').select('*'),
+    db.from('projects').select('*').is('deleted_at',null),
   ]);
   const projMap = {};
   (projects||[]).forEach(p=>projMap[p.id]=p);
@@ -5065,7 +5050,7 @@ async function saveProject() {
   delete $('modal-project').dataset.editId;
   closeModal('modal-project');
   toast('Project saved');
-  const { data: projects } = await db.from('projects').select('*').order('created_at');
+  const { data: projects } = await db.from('projects').select('*').is('deleted_at',null).order('created_at');
   state.projects = projects || [];
   if (!editId && state.projects.length) {
     state.activeProject = state.projects[state.projects.length-1];
@@ -5756,9 +5741,9 @@ async function renderProfit() {
     db.from('project_budgets').select('*').eq('project_id', p.id),
     db.from('cost_line_items').select('*').eq('project_id', p.id),
     db.from('phases').select('*').eq('project_id', p.id),
-    db.from('purchases').select('*').eq('project_id', p.id),
-    db.from('labor_entries').select('*').eq('project_id', p.id),
-    db.from('invoices').select('*').eq('project_id', p.id),
+    db.from('purchases').select('*').is('deleted_at',null).eq('project_id', p.id),
+    db.from('labor_entries').select('*').is('deleted_at',null).eq('project_id', p.id),
+    db.from('invoices').select('*').is('deleted_at',null).eq('project_id', p.id),
   ]);
 
   const budMap = {};
@@ -5888,7 +5873,7 @@ async function renderProfit() {
 async function renderPOs() {
   const p = state.activeProject;
   const [{ data: pos }, { data: phases }, { data: costCodes }, { data: vendors }] = await Promise.all([
-    db.from('purchase_orders').select('*').eq('project_id', p.id).order('po_number', {ascending:false}),
+    db.from('purchase_orders').select('*').is('deleted_at',null).eq('project_id', p.id).order('po_number', {ascending:false}),
     db.from('phases').select('*').eq('project_id', p.id).order('sort_order'),
     db.from('cost_codes').select('*').order('code'),
     db.from('vendors').select('*').eq('approved', true).order('name'),
@@ -5984,9 +5969,9 @@ async function renderPOs() {
 }
 
 async function deletePO(poId, projectId) {
-  if (!confirm('Delete this PO? This cannot be undone.')) return;
-  await db.from('purchase_orders').delete().eq('id', poId);
-  toast('PO deleted');
+  if (!confirm('Move this PO to Trash? You can restore it later from Trash.')) return;
+  await db.from('purchase_orders').update({ deleted_at: new Date().toISOString() }).eq('id', poId);
+  toast('PO moved to Trash');
   if (projectId) {
     navigate('project', projectId, 'pos');
   } else {
@@ -6486,8 +6471,8 @@ async function saveLien() {
 // ── AP AGING ─────────────────────────────────────────────────────────
 async function renderAPAging() {
   const [{ data: purchases }, { data: projects }, { data: costCodes }] = await Promise.all([
-    db.from('purchases').select('*'),
-    db.from('projects').select('*'),
+    db.from('purchases').select('*').is('deleted_at',null),
+    db.from('projects').select('*').is('deleted_at',null),
     db.from('cost_codes').select('*'),
   ]);
   const projMap = {};
@@ -6801,10 +6786,133 @@ async function savePayPurchase() {
 }
 
 // ── MASTER PO LOG ────────────────────────────────────────────────────
+// ── TRASH (soft-delete recovery) ─────────────────────────────────────
+// Protected tables: projects, purchase_orders, invoices, purchases, labor_entries.
+// Deleting any of these sets deleted_at instead of removing the row. This view
+// lists everything with a non-null deleted_at and offers Restore (clear the flag)
+// or Permanent Delete (real removal, gated by type-to-confirm). No auto-purge.
+const TRASH_TYPES = [
+  { table:'projects',        label:'Job',     icon:'📁' },
+  { table:'purchase_orders', label:'PO',      icon:'🧾' },
+  { table:'invoices',        label:'Invoice', icon:'📄' },
+  { table:'purchases',       label:'AP Bill', icon:'💵' },
+  { table:'labor_entries',   label:'Labor',   icon:'👷' },
+];
+
+function trashItemTitle(type, row, projMap) {
+  // A human-readable description of a trashed row, per type.
+  if (type.table === 'projects')        return `${row.job_number||'—'} — ${row.job_name||'(unnamed job)'}`;
+  if (type.table === 'purchase_orders') return `PO #${row.po_number||'—'} · ${row.vendor||'no vendor'} · ${fmt(row.committed_amount)}`;
+  if (type.table === 'invoices')        return `${row.invoice_number?('#'+row.invoice_number+' · '):''}${fmt(row.billed_amount)}${row.project_id&&projMap[row.project_id]?(' · '+projMap[row.project_id].job_number):''}`;
+  if (type.table === 'purchases')       return `${row.vendor||'no vendor'} · ${fmt(row.po_amount)}${row.invoice_number?(' · inv '+row.invoice_number):''}${row.project_id&&projMap[row.project_id]?(' · '+projMap[row.project_id].job_number):''}`;
+  if (type.table === 'labor_entries')   return `${row.employee_name||'employee'}${row.week_ending?(' · w/e '+row.week_ending):''}${row.project_id&&projMap[row.project_id]?(' · '+projMap[row.project_id].job_number):''}`;
+  return '(item)';
+}
+
+async function renderTrash() {
+  // Pull deleted rows from every protected table + a project map for labels.
+  const results = await Promise.all([
+    ...TRASH_TYPES.map(t => db.from(t.table).select('*').not('deleted_at','is',null).order('deleted_at',{ascending:false})),
+    db.from('projects').select('id,job_number,job_name'),  // for labeling children (incl. trashed)
+  ]);
+  const projRows = results[results.length-1].data || [];
+  const projMap = {}; projRows.forEach(p => projMap[p.id]=p);
+
+  // Flatten into one list tagged with its type.
+  let items = [];
+  TRASH_TYPES.forEach((t,i) => {
+    (results[i].data || []).forEach(row => items.push({ type:t, row }));
+  });
+  items.sort((a,b) => new Date(b.row.deleted_at) - new Date(a.row.deleted_at));
+
+  const fmtWhen = iso => {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+  };
+
+  $('content').innerHTML = `
+  <div class="card">
+    <div class="card-hd">
+      <div class="card-title">🗑 Trash</div>
+      <div style="font-size:11px;color:var(--gray600)">${items.length} item${items.length===1?'':'s'} · deleted items are kept until you permanently delete them</div>
+    </div>
+    <div style="padding:10px 14px;background:#FFF8E1;border-radius:7px;margin:0 14px 4px;font-size:12px;color:var(--gray800)">
+      Restoring a job brings back the whole job (its POs, invoices, bills, and labor come with it). Permanent delete cannot be undone.
+    </div>
+    ${items.length===0 ? '<div class="tbl-empty">Trash is empty.</div>' :
+    `<div class="tbl-wrap"><table>
+      <thead><tr>
+        <th style="width:70px">Type</th>
+        <th>Item</th>
+        <th style="width:160px">Deleted</th>
+        <th class="text-right" style="width:240px">Actions</th>
+      </tr></thead>
+      <tbody>
+      ${items.map((it,i) => {
+        const bg = i%2===0 ? '#FFF' : 'var(--gray50)';
+        const title = trashItemTitle(it.type, it.row, projMap);
+        return `<tr style="background:${bg}">
+          <td><span title="${it.type.label}">${it.type.icon} <span style="font-size:11px;font-weight:600">${it.type.label}</span></span></td>
+          <td class="font-600" style="font-size:12px">${esc(title)}</td>
+          <td style="font-size:11px;color:var(--gray600)">${fmtWhen(it.row.deleted_at)}</td>
+          <td class="text-right">
+            <button class="btn btn-sm" style="color:var(--green);border-color:var(--green)" onclick="restoreItem('${it.type.table}','${it.row.id}')">↩ Restore</button>
+            <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="permanentDeleteItem('${it.type.table}','${it.row.id}')">✕ Delete forever</button>
+          </td>
+        </tr>`;
+      }).join('')}
+      </tbody>
+    </table></div>`}
+  </div>`;
+}
+
+async function restoreItem(table, id) {
+  const { error } = await db.from(table).update({ deleted_at: null }).eq('id', id);
+  if (error) { toast('Error restoring: '+error.message,'error'); return; }
+  toast('Restored');
+  renderTrash();
+}
+
+async function permanentDeleteItem(table, id) {
+  // Fetch the row so we can show a meaningful confirm and clean up its PDF.
+  const { data: row } = await db.from(table).select('*').eq('id', id).single();
+  if (!row) { toast('Item not found','error'); renderTrash(); return; }
+  const typeDef = TRASH_TYPES.find(t => t.table === table) || { table, label:'Item' };
+  const title = trashItemTitle(typeDef, row, {});
+
+  // Type-to-confirm guard on the only truly destructive action in the app.
+  const phrase = 'DELETE';
+  const typed = prompt(`Permanently delete this ${typeDef.label}? This CANNOT be undone.\n\n${title}\n\nType ${phrase} to confirm:`);
+  if (typed === null) return;
+  if (typed.trim().toUpperCase() !== phrase) { toast('Did not match — cancelled','error'); return; }
+
+  // Clean up an attached PDF file if this row has one (now that it's really going away).
+  try {
+    if (row.pdf_url) await deleteFile(row.pdf_url);
+  } catch (e) { /* non-fatal: proceed with row delete */ }
+
+  // If permanently deleting a JOB, also remove its children for real (they were
+  // left in place on soft-delete). This is the deliberate, type-confirmed purge.
+  if (table === 'projects') {
+    const childTables = ['pay_app_line_items','pay_applications','sov_line_items','lien_waivers',
+      'change_orders','labor_entries','purchases','purchase_orders','invoices',
+      'cost_line_items','project_budgets','phases','project_subs'];
+    for (const ct of childTables) {
+      await db.from(ct).delete().eq('project_id', id);
+    }
+  }
+
+  const { error } = await db.from(table).delete().eq('id', id);
+  if (error) { toast('Error deleting: '+error.message,'error'); return; }
+  toast('Permanently deleted');
+  renderTrash();
+}
+
 async function renderMasterPOs() {
   const [{ data: pos }, { data: projects }, { data: costCodes }] = await Promise.all([
-    db.from('purchase_orders').select('*').order('po_number', {ascending:false}),
-    db.from('projects').select('*'),
+    db.from('purchase_orders').select('*').is('deleted_at',null).order('po_number', {ascending:false}),
+    db.from('projects').select('*').is('deleted_at',null),
     db.from('cost_codes').select('*').order('code'),
   ]);
   const projMap = {};
@@ -7045,8 +7153,8 @@ function confirmJobPicker() {
 // ── MASTER AP — All Vendor Invoices ─────────────────────────────────
 async function renderMasterAP() {
   const [{ data: purchases }, { data: projects }, { data: costCodes }] = await Promise.all([
-    db.from('purchases').select('*').order('invoice_date', {ascending:false}),
-    db.from('projects').select('*'),
+    db.from('purchases').select('*').is('deleted_at',null).order('invoice_date', {ascending:false}),
+    db.from('projects').select('*').is('deleted_at',null),
     db.from('cost_codes').select('*'),
   ]);
   const projMap = {}; (projects||[]).forEach(p=>projMap[p.id]=p);
@@ -7159,8 +7267,8 @@ function renderMasterAPView() {
 // ── MASTER AR — All Client Invoices / Pay Apps ──────────────────────
 async function renderMasterAR() {
   const [{ data: invoices }, { data: projects }] = await Promise.all([
-    db.from('invoices').select('*').order('invoice_date', {ascending:false}),
-    db.from('projects').select('*'),
+    db.from('invoices').select('*').is('deleted_at',null).order('invoice_date', {ascending:false}),
+    db.from('projects').select('*').is('deleted_at',null),
   ]);
   const projMap = {}; (projects||[]).forEach(p=>projMap[p.id]=p);
   window._marRows = (invoices||[]).map(i => ({i, proj: projMap[i.project_id]}));
@@ -7267,7 +7375,7 @@ function renderMasterARView() {
 async function renderMasterCOs() {
   const [{ data: cos }, { data: projects }] = await Promise.all([
     db.from('change_orders').select('*').order('submitted_date', {ascending:false}),
-    db.from('projects').select('*'),
+    db.from('projects').select('*').is('deleted_at',null),
   ]);
   const projMap = {}; (projects||[]).forEach(p=>projMap[p.id]=p);
   window._mcoRows = (cos||[]).map(c => ({c, proj: projMap[c.project_id]}));
@@ -7996,7 +8104,7 @@ async function confirmImportPOs() {
 }
 
 async function init() {
-  const { data: projects } = await db.from('projects').select('*').order('created_at');
+  const { data: projects } = await db.from('projects').select('*').is('deleted_at',null).order('created_at');
   state.projects = projects || [];
   const { data: employees } = await db.from('employees').select('*').order('name');
   state.employees = employees || [];

@@ -8082,18 +8082,12 @@ async function generatePODocument(mode) {
     toast('Preparing PO draft… you may be asked to sign in to Microsoft');
     try {
       const result = await createPODraft({ to, subject: emailSubject, body: emailBody, docHTML, fileName });
-      // Try to open the draft for immediate review. webLink opens Outlook on the
-      // web; if blocked or you use the desktop app, the draft is already waiting
-      // in your Outlook Drafts (it syncs there automatically).
-      let opened = false;
-      if (result?.webLink) {
-        const win = window.open(result.webLink, '_blank');
-        opened = !!win;
-      }
-      toast(opened
-        ? 'Draft opened in Outlook with the PO attached — review and send' + (to ? '' : ' (no vendor email on file — add it)')
-        : 'PO draft created — it\'s in your Outlook Drafts, with the PDF attached' + (to ? '' : ' (no vendor email on file)'),
-        'success');
+      // The draft is reliably saved to Outlook Drafts (syncs to desktop + web).
+      // Auto-opening the web compose deeplink proved flaky, so we point the user
+      // to Drafts — one click, works every time. webLink kept on the result for
+      // anyone who wants to wire an "open" button later.
+      toast('PO draft created in Outlook (Drafts folder) — PDF attached, ready to review & send'
+        + (to ? '' : ' · no vendor email on file, add it before sending'), 'success');
     } catch (e) {
       console.error('Graph draft failed, falling back to print + mailto:', e);
       // Fallback: original behavior — open the doc, print-to-PDF, hand off mailto.

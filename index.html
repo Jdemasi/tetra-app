@@ -4171,7 +4171,14 @@ h1{font-size:16px;font-weight:bold;margin-bottom:4px}
   </div>
   <div class="sig-block">
     <div style="margin-bottom:8px">Subcontractor: <strong>Tetra Mechanical Services LLC</strong></div>
-    <div style="margin-bottom:20px">Signature: _________________________ &nbsp;&nbsp;&nbsp;&nbsp; Date: _____________</div>
+    <div style="margin-bottom:20px;position:relative;display:inline-block">
+      <span>Signature: </span>
+      ${typeof ST120_SIG_B64 !== 'undefined' && ST120_SIG_B64
+        ? `<img src="data:image/png;base64,${ST120_SIG_B64}" alt="signature" style="position:absolute;left:62px;top:-18px;height:42px">`
+        : ''}
+      <span>_________________________</span>
+      &nbsp;&nbsp;&nbsp;&nbsp; Date: _____________
+    </div>
     <div style="margin-bottom:6px">By: <u>Joseph DeMasi</u></div>
     <div style="margin-bottom:6px">Title: <u>Vice President</u></div>
     <div>Date: _______________</div>

@@ -8297,13 +8297,13 @@ async function graphListInvoiceMessages(token, cap) {
   return msgs;
 }
 
-// List a message's attachments (metadata + contentBytes). Graph returns
-// contentBytes inline for fileAttachments, so one call gets us name+bytes.
+// List a message's attachments. No $select (the @odata.type field is needed to
+// tell fileAttachment from item/reference attachments, and selecting it is
+// unreliable) — attachment metadata is small, so fetch it whole.
 async function graphGetAttachments(token, messageId) {
-  const base = graphMessagesBase() + '/' + encodeURIComponent(messageId)
-    + '/attachments?$select=id,name,contentType,size,@odata.type';
+  const base = graphMessagesBase() + '/' + encodeURIComponent(messageId) + '/attachments';
   const resp = await fetch(base, { headers: { Authorization: 'Bearer ' + token } });
-  if (!resp.ok) throw new Error('Graph attachments error ' + resp.status);
+  if (!resp.ok) throw new Error('Graph attachments error ' + resp.status + ': ' + (await resp.text()).slice(0,200));
   const data = await resp.json();
   return data.value || [];
 }
@@ -8313,9 +8313,9 @@ async function graphGetAttachmentBytes(token, messageId, attachmentId) {
   const url = graphMessagesBase() + '/' + encodeURIComponent(messageId)
     + '/attachments/' + encodeURIComponent(attachmentId);
   const resp = await fetch(url, { headers: { Authorization: 'Bearer ' + token } });
-  if (!resp.ok) throw new Error('Graph attachment fetch error ' + resp.status);
+  if (!resp.ok) throw new Error('Graph attachment fetch error ' + resp.status + ': ' + (await resp.text()).slice(0,200));
   const att = await resp.json();
-  if (!att.contentBytes) throw new Error('Attachment has no contentBytes');
+  if (!att.contentBytes) throw new Error('Attachment has no contentBytes (type: ' + (att['@odata.type']||'unknown') + ')');
   const bin = atob(att.contentBytes);
   const arr = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
@@ -8365,7 +8365,7 @@ async function scanInvoiceInbox() {
       .select('graph_message_id, graph_attachment_id');
     const seen = new Set((existing || []).map(r => r.graph_message_id + '|' + r.graph_attachment_id));
 
-    let added = 0, skipped = 0, failed = 0, scanned = 0;
+    let added = 0, skipped = 0, failed = 0, scanned = 0, firstError = null;
     for (const m of msgs) {
       scanned++;
       setStatus(`🔍 Processing message ${scanned} of ${msgs.length}… (added ${added}, skipped ${skipped})`);
@@ -8400,8 +8400,8 @@ async function scanInvoiceInbox() {
           row.parsed_vendor = inv.vendor || null;
           row.parsed_invoice_number = inv.invoice_number || null;
           row.parsed_invoice_date = inv.invoice_date || null;
-          row.parsed_amount_due = (inv.amount_due != null) ? parseFloat(inv.amount_due) : null;
-          row.parsed_amount_paid = (inv.amount_paid != null) ? parseFloat(inv.amount_paid) : null;
+          row.parsed_amount_due = (inv.amount_due != null && !isNaN(parseFloat(inv.amount_due))) ? parseFloat(inv.amount_due) : null;
+          row.parsed_amount_paid = (inv.amount_paid != null && !isNaN(parseFloat(inv.amount_paid))) ? parseFloat(inv.amount_paid) : null;
           row.parsed_is_paid = !!inv.is_paid;
           row.parsed_payment_terms = inv.payment_terms || null;
           row.parsed_po_number = inv.po_number || null;
@@ -8418,18 +8418,26 @@ async function scanInvoiceInbox() {
           }
         } catch (e) {
           row.error_note = (e.message || String(e)).slice(0, 300);
+          console.error('[inbox scan] parse/fetch failed for', a.name, m.subject, e);
+          if (!firstError) firstError = 'Parse: ' + (e.message || String(e));
           failed++;
         }
 
         const { error } = await db.from('invoice_inbox_queue')
           .upsert(row, { onConflict: 'graph_message_id,graph_attachment_id' });
-        if (error) { failed++; row.error_note = error.message; }
+        if (error) {
+          console.error('[inbox scan] SAVE failed for', a.name, '— row:', row, '— error:', error);
+          if (!firstError) firstError = 'Save: ' + error.message;
+          if (!row.error_note) failed++;  // don't double-count rows that already failed parse
+        }
         else if (!row.error_note) added++;
       }
     }
 
     setStatus(`✅ Scan complete. Added <strong>${added}</strong>, skipped ${skipped} (already queued)`
-      + (failed ? `, ${failed} had errors` : '') + `. Showing the queue below.`, 'ok');
+      + (failed ? `, ${failed} had errors` : '') + `. Showing the queue below.`
+      + (firstError ? `<br><small style="color:#b45309">First error: ${esc(firstError)}</small>` : ''),
+      failed && !added ? 'err' : 'ok');
     await renderInboxQueueList();
   } catch (e) {
     setStatus('❌ ' + esc(e.message || String(e)), 'err');

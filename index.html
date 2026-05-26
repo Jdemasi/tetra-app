@@ -8713,6 +8713,29 @@ async function confirmInboxRow(queueId, quick) {
   }
   if (row.parsed_payment_terms && $('pu-terms')) $('pu-terms').value = row.parsed_payment_terms;
 
+  // Known-vendor pull: if the invoice's vendor matches one in your vendor list,
+  // apply that vendor's saved defaults (cost code, payment terms) — the same fill
+  // onPuVendorSelect does when you pick from the dropdown. The inbox flow sets the
+  // vendor as text, so that handler never fires; we replicate it here.
+  if ($('pu-vendor').value) {
+    const vname = $('pu-vendor').value.trim().toLowerCase();
+    const known = (state.vendors||[]).find(v => (v.name||'').toLowerCase() === vname);
+    if (known) {
+      // Sync the dropdown to the matched vendor (visual + keeps state consistent).
+      const vSel = $('pu-vendor-select');
+      if (vSel && Array.from(vSel.options).some(o => o.value === known.id)) vSel.value = known.id;
+      // Default cost code (only if not already set).
+      if (known.default_cost_code && $('pu-cost-code') && !$('pu-cost-code').value) {
+        $('pu-cost-code').value = known.default_cost_code;
+      }
+      // Payment terms (only if still the default 30 / blank — don't override the invoice's own terms).
+      if (known.payment_terms != null && $('pu-terms')) {
+        const cur = parseInt($('pu-terms').value);
+        if (!cur || cur === 30) $('pu-terms').value = known.payment_terms;
+      }
+    }
+  }
+
   // Select the matched PO and fire its existing onchange → backfills vendor +
   // cost code FROM THE PO (the behavior you chose), exactly like the file path.
   if (row.matched_po_id) {
@@ -8733,6 +8756,28 @@ async function confirmInboxRow(queueId, quick) {
   // Tag the modal so a successful save marks this queue row confirmed.
   $('modal-purchase')._inboxQueueId = queueId;
 
+  // Provide the full parsed result to savePurchase's vendor auto-add so that when
+  // it creates a NEW vendor, it captures phone/email/address/terms the scan parsed
+  // (push direction) — same as the file-upload path does via _lastParserResult.
+  if (row.parsed_full) $('modal-purchase')._lastParserResult = row.parsed_full;
+
+  // Step 3b: re-fetch the invoice PDF from the mailbox and stash it as the modal's
+  // pending file. savePurchase's EXISTING upload logic then uploads it and sets
+  // pdf_url — so an inbox-confirmed invoice gets its PDF exactly like a file-upload
+  // one, with no forked upload code. Non-fatal: if the message is gone, we log
+  // without the file (savePurchase already handles a failed/absent upload).
+  try {
+    const token = await getGraphToken();
+    const bytes = await graphGetAttachmentBytes(token, row.graph_message_id, row.graph_attachment_id);
+    const fname = row.attachment_name || 'invoice.pdf';
+    const file = new File([bytes], fname, { type: 'application/pdf' });
+    $('modal-purchase')._pendingFile = file;
+    $('modal-purchase')._pendingFileName = fname;
+  } catch (e) {
+    console.error('[inbox confirm] PDF re-fetch failed (logging without file):', e);
+    if (!quick) toast('Note: invoice PDF couldn\'t be fetched — it\'ll log without the file attached', 'info');
+  }
+
   if (quick) {
     // One-click path: hide the modal (openNewPurchase opened it), then save
     // through the SAME savePurchase (no forked logic) and refresh the queue.
@@ -8742,8 +8787,8 @@ async function confirmInboxRow(queueId, quick) {
     return;
   }
 
-  // Note: PDF is NOT attached here. It's re-fetched from Graph at confirm only if
-  // you choose (Step 3b). For now confirm logs the data; file can be attached later.
+  // Modal stays open with the PDF pre-fetched as the pending file — on Save,
+  // savePurchase uploads it and sets pdf_url, identical to a file-upload purchase.
 }
 
 // Toggle a queued row to "PO": this attachment is a purchase-order document,

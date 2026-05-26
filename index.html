@@ -3641,6 +3641,7 @@ async function renderPayApps() {
         <td>
           <div style="display:flex;gap:4px;flex-wrap:wrap">
             <button class="btn btn-sm btn-red" onclick="generatePayAppPDF('${a.id}')">📄 PDF</button>
+            <button class="btn btn-sm" title="Billing packet with the CONDITIONAL FINAL waiver (releases retainage, paid-in-full)" onclick="generatePayAppPDF('${a.id}', true)">📄 Final PDF</button>
             ${a.status==='Draft'?`<button class="btn btn-sm" style="color:var(--amber);border-color:var(--amber)" onclick="updatePayAppStatus('${a.id}','Submitted','${p.id}')">📤 Submit</button>`:''}
             ${a.status==='Submitted'?`<button class="btn btn-sm" style="color:var(--green);border-color:var(--green)" onclick="markPayAppPaid('${a.id}','${p.id}',${a.net_payment_due})">💰 Mark Paid</button>`:''}
             ${a.status==='Paid'?`<span style="color:var(--green);font-size:11px;font-weight:600">✅ Paid</span>`:''}
@@ -3916,7 +3917,7 @@ async function saveAndGeneratePayApp(projectId, appNum, prevBilled, prevRetainag
   }
 }
 
-async function generatePayAppPDF(payAppId) {
+async function generatePayAppPDF(payAppId, finalWaiver) {
   const { data: pa } = await db.from('pay_applications').select('*').eq('id', payAppId).single();
   const { data: lineItems } = await db.from('pay_app_line_items').select('*').eq('pay_app_id', payAppId).order('sort_order');
   const { data: sovItems } = await db.from('sov_line_items').select('*').eq('project_id', state.activeProject?.id).order('sort_order');
@@ -4146,7 +4147,9 @@ h1{font-size:16px;font-weight:bold;margin-bottom:4px}
 <!-- PAGE 4: LIEN WAIVER -->
 <div class="page-break"></div>
 <div class="lien-waiver">
-  <div class="lien-title">CONDITIONAL PARTIAL WAIVER AND RELEASE OF LIEN<br>UPON PROGRESS PAYMENT</div>
+  <div class="lien-title">${finalWaiver
+    ? 'CONDITIONAL FINAL WAIVER AND RELEASE OF LIEN<br>UPON FINAL PAYMENT'
+    : 'CONDITIONAL PARTIAL WAIVER AND RELEASE OF LIEN<br>UPON PROGRESS PAYMENT'}</div>
   <div style="margin-bottom:10px">
     <div class="lien-field">Project: <strong>${p.job_name}</strong></div>
     <div class="lien-field">Owner: <strong>${p.owner_name||'NYCHA'}</strong></div>
@@ -4156,9 +4159,15 @@ h1{font-size:16px;font-weight:bold;margin-bottom:4px}
     <div class="lien-field">Through Date: <strong>${periodStr}</strong></div>
   </div>
   <div style="margin:20px 0;font-size:11px;line-height:1.8">
+    ${finalWaiver ? `
+    This document waives and releases all lien, stop payment notice, and bond rights the undersigned has for labor, services, equipment, or materials furnished to the above project. This waiver and release is <strong>conditional upon actual receipt of final payment</strong> in the amount of:<br><br>
+    <div style="text-align:center;font-size:16px;font-weight:bold;margin:16px 0">${fmt(pa.net_payment_due)}</div>
+    Upon receipt of this payment, the undersigned acknowledges that the contract has been <strong>paid in full</strong>, and all claims, extras, and retainage are satisfied.
+    ` : `
     This document waives and releases lien, stop payment notice, and bond rights the undersigned has for labor, services, equipment, or materials furnished to the above project <strong>through the Through Date listed above</strong>, but <strong>only to the extent of payment received</strong> in the amount of:<br><br>
     <div style="text-align:center;font-size:16px;font-weight:bold;margin:16px 0">${fmt(pa.net_payment_due)}</div>
     This waiver and release is <strong>conditional upon actual receipt of payment</strong> of the above amount. This waiver does not cover retention, pending change orders, or amounts not yet paid.
+    `}
   </div>
   <div class="sig-block">
     <div style="margin-bottom:8px">Subcontractor: <strong>Tetra Mechanical Services LLC</strong></div>

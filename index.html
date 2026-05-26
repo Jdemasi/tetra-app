@@ -8272,15 +8272,23 @@ const INBOX_SCAN_CAP = 25;  // per-scan message cap so the tab can't hang
 // List messages (id + metadata) with attachments in the window. Pages until cap.
 async function graphListInvoiceMessages(token, cap) {
   const since = new Date(Date.now() - 30*24*60*60*1000).toISOString();
+  // Graph rejects $orderby unless every $orderby field also leads the $filter in
+  // the same order (error: InefficientFilter). So filter on receivedDateTime ONLY
+  // (matching the orderby) and check hasAttachments client-side.
   let url = graphMessagesBase()
-    + '?$filter=' + encodeURIComponent(`hasAttachments eq true and receivedDateTime ge ${since}`)
-    + '&$select=id,subject,from,receivedDateTime&$orderby=receivedDateTime desc&$top=25';
+    + '?$filter=' + encodeURIComponent(`receivedDateTime ge ${since}`)
+    + '&$select=id,subject,from,receivedDateTime,hasAttachments&$orderby=receivedDateTime desc&$top=50';
   const msgs = [];
-  while (url && msgs.length < cap) {
+  let scannedPages = 0;
+  // Page until we've collected `cap` attachment-bearing messages (or run out /
+  // hit a safety bound so a sparse mailbox can't page forever).
+  while (url && msgs.length < cap && scannedPages < 40) {
+    scannedPages++;
     const resp = await fetch(url, { headers: { Authorization: 'Bearer ' + token } });
     if (!resp.ok) throw new Error('Graph list error ' + resp.status + ': ' + (await resp.text()).slice(0,200));
     const data = await resp.json();
     for (const m of (data.value || [])) {
+      if (!m.hasAttachments) continue;
       msgs.push(m);
       if (msgs.length >= cap) break;
     }

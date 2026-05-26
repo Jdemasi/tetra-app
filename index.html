@@ -8353,8 +8353,10 @@ const INBOX_SCAN_MAX_PAGES = 200;    // page bound so a huge mailbox can't loop 
 
 // List messages (id + metadata) with attachments in the window. Pages until the
 // window is exhausted or the safety ceiling is hit ("scan until done").
-async function graphListInvoiceMessages(token, cap) {
-  const since = new Date(Date.now() - INBOX_SCAN_WINDOW_DAYS*24*60*60*1000).toISOString();
+// sinceOverride (ISO string) lets an incremental scan start from the last-scan
+// marker instead of the full window.
+async function graphListInvoiceMessages(token, cap, sinceOverride) {
+  const since = sinceOverride || new Date(Date.now() - INBOX_SCAN_WINDOW_DAYS*24*60*60*1000).toISOString();
   // Graph rejects $orderby unless every $orderby field also leads the $filter in
   // the same order (error: InefficientFilter). So filter on receivedDateTime ONLY
   // (matching the orderby) and check hasAttachments client-side.
@@ -8414,7 +8416,20 @@ function isPdfAttachment(a) {
 }
 
 let _inboxScanRunning = false;
-async function scanInvoiceInbox() {
+// Last-scan marker (stored in app_settings, key/value JSON) so an incremental
+// scan only examines messages newer than the previous scan — keeps re-scans fast.
+async function getInboxLastScan() {
+  try {
+    const { data } = await db.from('app_settings').select('value').eq('key', 'inbox_last_scan').single();
+    return (typeof data?.value === 'string') ? data.value : null;
+  } catch (e) { return null; }
+}
+async function setInboxLastScan(iso) {
+  try { await db.from('app_settings').upsert({ key: 'inbox_last_scan', value: iso }); }
+  catch (e) { console.error('Failed to store last-scan marker (non-fatal):', e); }
+}
+
+async function scanInvoiceInbox(incremental) {
   if (_inboxScanRunning) return;
   _inboxScanRunning = true;
   const status = $('inbox-scan-status');
@@ -8440,8 +8455,17 @@ async function scanInvoiceInbox() {
     // Known POs for fuzzy matching (same source readInvoiceFile uses).
     const knownPOs = (state.allPOs || state.projectPOs || []).map(po => String(po.po_number)).filter(Boolean);
 
-    setStatus('📥 Listing recent messages with attachments…');
-    const msgs = await graphListInvoiceMessages(token, INBOX_SCAN_CAP);
+    // For an incremental scan, only look at messages newer than the last scan.
+    // Record the start time NOW so anything arriving mid-scan is caught next time.
+    const scanStartedAt = new Date().toISOString();
+    let sinceOverride = null;
+    if (incremental) {
+      const last = await getInboxLastScan();
+      if (last) sinceOverride = last;
+    }
+
+    setStatus(incremental ? '📥 Checking for new messages…' : '📥 Listing recent messages with attachments…');
+    const msgs = await graphListInvoiceMessages(token, INBOX_SCAN_CAP, sinceOverride);
 
     // Pre-load existing queue dedupe keys so we don't re-pull/re-parse.
     const { data: existing } = await db.from('invoice_inbox_queue')
@@ -8543,6 +8567,8 @@ async function scanInvoiceInbox() {
       + (failed ? `, ${failed} had errors` : '') + `. Showing the queue below.`
       + (firstError ? `<br><small style="color:#b45309">First error: ${esc(firstError)}</small>` : ''),
       failed && !added ? 'err' : 'ok');
+    // Advance the last-scan marker so the next incremental scan only sees newer mail.
+    await setInboxLastScan(scanStartedAt);
     await renderInboxQueueList();
   } catch (e) {
     setStatus('❌ ' + esc(e.message || String(e)), 'err');
@@ -8957,9 +8983,9 @@ async function renderInvoiceInbox() {
       <div style="background:var(--white,#fff);border:1px solid var(--gray200,#e5e7eb);border-radius:10px;padding:20px;margin-bottom:16px">
         <div style="font-weight:600;margin-bottom:6px">Scan inbox for invoices</div>
         <p style="color:var(--gray600);font-size:13px;margin:0 0 14px">
-          Scans the last <strong>${INBOX_SCAN_WINDOW_DAYS} days</strong> for messages with PDF attachments, extracts &amp; parses each, and adds new ones to the review queue below. It pulls everything in the window in one pass (up to ${INBOX_SCAN_CAP} per scan). Already-handled invoices are skipped, so you can re-scan anytime — it only picks up new arrivals. Your mailbox is left untouched.
+          Opening this page automatically checks for invoices that arrived since your last scan — usually instant. Use the button below for a full sweep of the last <strong>${INBOX_SCAN_WINDOW_DAYS} days</strong> (e.g. to backfill). Either way, already-handled invoices are skipped and your mailbox is left untouched.
         </p>
-        <button class="btn btn-primary" onclick="scanInvoiceInbox()">Scan inbox now</button>
+        <button class="btn btn-primary" onclick="scanInvoiceInbox()">Full ${INBOX_SCAN_WINDOW_DAYS}-day scan</button>
         <div id="inbox-scan-status" style="display:none;margin-top:14px;padding:12px 14px;border-radius:8px;font-size:14px"></div>
       </div>
 
@@ -8974,6 +9000,11 @@ async function renderInvoiceInbox() {
       </details>
     </div>`;
   renderInboxQueueList();  // show any rows queued from a previous scan
+  // Auto-run a quick incremental scan on open — but only if we've scanned before
+  // (a first-ever visit shouldn't kick off a full sweep; let the user click).
+  getInboxLastScan().then(last => {
+    if (last && !_inboxScanRunning) scanInvoiceInbox(true);
+  });
 }
 
 

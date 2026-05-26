@@ -2902,6 +2902,7 @@ async function openNewPurchase(projectId) {
   delete $('modal-purchase')._pendingFile;
   delete $('modal-purchase')._pendingFileName;
   delete $('modal-purchase')._lastParserResult;
+  delete $('modal-purchase')._inboxQueueId;  // clear stale inbox-confirm tag
   // Reset upload UI
   $('pu-ai-status').style.display = 'none';
   $('pu-ai-status').innerHTML = '';
@@ -3090,6 +3091,18 @@ async function savePurchase() {
 
   // Capture parser result before closing the modal (it stashes _lastParserResult)
   const parserResult = $('modal-purchase')._lastParserResult;
+
+  // If this purchase was confirmed from the Invoice Inbox queue, mark that
+  // queue row confirmed and link it to the new purchase row.
+  const inboxQueueId = $('modal-purchase')._inboxQueueId;
+  if (inboxQueueId && !editId) {
+    try {
+      await db.from('invoice_inbox_queue')
+        .update({ status: 'confirmed', confirmed_at: new Date().toISOString() })
+        .eq('id', inboxQueueId);
+    } catch (e) { console.error('Failed to mark inbox queue row confirmed:', e); }
+  }
+  delete $('modal-purchase')._inboxQueueId;
 
   // Clean up modal state
   delete $('modal-purchase').dataset.editId;
@@ -8447,6 +8460,73 @@ async function scanInvoiceInbox() {
 }
 
 // Render the current pending queue (Step 2: verification list; Step 3 adds confirm).
+// Heuristic: does this look like a vendor statement / non-invoice rather than a
+// single invoice? Filename hints + no PO found. We FLAG (not skip) these.
+function looksLikeStatement(row) {
+  const n = (row.attachment_name || '').toLowerCase();
+  const s = (row.email_subject || '').toLowerCase();
+  const hint = /statement|stmt|aging|past\s*due|account\s*summary/.test(n + ' ' + s);
+  return hint && !row.parsed_po_number;
+}
+
+// Open the purchase modal pre-filled from a queued invoice for confirmation.
+// Reuses openNewPurchase (full modal setup + PO/vendor/cost-code wiring) and
+// replays the same PO-match fill the file-upload path uses — from stored data.
+async function confirmInboxRow(queueId) {
+  const { data: row, error } = await db.from('invoice_inbox_queue')
+    .select('*').eq('id', queueId).single();
+  if (error || !row) { toast('Could not load queued invoice: ' + (error?.message||'not found'), 'error'); return; }
+
+  // Full modal setup (loads POs, builds dropdowns, wires PO->vendor/cost autofill).
+  await openNewPurchase(row.matched_project_id || null);
+
+  // If the row matched a shop PO (no project), flip to shop mode and rebuild.
+  if (row.matched_po_id && !row.matched_project_id) {
+    document.querySelectorAll('input[name="pu-job-type"]').forEach(r => r.checked = (r.value === 'shop'));
+    togglePUJobType('shop');
+    document.querySelectorAll('input[name="pu-job-type"]').forEach(r => r.dispatchEvent(new Event('change')));
+  }
+
+  // Pre-fill parsed fields (user verifies before saving).
+  if (row.parsed_vendor) $('pu-vendor').value = row.parsed_vendor;
+  if (row.parsed_invoice_number) $('pu-inv').value = row.parsed_invoice_number;
+  if (row.parsed_invoice_date) $('pu-date').value = row.parsed_invoice_date;
+  if (row.parsed_amount_due != null) $('pu-amount').value = row.parsed_amount_due;
+  if (row.parsed_is_paid) {
+    $('pu-paid').value = row.parsed_amount_paid != null ? row.parsed_amount_paid : row.parsed_amount_due;
+    $('pu-status').value = 'Paid';
+  }
+  if (row.parsed_payment_terms && $('pu-terms')) $('pu-terms').value = row.parsed_payment_terms;
+
+  // Select the matched PO and fire its existing onchange → backfills vendor +
+  // cost code FROM THE PO (the behavior you chose), exactly like the file path.
+  if (row.matched_po_id) {
+    const poSel = $('pu-po-select');
+    const exists = Array.from(poSel.options).some(o => o.value === row.matched_po_id);
+    if (exists) {
+      poSel.value = row.matched_po_id;
+      poSel.dispatchEvent(new Event('change'));
+      // PO backfill only fills vendor if blank and amount if blank; parsed values
+      // above take precedence where present, PO fills the gaps.
+    }
+  }
+
+  // Tag the modal so a successful save marks this queue row confirmed.
+  $('modal-purchase')._inboxQueueId = queueId;
+
+  // Note: PDF is NOT attached here. It's re-fetched from Graph at confirm only if
+  // you choose (Step 3b). For now confirm logs the data; file can be attached later.
+}
+
+async function dismissInboxRow(queueId) {
+  if (!confirm('Dismiss this invoice from the queue? It will not be logged. (You can re-scan to pull it again.)')) return;
+  const { error } = await db.from('invoice_inbox_queue')
+    .update({ status: 'dismissed' }).eq('id', queueId);
+  if (error) { toast('Dismiss failed: ' + error.message, 'error'); return; }
+  toast('Dismissed');
+  renderInboxQueueList();
+}
+
 async function renderInboxQueueList() {
   const wrap = $('inbox-queue-list');
   if (!wrap) return;
@@ -8458,17 +8538,29 @@ async function renderInboxQueueList() {
   const fmt$ = v => (v == null || v === '') ? '—' : '$' + Number(v).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
   const rowsHtml = rows.map(r => {
     const proj = r.matched_project_id ? (state.projects||[]).find(p => p.id === r.matched_project_id) : null;
+    const matchedPO = r.matched_po_id ? (state.allPOs||[]).find(po => po.id === r.matched_po_id) : null;
+    // Backfill vendor display from the matched PO when the parser didn't find one.
+    const vendorDisplay = r.parsed_vendor || (matchedPO ? matchedPO.vendor : '') || '';
     const matchLabel = r.parsed_po_number
-      ? (r.matched_po_id ? `PO ${esc(r.parsed_po_number)} → ${esc(proj ? (proj.job_number+' '+proj.job_name) : 'matched')}` : `PO ${esc(r.parsed_po_number)} (no app match)`)
+      ? (r.matched_po_id ? `PO ${esc(r.parsed_po_number)} → ${esc(proj ? (proj.job_number+' '+proj.job_name) : 'matched')}` : `PO ${esc(r.parsed_po_number)} <span style="color:#b45309">(no app match)</span>`)
       : '<span style="color:#b45309">no PO found</span>';
+    const isStmt = looksLikeStatement(r);
     return `<tr style="border-top:1px solid var(--gray200,#e5e7eb)">
-      <td style="padding:8px 10px">${esc(r.parsed_vendor || '—')}<div style="font-size:11px;color:var(--gray500,#9ca3af)">${esc(r.attachment_name||'')}</div></td>
+      <td style="padding:8px 10px">
+        ${vendorDisplay ? esc(vendorDisplay) : '<span style="color:#b45309">— no vendor —</span>'}
+        ${isStmt ? '<span title="Looks like a statement, not an invoice" style="margin-left:6px;font-size:10px;background:#FEF3C7;color:#92400E;padding:1px 6px;border-radius:8px">possible statement</span>' : ''}
+      </td>
+      <td style="padding:8px 10px;font-size:11px;color:var(--gray500,#9ca3af);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.attachment_name||'')}">${esc(r.attachment_name||'')}</td>
       <td style="padding:8px 10px">${esc(r.parsed_invoice_number || '—')}</td>
       <td style="padding:8px 10px">${esc(r.parsed_invoice_date || '—')}</td>
       <td style="padding:8px 10px;text-align:right">${fmt$(r.parsed_amount_due)}</td>
       <td style="padding:8px 10px;font-size:12px">${matchLabel}</td>
       <td style="padding:8px 10px;font-size:11px;color:var(--gray500,#9ca3af)">${esc((r.email_from||'').split('@')[0])}<br>${r.email_received_at ? new Date(r.email_received_at).toLocaleDateString() : ''}</td>
-      ${r.error_note ? `<td style="padding:8px 10px;font-size:11px;color:#b45309">⚠ ${esc(r.error_note)}</td>` : '<td></td>'}
+      <td style="padding:8px 10px;white-space:nowrap">
+        <button class="btn btn-primary" style="padding:4px 10px;font-size:12px" onclick="confirmInboxRow('${r.id}')">Confirm…</button>
+        <button class="btn" style="padding:4px 8px;font-size:12px" onclick="dismissInboxRow('${r.id}')">Dismiss</button>
+      </td>
+      ${r.error_note ? `<td style="padding:8px 10px;font-size:11px;color:#b45309" title="${esc(r.error_note)}">⚠</td>` : '<td></td>'}
     </tr>`;
   }).join('');
 
@@ -8478,17 +8570,19 @@ async function renderInboxQueueList() {
       <table style="width:100%;border-collapse:collapse;font-size:13px">
         <thead><tr style="background:var(--gray50,#f9fafb);text-align:left">
           <th style="padding:8px 10px">Vendor</th>
+          <th style="padding:8px 10px">File</th>
           <th style="padding:8px 10px">Invoice #</th>
           <th style="padding:8px 10px">Date</th>
           <th style="padding:8px 10px;text-align:right">Amount</th>
           <th style="padding:8px 10px">PO / Job match</th>
           <th style="padding:8px 10px">From / Recv</th>
+          <th style="padding:8px 10px">Action</th>
           <th style="padding:8px 10px"></th>
         </tr></thead>
         <tbody>${rowsHtml}</tbody>
       </table>
     </div>
-    <p style="font-size:12px;color:var(--gray500,#9ca3af);margin-top:8px">Step 3 will make each row clickable to open the purchase modal pre-filled for your confirmation.</p>`;
+    <p style="font-size:12px;color:var(--gray500,#9ca3af);margin-top:8px">Click <strong>Confirm…</strong> to open the purchase form pre-filled — verify the job, cost code, and amount, then Save to log it. Nothing is logged until you save.</p>`;
 }
 
 async function renderInvoiceInbox() {

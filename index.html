@@ -202,6 +202,8 @@ select.finp{cursor:pointer}
     <button class="sb-item" data-view="master-ap">
       <svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>AP Master (Vendor Invoices)
     </button>
+    <button class="sb-item" data-view="master-inbox">
+      <svg viewBox="0 0 24 24"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>Invoice Inbox
     <button class="sb-item" data-view="master-ar">
       <svg viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>AR Master (Pay Apps)
     </button>
@@ -1328,6 +1330,7 @@ async function render() {
   else if (state.view === 'ap-aging') await renderAPAging();
   else if (state.view === 'master-pos') await renderMasterPOs();
   else if (state.view === 'master-ap') await renderMasterAP();
+  else if (state.view === 'master-inbox') await renderInvoiceInbox();
   else if (state.view === 'master-ar') await renderMasterAR();
   else if (state.view === 'master-cos') await renderMasterCOs();
   else if (state.view === 'master-subs') await renderMasterSubs();
@@ -1355,6 +1358,7 @@ function updateBreadcrumb() {
   else if (state.view === 'ap-aging') html = '<span>Dashboard</span><span class="sep">/</span><span class="cur">AP Aging</span>';
   else if (state.view === 'master-pos') html = '<span>Logs</span><span class="sep">/</span><span class="cur">PO Log</span>';
   else if (state.view === 'master-ap') html = '<span>Logs</span><span class="sep">/</span><span class="cur">AP Master — Vendor Invoices</span>';
+  else if (state.view === 'master-inbox') html = '<span>Logs</span><span class="sep">/</span><span class="cur">Invoice Inbox</span>';
   else if (state.view === 'master-ar') html = '<span>Logs</span><span class="sep">/</span><span class="cur">AR Master — Pay Apps</span>';
   else if (state.view === 'master-cos') html = '<span>Logs</span><span class="sep">/</span><span class="cur">Change Order Log</span>';
   else if (state.view === 'master-subs') html = '<span>Logs</span><span class="sep">/</span><span class="cur">Subcontractors</span>';
@@ -7996,7 +8000,7 @@ const GRAPH_CONFIG = {
   clientId: '22b9b333-14d5-4258-9b23-9766adbaedf5',
   tenantId: 'da9399a8-a1a3-47db-ac62-8b06eabd2109',
   redirectUri: 'https://tetra-app-seven.vercel.app/',
-  scopes: ['Mail.Send', 'Mail.ReadWrite'],  // ReadWrite needed to create a draft
+  scopes: ['Mail.Send', 'Mail.ReadWrite', 'Mail.Read'],  // ReadWrite=draft; Read=invoice inbox scan
   // 'me' = send/draft from whoever is signed in (sign in as accounting@).
   // To draft from a shared mailbox while signed in as someone else, set this to
   // 'accounting@tetra-mechanical.com' and add Mail.Send.Shared + Send-As rights.
@@ -8171,6 +8175,83 @@ async function createPODraft({ to, subject, body, docHTML, fileName, extraAttach
     ? `https://outlook.office365.com/mail/deeplink/compose/${encodeURIComponent(created.id)}?ItemID=${encodeURIComponent(created.id)}&exvsurl=1`
     : (created.webLink || null);
   return { ok: true, webLink: composeLink };
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// INVOICE INBOX — read vendor invoices from accounting@ via Graph, parse with
+// the EXISTING parser, queue for human confirm (no silent logging).
+// Reads /me/messages because sign-in is AS accounting@ (GRAPH_CONFIG.sendFrom='me').
+// STEP 1: connection test only. Queue table + scan + review UI come next.
+// ═══════════════════════════════════════════════════════════════════════
+
+// Base URL for reading messages — mirrors the send-side sendFrom switch.
+function graphMessagesBase() {
+  return GRAPH_CONFIG.sendFrom === 'me'
+    ? 'https://graph.microsoft.com/v1.0/me/messages'
+    : `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(GRAPH_CONFIG.sendFrom)}/messages`;
+}
+
+// Minimal read to prove Mail.Read consent + mailbox access work before we build
+// anything on top. Counts last-30-day messages that have attachments.
+async function testInboxConnection() {
+  const out = $('inbox-test-result');
+  out.style.display = 'block';
+  out.style.background = '#FFF8E1';
+  out.style.color = 'var(--gray800)';
+  out.innerHTML = '⏳ Signing in and checking ' + (GRAPH_CONFIG.sendFrom === 'me' ? 'your mailbox' : GRAPH_CONFIG.sendFrom) + '…';
+  try {
+    const token = await getGraphToken();
+    const since = new Date(Date.now() - 30*24*60*60*1000).toISOString();
+    // hasAttachments filter + date window; $top small since this is just a probe.
+    const url = graphMessagesBase()
+      + '?$filter=' + encodeURIComponent(`hasAttachments eq true and receivedDateTime ge ${since}`)
+      + '&$select=subject,receivedDateTime,from&$top=10&$count=true';
+    const resp = await fetch(url, {
+      headers: { Authorization: 'Bearer ' + token, 'ConsistencyLevel': 'eventual' },
+    });
+    if (!resp.ok) {
+      const err = await resp.text();
+      let hint = '';
+      if (resp.status === 403) hint = ' — this usually means Mail.Read consent was not granted. An admin may need to approve it for the app.';
+      if (resp.status === 401) hint = ' — token/sign-in issue; try signing in again.';
+      out.style.background = '#FDECEA'; out.style.color = '#611A15';
+      out.innerHTML = '❌ Graph error ' + resp.status + hint + '<br><small style="opacity:.7">' + esc(err.slice(0,200)) + '</small>';
+      return;
+    }
+    const data = await resp.json();
+    const total = (typeof data['@odata.count'] === 'number') ? data['@odata.count'] : (data.value||[]).length;
+    const sample = (data.value||[]).slice(0,3).map(m =>
+      `<li>${esc(m.subject||'(no subject)')} <small style="opacity:.6">— ${esc((m.from?.emailAddress?.address)||'')}</small></li>`
+    ).join('');
+    out.style.background = '#E8F5E9'; out.style.color = '#1B5E20';
+    out.innerHTML = '✅ Connected. Found <strong>' + total + '</strong> message(s) with attachments in the last 30 days.'
+      + (sample ? '<ul style="margin:8px 0 0 18px">' + sample + '</ul>' : '')
+      + '<br><small style="opacity:.7">Read access works. Next step will pull the PDF attachments and parse them into a review queue.</small>';
+  } catch (e) {
+    out.style.background = '#FDECEA'; out.style.color = '#611A15';
+    out.innerHTML = '❌ ' + esc(e.message || String(e));
+  }
+}
+
+async function renderInvoiceInbox() {
+  const c = $('content');
+  c.innerHTML = `
+    <div style="max-width:760px">
+      <h2 style="margin:0 0 4px">Invoice Inbox</h2>
+      <p style="color:var(--gray600);margin:0 0 20px">
+        Reads vendor invoices from <strong>${esc(GRAPH_CONFIG.sendFrom === 'me' ? 'the signed-in mailbox (sign in as accounting@tetra-mechanical.com)' : GRAPH_CONFIG.sendFrom)}</strong>,
+        runs them through the existing parser, and queues them for your review before anything is logged.
+      </p>
+      <div style="background:var(--white,#fff);border:1px solid var(--gray200,#e5e7eb);border-radius:10px;padding:20px">
+        <div style="font-weight:600;margin-bottom:6px">Step 1 — Verify mailbox access</div>
+        <p style="color:var(--gray600);font-size:13px;margin:0 0 14px">
+          Confirms the new <code>Mail.Read</code> permission is consented and the inbox is reachable. This only reads message metadata — it doesn't download or log anything yet.
+        </p>
+        <button class="btn btn-primary" onclick="testInboxConnection()">Test inbox connection</button>
+        <div id="inbox-test-result" style="display:none;margin-top:14px;padding:12px 14px;border-radius:8px;font-size:14px"></div>
+      </div>
+    </div>`;
 }
 
 

@@ -1698,6 +1698,12 @@ async function renderJobSetup() {
       <button class="btn btn-sm btn-red" onclick="openAddPhase('${p.id}')">+ Add Phase</button>
     </div>
     <p class="section-sub">Define the phases for this job. These appear as dropdowns throughout the system.</p>
+    <div style="display:flex;align-items:center;gap:10px;background:#F0F7FF;border:1px solid #D0E1F5;border-radius:8px;padding:10px 14px;margin-bottom:12px">
+      <svg viewBox="0 0 24 24" width="16" height="16" style="flex-shrink:0;stroke:var(--navy);fill:none;stroke-width:2"><path d="M20 7h-3V4a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v3H4a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1V8a1 1 0 0 0-1-1z"/></svg>
+      <span style="font-size:12px;color:var(--gray700)">Job Material Budget</span>
+      <strong style="font-size:14px;color:var(--navy)">${fmt(budMap['Materials']||0)}</strong>
+      <span style="font-size:11px;color:var(--gray500)">— set under "Cost Budget by Category" above; tracked job-wide, not per phase</span>
+    </div>
     ${state.phases.length === 0 ? '<div class="tbl-empty">No phases yet. Add your first phase or use Import Estimate above.</div>' :
     (() => {
       const br = parseFloat(p.burden_rate||160);
@@ -2117,7 +2123,7 @@ async function renderPurchases() {
         <td class="mono" style="font-size:11px">${pu.invoice_number||'—'}</td>
         <td class="mono" style="font-size:11px;color:var(--navy)">${pu.po_number||'—'}</td>
         <td style="font-size:10px"><span style="background:var(--gray100);padding:2px 5px;border-radius:4px">${pu.cost_code||'—'}</span></td>
-        <td style="font-size:11px;color:var(--gray600)">${phase?phase.phase_name:'—'}</td>
+        <td style="font-size:11px;color:var(--gray600)">${phase ? phase.phase_name : (pu.project_id ? '<span title="No phase associated — assign one" style="background:#FEF3C7;color:#92400E;padding:1px 6px;border-radius:8px;font-weight:600">⚑ no phase</span>' : '—')}</td>
         <td style="font-size:11px">${pu.invoice_date||'—'}</td>
         <td class="text-right font-600">${fmt(pu.po_amount)}</td>
         <td class="text-right" style="color:var(--green)">${parseFloat(pu.paid_amount||0)>0?fmt(pu.paid_amount):'—'}</td>
@@ -3079,6 +3085,15 @@ async function savePurchase() {
     notes: $('pu-notes').value,
   };
 
+  // Phase association check: a job purchase with no phase is allowed but flagged.
+  // Warn so it's a deliberate choice (shop/overhead purchases have no phase and
+  // are exempt). Lets you proceed — it doesn't block.
+  if (!isShop && projectId && !puData.phase_id) {
+    if (!confirm('No phase is associated with this purchase. It will be flagged as unassigned in the Purchases & AP list.\n\nSave without a phase?')) {
+      return;
+    }
+  }
+
   // If there's a pending file from the upload zone, upload it to storage first.
   // We do this BEFORE the DB insert so the pdf_url is part of the same row creation.
   const pendingFile = $('modal-purchase')._pendingFile;
@@ -3382,7 +3397,7 @@ async function renderLabor() {
       const cost = calcCost(l);
       return '<tr>' +
         '<td class="font-600">'+(l.employee_name||'—')+'</td>' +
-        '<td>'+(phase?phase.phase_name:'—')+'</td>' +
+        '<td>'+(phase?phase.phase_name:'<span title="No phase associated — assign one" style="background:#FEF3C7;color:#92400E;padding:1px 6px;border-radius:8px;font-weight:600">⚑ no phase</span>')+'</td>' +
         '<td>'+(l.week_ending||'—')+'</td>' +
         '<td class="text-right">'+parseFloat(l.st_hours||0).toFixed(2)+'</td>' +
         '<td class="text-right">'+parseFloat(l.ot15_hours||0).toFixed(2)+'</td>' +
@@ -3547,6 +3562,14 @@ async function saveLabor() {
     ot2_hours: parseFloat($('la-ot2').value)||0,
     st_rate: rate,
   };
+
+  // Phase association check — warn (don't block) when no phase is set, matching
+  // the purchases behavior. Labor is always job-tied, so no shop exemption.
+  if (projectId && !entryData.phase_id) {
+    if (!confirm('No phase is associated with this labor entry. It will be flagged as unassigned in the labor list.\n\nSave without a phase?')) {
+      return;
+    }
+  }
 
   let error;
   if (editId) {

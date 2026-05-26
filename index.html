@@ -8288,7 +8288,7 @@ async function testInboxConnection() {
   out.innerHTML = '⏳ Signing in and checking ' + (GRAPH_CONFIG.sendFrom === 'me' ? 'your mailbox' : GRAPH_CONFIG.sendFrom) + '…';
   try {
     const token = await getGraphToken();
-    const since = new Date(Date.now() - 30*24*60*60*1000).toISOString();
+    const since = new Date(Date.now() - 60*24*60*60*1000).toISOString();  // 60-day window, matches scan
     // hasAttachments filter + date window; $top small since this is just a probe.
     const url = graphMessagesBase()
       + '?$filter=' + encodeURIComponent(`hasAttachments eq true and receivedDateTime ge ${since}`)
@@ -8324,11 +8324,14 @@ async function testInboxConnection() {
 // Pull last-30-day messages with attachments, extract+parse PDF attachments
 // via the EXISTING pipeline, upsert into invoice_inbox_queue (deduped).
 // PDF bytes are NOT stored — only Graph message/attachment ids (re-fetch at confirm).
-const INBOX_SCAN_CAP = 25;  // per-scan message cap so the tab can't hang
+const INBOX_SCAN_WINDOW_DAYS = 60;   // how far back to look
+const INBOX_SCAN_CAP = 300;          // hard safety ceiling per scan (resume via re-scan)
+const INBOX_SCAN_MAX_PAGES = 200;    // page bound so a huge mailbox can't loop forever
 
-// List messages (id + metadata) with attachments in the window. Pages until cap.
+// List messages (id + metadata) with attachments in the window. Pages until the
+// window is exhausted or the safety ceiling is hit ("scan until done").
 async function graphListInvoiceMessages(token, cap) {
-  const since = new Date(Date.now() - 30*24*60*60*1000).toISOString();
+  const since = new Date(Date.now() - INBOX_SCAN_WINDOW_DAYS*24*60*60*1000).toISOString();
   // Graph rejects $orderby unless every $orderby field also leads the $filter in
   // the same order (error: InefficientFilter). So filter on receivedDateTime ONLY
   // (matching the orderby) and check hasAttachments client-side.
@@ -8338,8 +8341,8 @@ async function graphListInvoiceMessages(token, cap) {
   const msgs = [];
   let scannedPages = 0;
   // Page until we've collected `cap` attachment-bearing messages (or run out /
-  // hit a safety bound so a sparse mailbox can't page forever).
-  while (url && msgs.length < cap && scannedPages < 40) {
+  // hit a safety bound so a huge mailbox can't page forever).
+  while (url && msgs.length < cap && scannedPages < INBOX_SCAN_MAX_PAGES) {
     scannedPages++;
     const resp = await fetch(url, { headers: { Authorization: 'Bearer ' + token } });
     if (!resp.ok) throw new Error('Graph list error ' + resp.status + ': ' + (await resp.text()).slice(0,200));
@@ -8931,7 +8934,7 @@ async function renderInvoiceInbox() {
       <div style="background:var(--white,#fff);border:1px solid var(--gray200,#e5e7eb);border-radius:10px;padding:20px;margin-bottom:16px">
         <div style="font-weight:600;margin-bottom:6px">Scan inbox for invoices</div>
         <p style="color:var(--gray600);font-size:13px;margin:0 0 14px">
-          Pulls up to <strong>${INBOX_SCAN_CAP}</strong> recent messages (last 30 days) with PDF attachments, extracts &amp; parses each, and adds new ones to the review queue below. Already-queued invoices are skipped. Your mailbox is left untouched. Scan again to pull the next batch.
+          Scans the last <strong>${INBOX_SCAN_WINDOW_DAYS} days</strong> for messages with PDF attachments, extracts &amp; parses each, and adds new ones to the review queue below. It pulls everything in the window in one pass (up to ${INBOX_SCAN_CAP} per scan). Already-handled invoices are skipped, so you can re-scan anytime — it only picks up new arrivals. Your mailbox is left untouched.
         </p>
         <button class="btn btn-primary" onclick="scanInvoiceInbox()">Scan inbox now</button>
         <div id="inbox-scan-status" style="display:none;margin-top:14px;padding:12px 14px;border-radius:8px;font-size:14px"></div>

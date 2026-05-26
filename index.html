@@ -106,6 +106,17 @@ select.finp{cursor:pointer}
 .modal{background:#fff;border-radius:12px;padding:20px;width:90%;max-width:560px;max-height:90vh;overflow-y:auto}
 .modal-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--border)}
 .modal-title{font-size:15px;font-weight:600;color:var(--gray800)}
+/* Side-by-side edit: PDF panel left, purchase modal docked right. Toggled by JS. */
+#inbox-split-pdf{display:none;position:fixed;top:0;left:0;width:52vw;height:100vh;z-index:99;background:#525659;flex-direction:column}
+#inbox-split-pdf.open{display:flex}
+#inbox-split-pdf .isp-hd{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#333;color:#fff;font-size:13px}
+#inbox-split-pdf iframe{flex:1;border:0;width:100%}
+body.inbox-split-mode #modal-purchase{justify-content:flex-end;align-items:stretch;background:transparent;pointer-events:none}
+body.inbox-split-mode #modal-purchase .modal{width:46vw;max-width:none;max-height:100vh;height:100vh;border-radius:0;margin:0;pointer-events:auto;box-shadow:-4px 0 24px rgba(0,0,0,.25)}
+@media(max-width:900px){
+  #inbox-split-pdf{width:100vw;height:45vh}
+  body.inbox-split-mode #modal-purchase .modal{width:100%;height:55vh;margin-top:45vh}
+}
 .modal-close{background:none;border:none;cursor:pointer;color:var(--gray400);font-size:20px;line-height:1;padding:2px}
 .modal-close:hover{color:var(--gray800)}
 
@@ -411,6 +422,14 @@ select.finp{cursor:pointer}
       <div id="inbox-pdf-status" style="color:var(--gray600);font-size:14px">Loading…</div>
     </div>
   </div>
+</div>
+
+<div id="inbox-split-pdf">
+  <div class="isp-hd">
+    <span id="inbox-split-title">Invoice PDF</span>
+    <button onclick="closeSplitEdit()" style="background:none;border:0;color:#fff;font-size:18px;cursor:pointer;line-height:1">×</button>
+  </div>
+  <div id="inbox-split-body" style="flex:1;display:flex;align-items:center;justify-content:center;color:#ccc;font-size:14px">Loading…</div>
 </div>
 
 <div class="modal-bg" id="modal-labor">
@@ -1292,7 +1311,20 @@ function toast(msg, type='success') {
 }
 
 function openModal(id) { $(id).classList.add('open'); }
-function closeModal(id) { $(id).classList.remove('open'); }
+function closeModal(id) {
+  $(id).classList.remove('open');
+  // If the purchase modal closes while in side-by-side edit, tear down split mode.
+  if (id === 'modal-purchase' && document.body.classList.contains('inbox-split-mode')) {
+    document.body.classList.remove('inbox-split-mode');
+    const panel = $('inbox-split-pdf');
+    if (panel) panel.classList.remove('open');
+    if (typeof _splitPdfBlobUrl !== 'undefined' && _splitPdfBlobUrl) { URL.revokeObjectURL(_splitPdfBlobUrl); _splitPdfBlobUrl = null; }
+    const sb = $('inbox-split-body');
+    if (sb && sb.tagName === 'IFRAME') {
+      sb.outerHTML = '<div id="inbox-split-body" style="flex:1;display:flex;align-items:center;justify-content:center;color:#ccc;font-size:14px"></div>';
+    }
+  }
+}
 
 // ── NAVIGATION ──────────────────────────────────────────────────────
 document.querySelectorAll('.sb-item[data-view]').forEach(btn => {
@@ -8545,6 +8577,56 @@ function closeInboxPdf() {
   if (body) body.innerHTML = '';
 }
 
+// Side-by-side edit: PDF panel on the left, the SAME purchase modal docked right.
+// Reuses confirmInboxRow to open the pre-filled, fully-functional modal (one save
+// path), then layers the split layout + PDF over it.
+let _splitPdfBlobUrl = null;
+async function editInboxRowSplit(queueId) {
+  // Open the pre-filled purchase modal (full form, real savePurchase).
+  await confirmInboxRow(queueId);
+  // If confirmInboxRow returned without opening (e.g. user cancelled a dup
+  // warning), don't enter split mode.
+  if (!$('modal-purchase').classList.contains('open')) return;
+
+  document.body.classList.add('inbox-split-mode');
+  const panel = $('inbox-split-pdf');
+  const body = $('inbox-split-body');
+  const title = $('inbox-split-title');
+  panel.classList.add('open');
+  body.innerHTML = 'Loading PDF from mailbox…';
+  if (_splitPdfBlobUrl) { URL.revokeObjectURL(_splitPdfBlobUrl); _splitPdfBlobUrl = null; }
+
+  try {
+    const { data: row } = await db.from('invoice_inbox_queue')
+      .select('graph_message_id, graph_attachment_id, attachment_name').eq('id', queueId).single();
+    if (row?.attachment_name) title.textContent = row.attachment_name;
+    const token = await getGraphToken();
+    const bytes = await graphGetAttachmentBytes(token, row.graph_message_id, row.graph_attachment_id);
+    const blob = new Blob([bytes], { type: 'application/pdf' });
+    _splitPdfBlobUrl = URL.createObjectURL(blob);
+    body.outerHTML = `<iframe id="inbox-split-body" src="${_splitPdfBlobUrl}" title="Invoice PDF"></iframe>`;
+  } catch (e) {
+    console.error('[inbox split] PDF load failed:', e);
+    body.innerHTML = `<div style="color:#f3b0a0;text-align:center;padding:0 20px">⚠ Couldn't load the PDF (the message may have moved or been deleted). You can still edit and save on the right.</div>`;
+  }
+}
+
+function closeSplitEdit() {
+  document.body.classList.remove('inbox-split-mode');
+  const panel = $('inbox-split-pdf');
+  if (panel) panel.classList.remove('open');
+  if (_splitPdfBlobUrl) { URL.revokeObjectURL(_splitPdfBlobUrl); _splitPdfBlobUrl = null; }
+  // Restore the panel body element (it may have been swapped to an iframe).
+  if (panel) {
+    const existing = $('inbox-split-body');
+    if (existing && existing.tagName === 'IFRAME') {
+      existing.outerHTML = '<div id="inbox-split-body" style="flex:1;display:flex;align-items:center;justify-content:center;color:#ccc;font-size:14px"></div>';
+    }
+  }
+  // Also close the purchase modal if it's still open.
+  closeModal('modal-purchase');
+}
+
 // Check whether an invoice already exists in purchases, to warn before logging a
 // duplicate (forwarded twice, or already entered manually/by file upload).
 // Primary key: vendor + invoice#. If invoice# is blank, fall back to a softer
@@ -8664,6 +8746,59 @@ async function confirmInboxRow(queueId, quick) {
   // you choose (Step 3b). For now confirm logs the data; file can be attached later.
 }
 
+// Toggle a queued row to "PO": this attachment is a purchase-order document,
+// not an invoice. Re-fetch the PDF and attach it to the EXISTING matched PO
+// (POs in the mailbox are already in the app — we attach, never create), then
+// file the queue row away so it's not logged as a cost.
+async function fileInboxRowAsPO(queueId) {
+  const { data: row, error } = await db.from('invoice_inbox_queue')
+    .select('*').eq('id', queueId).single();
+  if (error || !row) { toast('Could not load row: ' + (error?.message||'not found'), 'error'); return; }
+
+  if (!row.matched_po_id) {
+    toast('No matched PO to attach to. This row didn\'t match a PO in the app, so there\'s nothing to attach the document to.', 'error');
+    return;
+  }
+  const po = (state.allPOs || []).find(p => p.id === row.matched_po_id);
+  if (!po) { toast('Matched PO not found in the app.', 'error'); return; }
+
+  // Don't clobber an existing PO attachment.
+  if (po.pdf_url) {
+    if (!confirm(`PO ${po.po_number} already has a document attached. Replace it with this one?`)) return;
+  }
+
+  if (!confirm(`Attach "${row.attachment_name||'this PDF'}" to PO ${po.po_number} (${po.vendor||''}) and file it as a PO (no cost will be logged)?`)) return;
+
+  try {
+    toast('Fetching and attaching PDF…', 'info');
+    const token = await getGraphToken();
+    const bytes = await graphGetAttachmentBytes(token, row.graph_message_id, row.graph_attachment_id);
+    const blob = new Blob([bytes], { type: 'application/pdf' });
+
+    const project = (state.projects || []).find(p => p.id === po.project_id) || null;
+    const path = buildFilePath(project, 'purchase_orders', ['PO-'+po.po_number, po.vendor||'vendor'], row.attachment_name || ('PO-'+po.po_number+'.pdf'));
+    const uploadedPath = await uploadFile(blob, path);
+
+    // If replacing, remove the old file to avoid orphans.
+    if (po.pdf_url) { try { await deleteFile(po.pdf_url); } catch(e){ console.error('old PO file delete failed', e); } }
+
+    const { error: upErr } = await db.from('purchase_orders')
+      .update({ pdf_url: uploadedPath }).eq('id', po.id);
+    if (upErr) throw upErr;
+    po.pdf_url = uploadedPath;  // keep local state in sync
+
+    await db.from('invoice_inbox_queue')
+      .update({ status: 'filed_as_po', confirmed_at: new Date().toISOString() })
+      .eq('id', queueId);
+
+    toast(`Attached to PO ${po.po_number} and filed`, 'success');
+    renderInboxQueueList();
+  } catch (e) {
+    console.error('[inbox] file-as-PO failed:', e);
+    toast('Failed: ' + (e.message || String(e)), 'error');
+  }
+}
+
 async function dismissInboxRow(queueId) {
   if (!confirm('Dismiss this invoice from the queue? It will not be logged. (You can re-scan to pull it again.)')) return;
   const { error } = await db.from('invoice_inbox_queue')
@@ -8707,8 +8842,10 @@ async function renderInboxQueueList() {
       <td style="padding:8px 10px;font-size:11px;color:var(--gray500,#9ca3af)">${esc((r.email_from||'').split('@')[0])}<br>${r.email_received_at ? new Date(r.email_received_at).toLocaleDateString() : ''}</td>
       <td style="padding:8px 10px;white-space:nowrap">
         <button class="btn" style="padding:4px 8px;font-size:12px" onclick="viewInboxPdf('${r.id}')">View</button>
+        <button class="btn" style="padding:4px 8px;font-size:12px" title="Open the PDF and the edit form side by side" onclick="editInboxRowSplit('${r.id}')">Edit + PDF</button>
         ${ready ? `<button class="btn btn-primary" style="padding:4px 10px;font-size:12px" title="Log immediately using the matched PO data" onclick="confirmInboxRow('${r.id}', true)">Confirm as-is</button>` : ''}
-        <button class="btn" style="padding:4px 10px;font-size:12px" onclick="confirmInboxRow('${r.id}')">${ready ? 'Review…' : 'Confirm…'}</button>
+        <button class="btn" style="padding:4px 10px;font-size:12px" title="Open the form to fill in the details and log it" onclick="confirmInboxRow('${r.id}')">${ready ? 'Review…' : 'Edit & log…'}</button>
+        ${r.matched_po_id ? `<button class="btn" style="padding:4px 8px;font-size:12px" title="This is a PO document — attach it to PO ${esc(r.parsed_po_number||'')} instead of logging a cost" onclick="fileInboxRowAsPO('${r.id}')">It's a PO</button>` : ''}
         <button class="btn" style="padding:4px 8px;font-size:12px" onclick="dismissInboxRow('${r.id}')">Dismiss</button>
       </td>
       ${r.error_note ? `<td style="padding:8px 10px;font-size:11px;color:#b45309" title="${esc(r.error_note)}">⚠</td>` : '<td></td>'}

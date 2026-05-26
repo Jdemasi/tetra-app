@@ -401,6 +401,18 @@ select.finp{cursor:pointer}
   </div>
 </div>
 
+<div class="modal-bg" id="modal-inbox-pdf">
+  <div class="modal" style="max-width:900px;width:95%">
+    <div class="modal-hd">
+      <div class="modal-title" id="inbox-pdf-title">Invoice PDF</div>
+      <button class="modal-close" onclick="closeInboxPdf()">×</button>
+    </div>
+    <div id="inbox-pdf-body" style="height:75vh;background:var(--gray50,#f9fafb);border-radius:8px;display:flex;align-items:center;justify-content:center">
+      <div id="inbox-pdf-status" style="color:var(--gray600);font-size:14px">Loading…</div>
+    </div>
+  </div>
+</div>
+
 <div class="modal-bg" id="modal-labor">
   <div class="modal" style="max-width:640px">
     <div class="modal-hd"><div class="modal-title">Log Hours</div><button class="modal-close" onclick="closeModal('modal-labor')">×</button></div>
@@ -8421,12 +8433,34 @@ async function scanInvoiceInbox() {
           row.parsed_confidence = inv._confidence || null;
           row.parsed_full = inv || null;
 
+          const fname = a.name || '';
+
+          // Fallback: pull PO number from filename if the parser didn't find one.
+          // Your filename convention is po-jobNum-cost_code, e.g. "PO 2021-2600-240.pdf".
+          if (!row.parsed_po_number) {
+            const m1 = fname.match(/\b(\d{4})-(\d{3,4})-(\d{2,4})\b/);      // 2021-2600-240
+            const m2 = fname.match(/\bPO[\s_-]*(\d{4})\b/i);                // "PO 2021"
+            if (m1) row.parsed_po_number = m1[1];
+            else if (m2) row.parsed_po_number = m2[1];
+          }
+
+          // Fallback: pull invoice # from filename, e.g. "Invoice_1003_from_...".
+          if (!row.parsed_invoice_number) {
+            const inm = fname.match(/invoice[\s_#-]*([A-Za-z0-9-]{3,})/i);
+            if (inm && !/^from$/i.test(inm[1])) row.parsed_invoice_number = inm[1];
+          }
+
           // Resolve PO → project match at scan time (same logic the modal uses).
-          if (inv.po_number) {
-            const matchedPO = (state.allPOs || []).find(po => String(po.po_number) === String(inv.po_number));
+          if (row.parsed_po_number) {
+            const matchedPO = (state.allPOs || []).find(po => String(po.po_number) === String(row.parsed_po_number));
             if (matchedPO) {
               row.matched_po_id = matchedPO.id || null;
               row.matched_project_id = matchedPO.project_id || null;
+              // Backfill vendor + cost code FROM the PO when the parser left them
+              // blank — persisted into the row so the queue shows them and a
+              // one-click confirm has complete data (the behavior you chose).
+              if (!row.parsed_vendor && matchedPO.vendor) row.parsed_vendor = matchedPO.vendor;
+              if (matchedPO.cost_code) row.matched_cost_code = matchedPO.cost_code;
             }
           }
         } catch (e) {
@@ -8469,13 +8503,112 @@ function looksLikeStatement(row) {
   return hint && !row.parsed_po_number;
 }
 
+// View a queued invoice's PDF in-app by re-fetching bytes from Graph on demand
+// (nothing is stored — same lazy-fetch principle as confirm). Degrades gracefully
+// if the message was deleted from the mailbox between scan and view.
+let _inboxPdfBlobUrl = null;
+async function viewInboxPdf(queueId) {
+  const body = $('inbox-pdf-body');
+  const status = $('inbox-pdf-status');
+  const title = $('inbox-pdf-title');
+  // Reset viewer to loading state and open.
+  if (_inboxPdfBlobUrl) { URL.revokeObjectURL(_inboxPdfBlobUrl); _inboxPdfBlobUrl = null; }
+  body.innerHTML = '<div id="inbox-pdf-status" style="color:var(--gray600);font-size:14px">Loading PDF from mailbox…</div>';
+  title.textContent = 'Invoice PDF';
+  openModal('modal-inbox-pdf');
+  try {
+    const { data: row, error } = await db.from('invoice_inbox_queue')
+      .select('graph_message_id, graph_attachment_id, attachment_name').eq('id', queueId).single();
+    if (error || !row) throw new Error(error?.message || 'Queue row not found');
+    if (row.attachment_name) title.textContent = row.attachment_name;
+
+    const token = await getGraphToken();
+    const bytes = await graphGetAttachmentBytes(token, row.graph_message_id, row.graph_attachment_id);
+    const blob = new Blob([bytes], { type: 'application/pdf' });
+    _inboxPdfBlobUrl = URL.createObjectURL(blob);
+    body.innerHTML = `<iframe src="${_inboxPdfBlobUrl}" style="width:100%;height:100%;border:0;border-radius:8px" title="Invoice PDF"></iframe>`;
+  } catch (e) {
+    console.error('[inbox view] PDF load failed:', e);
+    body.innerHTML = `<div style="color:#611A15;font-size:14px;text-align:center;padding:0 24px">
+      ⚠ Couldn't load this PDF.<br>
+      <span style="font-size:12px;color:var(--gray600)">The message may have been moved or deleted from the mailbox since the scan. You can still confirm the invoice and attach the file manually.</span><br>
+      <span style="font-size:11px;color:var(--gray500,#9ca3af);margin-top:6px;display:inline-block">${esc(e.message||String(e))}</span>
+    </div>`;
+  }
+}
+
+function closeInboxPdf() {
+  closeModal('modal-inbox-pdf');
+  // Revoke the blob URL so the bytes aren't retained in memory.
+  if (_inboxPdfBlobUrl) { URL.revokeObjectURL(_inboxPdfBlobUrl); _inboxPdfBlobUrl = null; }
+  const body = $('inbox-pdf-body');
+  if (body) body.innerHTML = '';
+}
+
+// Check whether an invoice already exists in purchases, to warn before logging a
+// duplicate (forwarded twice, or already entered manually/by file upload).
+// Primary key: vendor + invoice#. If invoice# is blank, fall back to a softer
+// vendor + PO + amount match (a PO legitimately has multiple invoices, so this
+// fallback also checks amount to reduce false alarms). Excludes soft-deleted rows.
+async function findPossibleDuplicate({ vendor, invoiceNumber, poNumber, amount }) {
+  try {
+    if (invoiceNumber && invoiceNumber.trim()) {
+      let q = db.from('purchases').select('id, vendor, invoice_number, invoice_date, po_amount, po_number')
+        .is('deleted_at', null).ilike('invoice_number', invoiceNumber.trim());
+      if (vendor && vendor.trim()) q = q.ilike('vendor', vendor.trim());
+      const { data } = await q.limit(1);
+      if (data && data.length) return { match: data[0], basis: 'vendor + invoice #' };
+    } else if (poNumber && amount != null) {
+      // No invoice number — softer match on vendor + PO + amount.
+      let q = db.from('purchases').select('id, vendor, invoice_number, invoice_date, po_amount, po_number')
+        .is('deleted_at', null).eq('po_number', String(poNumber));
+      if (vendor && vendor.trim()) q = q.ilike('vendor', vendor.trim());
+      const { data } = await q;
+      const hit = (data || []).find(p => Math.abs(parseFloat(p.po_amount||0) - parseFloat(amount)) < 0.01);
+      if (hit) return { match: hit, basis: 'vendor + PO + amount (no invoice # to match on)' };
+    }
+  } catch (e) {
+    console.error('[inbox] duplicate check failed (non-blocking):', e);
+  }
+  return null;
+}
+
 // Open the purchase modal pre-filled from a queued invoice for confirmation.
 // Reuses openNewPurchase (full modal setup + PO/vendor/cost-code wiring) and
 // replays the same PO-match fill the file-upload path uses — from stored data.
-async function confirmInboxRow(queueId) {
+async function confirmInboxRow(queueId, quick) {
   const { data: row, error } = await db.from('invoice_inbox_queue')
     .select('*').eq('id', queueId).single();
   if (error || !row) { toast('Could not load queued invoice: ' + (error?.message||'not found'), 'error'); return; }
+
+  // Quick (one-click) confirm requires complete, matched data — otherwise fall
+  // back to opening the modal so the user can fill the gaps.
+  if (quick) {
+    const ready = row.matched_po_id && row.parsed_vendor && row.parsed_amount_due != null;
+    if (!ready) { quick = false; toast('Needs review — opening form to complete it', 'info'); }
+  }
+
+  // Duplicate check against already-logged purchases (warn, don't block).
+  const dup = await findPossibleDuplicate({
+    vendor: row.parsed_vendor,
+    invoiceNumber: row.parsed_invoice_number,
+    poNumber: row.parsed_po_number,
+    amount: row.parsed_amount_due,
+  });
+  if (dup) {
+    const m = dup.match;
+    const when = m.invoice_date ? ` on ${m.invoice_date}` : '';
+    const amt = m.po_amount != null ? ` for $${Number(m.po_amount).toLocaleString(undefined,{minimumFractionDigits:2})}` : '';
+    const msg = `⚠ This may already be logged.\n\nFound a purchase: ${m.vendor||'(no vendor)'} — invoice ${m.invoice_number||'(none)'}${when}${amt}\nMatched on: ${dup.basis}.\n\nLog it anyway?`;
+    if (quick) {
+      // Never silently log a suspected dupe on the one-click path — downgrade to
+      // the form so the user sees it, and surface the warning.
+      quick = false;
+      if (!confirm(msg)) { toast('Cancelled — not logged', 'info'); return; }
+    } else {
+      if (!confirm(msg)) { toast('Cancelled — not logged', 'info'); return; }
+    }
+  }
 
   // Full modal setup (loads POs, builds dropdowns, wires PO->vendor/cost autofill).
   await openNewPurchase(row.matched_project_id || null);
@@ -8510,9 +8643,22 @@ async function confirmInboxRow(queueId) {
       // above take precedence where present, PO fills the gaps.
     }
   }
+  // Ensure cost code is set from the PO backfill even if the dropdown didn't.
+  if (row.matched_cost_code && $('pu-cost-code') && !$('pu-cost-code').value) {
+    $('pu-cost-code').value = row.matched_cost_code;
+  }
 
   // Tag the modal so a successful save marks this queue row confirmed.
   $('modal-purchase')._inboxQueueId = queueId;
+
+  if (quick) {
+    // One-click path: hide the modal (openNewPurchase opened it), then save
+    // through the SAME savePurchase (no forked logic) and refresh the queue.
+    closeModal('modal-purchase');
+    await savePurchase();
+    renderInboxQueueList();
+    return;
+  }
 
   // Note: PDF is NOT attached here. It's re-fetched from Graph at confirm only if
   // you choose (Step 3b). For now confirm logs the data; file can be attached later.
@@ -8541,10 +8687,13 @@ async function renderInboxQueueList() {
     const matchedPO = r.matched_po_id ? (state.allPOs||[]).find(po => po.id === r.matched_po_id) : null;
     // Backfill vendor display from the matched PO when the parser didn't find one.
     const vendorDisplay = r.parsed_vendor || (matchedPO ? matchedPO.vendor : '') || '';
-    const matchLabel = r.parsed_po_number
-      ? (r.matched_po_id ? `PO ${esc(r.parsed_po_number)} → ${esc(proj ? (proj.job_number+' '+proj.job_name) : 'matched')}` : `PO ${esc(r.parsed_po_number)} <span style="color:#b45309">(no app match)</span>`)
-      : '<span style="color:#b45309">no PO found</span>';
     const isStmt = looksLikeStatement(r);
+    const ccDisplay = r.matched_cost_code ? ` · cc ${esc(r.matched_cost_code)}` : '';
+    const matchLabelFull = r.parsed_po_number
+      ? (r.matched_po_id ? `PO ${esc(r.parsed_po_number)} → ${esc(proj ? (proj.job_number+' '+proj.job_name) : 'matched')}${ccDisplay}` : `PO ${esc(r.parsed_po_number)} <span style="color:#b45309">(no app match)</span>`)
+      : '<span style="color:#b45309">no PO found</span>';
+    // A row is "ready" for one-click confirm: matched PO + vendor + amount present.
+    const ready = r.matched_po_id && (r.parsed_vendor || (matchedPO && matchedPO.vendor)) && r.parsed_amount_due != null;
     return `<tr style="border-top:1px solid var(--gray200,#e5e7eb)">
       <td style="padding:8px 10px">
         ${vendorDisplay ? esc(vendorDisplay) : '<span style="color:#b45309">— no vendor —</span>'}
@@ -8554,10 +8703,12 @@ async function renderInboxQueueList() {
       <td style="padding:8px 10px">${esc(r.parsed_invoice_number || '—')}</td>
       <td style="padding:8px 10px">${esc(r.parsed_invoice_date || '—')}</td>
       <td style="padding:8px 10px;text-align:right">${fmt$(r.parsed_amount_due)}</td>
-      <td style="padding:8px 10px;font-size:12px">${matchLabel}</td>
+      <td style="padding:8px 10px;font-size:12px">${matchLabelFull}</td>
       <td style="padding:8px 10px;font-size:11px;color:var(--gray500,#9ca3af)">${esc((r.email_from||'').split('@')[0])}<br>${r.email_received_at ? new Date(r.email_received_at).toLocaleDateString() : ''}</td>
       <td style="padding:8px 10px;white-space:nowrap">
-        <button class="btn btn-primary" style="padding:4px 10px;font-size:12px" onclick="confirmInboxRow('${r.id}')">Confirm…</button>
+        <button class="btn" style="padding:4px 8px;font-size:12px" onclick="viewInboxPdf('${r.id}')">View</button>
+        ${ready ? `<button class="btn btn-primary" style="padding:4px 10px;font-size:12px" title="Log immediately using the matched PO data" onclick="confirmInboxRow('${r.id}', true)">Confirm as-is</button>` : ''}
+        <button class="btn" style="padding:4px 10px;font-size:12px" onclick="confirmInboxRow('${r.id}')">${ready ? 'Review…' : 'Confirm…'}</button>
         <button class="btn" style="padding:4px 8px;font-size:12px" onclick="dismissInboxRow('${r.id}')">Dismiss</button>
       </td>
       ${r.error_note ? `<td style="padding:8px 10px;font-size:11px;color:#b45309" title="${esc(r.error_note)}">⚠</td>` : '<td></td>'}

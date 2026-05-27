@@ -4628,6 +4628,11 @@ async function deleteClientInvoice(invoiceId, projectId) {
 async function saveInvoice() {
   const projectId = $('modal-invoice').dataset.projectId;
   const editId = $('modal-invoice').dataset.editId;
+  // Numeric fields: explicit NaN check so the user can legitimately enter 0
+  // (e.g. zero retainage). Naive `parseFloat(x) || default` treats 0 as falsy
+  // and silently substitutes the default, which is wrong.
+  const retPctRaw = parseFloat($('inv-ret-pct').value);
+  const termsRaw = parseInt($('inv-terms').value);
   const invData = {
     project_id: projectId,
     invoice_number: $('inv-num').value,
@@ -4635,9 +4640,9 @@ async function saveInvoice() {
     description: $('inv-desc').value,
     bill_to: $('inv-bill-to').value || null,
     billed_amount: parseFloat($('inv-billed').value)||0,
-    retainage_pct: parseFloat($('inv-ret-pct').value)||10,
+    retainage_pct: isNaN(retPctRaw) ? 10 : retPctRaw,
     paid_amount: parseFloat($('inv-paid').value)||0,
-    terms_days: parseInt($('inv-terms').value)||30,
+    terms_days: isNaN(termsRaw) ? 30 : termsRaw,
     status: $('inv-status').value,
   };
 

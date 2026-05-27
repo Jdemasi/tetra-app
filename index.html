@@ -3100,6 +3100,7 @@ async function savePurchase() {
     terms_days: parseInt($('pu-terms').value)||30,
     status: paid >= amount && amount > 0 ? 'Paid' : $('pu-status').value,
     notes: $('pu-notes').value,
+    company_id: state.activeCompanyId || null,
   };
 
   // Phase association check: a job purchase with no phase is allowed but flagged.
@@ -8477,13 +8478,12 @@ async function scanInvoiceInbox(incremental) {
     setStatus('⏳ Signing in…');
     const token = await getGraphToken();
 
-    // Ensure the all-POs list is loaded (it's normally populated when the
-    // purchase modal opens; load it here so scan works on a fresh page load).
-    if (!state.allPOs || !state.allPOs.length) {
-      const { data: allPOs } = await db.from('purchase_orders')
-        .select('*').is('deleted_at', null).order('po_number');
-      state.allPOs = allPOs || [];
-    }
+    // Load ALL POs across ALL companies for matching. The shared inbox receives
+    // invoices for every company, so routing must see every company's POs — we
+    // deliberately do NOT reuse a possibly company-filtered state.allPOs here.
+    const { data: scanPOs } = await db.from('purchase_orders')
+      .select('*').is('deleted_at', null).order('po_number');
+    state.allPOs = scanPOs || [];
 
     // Known POs for fuzzy matching (same source readInvoiceFile uses).
     const knownPOs = (state.allPOs || state.projectPOs || []).map(po => String(po.po_number)).filter(Boolean);
@@ -8571,6 +8571,9 @@ async function scanInvoiceInbox(incremental) {
             if (matchedPO) {
               row.matched_po_id = matchedPO.id || null;
               row.matched_project_id = matchedPO.project_id || null;
+              // Route to the correct company: the matched PO carries company_id.
+              // This is how invoices in the shared inbox auto-sort to their company.
+              row.company_id = matchedPO.company_id || null;
               // Backfill vendor + cost code FROM the PO when the parser left them
               // blank — persisted into the row so the queue shows them and a
               // one-click confirm has complete data (the behavior you chose).
@@ -8747,6 +8750,23 @@ async function confirmInboxRow(queueId, quick) {
   const { data: row, error } = await db.from('invoice_inbox_queue')
     .select('*').eq('id', queueId).single();
   if (error || !row) { toast('Could not load queued invoice: ' + (error?.message||'not found'), 'error'); return; }
+
+  // Route to the invoice's company: if this row belongs to a different company
+  // than the one currently active, switch first so the purchase modal's job/PO
+  // dropdowns and the saved purchase all land in the correct company.
+  if (row.company_id && row.company_id !== state.activeCompanyId) {
+    const co = (state.companies||[]).find(c => c.id === row.company_id);
+    if (co) {
+      state.activeCompanyId = row.company_id;
+      try { await db.from('app_settings').upsert({ key:'active_company_id', value: row.company_id }); } catch(e){}
+      renderCompanySwitcher();
+      // Reload this company's projects so the modal's job list is correct.
+      const { data: projects } = await withCompany(db.from('projects').select('*').is('deleted_at',null)).order('created_at');
+      state.projects = projects || [];
+      renderSidebarProjects();
+      toast(`Switched to ${co.short_name || co.name} for this invoice`, 'info');
+    }
+  }
 
   // Quick (one-click) confirm requires complete, matched data — otherwise fall
   // back to opening the modal so the user can fill the gaps.
@@ -8953,6 +8973,11 @@ async function renderInboxQueueList() {
     // Backfill vendor display from the matched PO when the parser didn't find one.
     const vendorDisplay = r.parsed_vendor || (matchedPO ? matchedPO.vendor : '') || '';
     const isStmt = looksLikeStatement(r);
+    // Company badge — which company this invoice routed to (via its PO).
+    const rowCo = r.company_id ? (state.companies||[]).find(c => c.id === r.company_id) : null;
+    const coBadge = rowCo
+      ? `<span title="Routed to ${esc(rowCo.name)}" style="margin-right:6px;font-size:10px;font-weight:700;color:#fff;background:${esc(rowCo.color||'#1B2A5E')};padding:2px 7px;border-radius:8px">${esc(rowCo.short_name || rowCo.name)}</span>`
+      : `<span title="No company — no PO match. Pick one when confirming." style="margin-right:6px;font-size:10px;font-weight:600;color:#92400E;background:#FEF3C7;padding:2px 7px;border-radius:8px">? company</span>`;
     const ccDisplay = r.matched_cost_code ? ` · cc ${esc(r.matched_cost_code)}` : '';
     const matchLabelFull = r.parsed_po_number
       ? (r.matched_po_id ? `PO ${esc(r.parsed_po_number)} → ${esc(proj ? (proj.job_number+' '+proj.job_name) : 'matched')}${ccDisplay}` : `PO ${esc(r.parsed_po_number)} <span style="color:#b45309">(no app match)</span>`)
@@ -8961,7 +8986,7 @@ async function renderInboxQueueList() {
     const ready = r.matched_po_id && (r.parsed_vendor || (matchedPO && matchedPO.vendor)) && r.parsed_amount_due != null;
     return `<tr style="border-top:1px solid var(--gray200,#e5e7eb)">
       <td style="padding:8px 10px">
-        ${vendorDisplay ? esc(vendorDisplay) : '<span style="color:#b45309">— no vendor —</span>'}
+        ${coBadge}${vendorDisplay ? esc(vendorDisplay) : '<span style="color:#b45309">— no vendor —</span>'}
         ${isStmt ? '<span title="Looks like a statement, not an invoice" style="margin-left:6px;font-size:10px;background:#FEF3C7;color:#92400E;padding:1px 6px;border-radius:8px">possible statement</span>' : ''}
       </td>
       <td style="padding:8px 10px;font-size:11px;color:var(--gray500,#9ca3af);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.attachment_name||'')}">${esc(r.attachment_name||'')}</td>

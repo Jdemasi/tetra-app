@@ -8257,7 +8257,7 @@ function printVoucherCheck({ payee, amount, memo, date, checkNumber, payeeAddres
   --toy: 0px;           /* top-row only Y nudge — date, payee, $ box (persisted) */
   --aoy: 0px;           /* address-only Y nudge (persisted) */
   --soy: 0px;           /* signature-only Y nudge (persisted) */
-  --date-top:   0.85in;
+  --date-top:   1.22in;
   --date-right: 0.55in;
   --pay-top:    1.50in;
   --pay-left:   1.30in; /* after the printed "PAY TO THE ORDER OF" label */
@@ -8278,7 +8278,7 @@ body{background:#fff;color:#000}
 .check{height:3.5in;position:relative;border-bottom:1px dashed #999}
 .face{position:absolute;inset:0;transform:translate(var(--ox), var(--oy))}
 .fld{position:absolute;font-size:12pt}
-.date{top:calc(var(--date-top) + var(--toy));right:var(--date-right);min-width:1.2in;text-align:left}
+.date{top:calc(var(--date-top) + var(--toy));right:var(--date-right);min-width:1.2in;text-align:right}
 .pay-name{top:calc(var(--pay-top) + var(--toy));left:var(--pay-left);right:1.4in;white-space:nowrap;overflow:hidden;font-weight:bold}
 .pay-amount{top:calc(var(--amt-top) + var(--toy));right:var(--amt-right);font-weight:bold;font-size:13pt;min-width:1.0in;text-align:right}
 .pay-addr{top:calc(var(--addr-top) + var(--aoy));left:var(--addr-left);font-size:11pt;line-height:1.3;white-space:nowrap}

@@ -8535,6 +8535,7 @@ async function renderChecks() {
     db.from('checks').select('*').is('deleted_at', null)
   ).order('check_number', { ascending: false });
   state.checks = checks || [];
+  const voidedCount = state.checks.filter(c => c.voided).length;
   const ident = companyDocIdentity();
   const rows = state.checks.map(c => {
     const dateStr = c.check_date ? new Date(c.check_date + 'T00:00:00').toLocaleDateString('en-US') : '—';
@@ -8547,7 +8548,9 @@ async function renderChecks() {
       <td>${c.voided ? '<span class="badge b-hold">Void</span>' : '<span class="badge b-active">Issued</span>'}</td>
       <td><div style="display:flex;gap:4px">
         <button class="btn btn-sm" onclick="reprintCheck('${c.id}')">🖨️ Reprint</button>
-        ${c.voided ? '' : `<button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="voidCheck('${c.id}')">Void</button>`}
+        ${c.voided
+          ? `<button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deleteCheck('${c.id}')">Delete</button>`
+          : `<button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="voidCheck('${c.id}')">Void</button>`}
       </div></td>
     </tr>`;
   }).join('');
@@ -8555,7 +8558,10 @@ async function renderChecks() {
   <div class="card">
     <div class="card-hd">
       <div class="card-title">Checks — ${esc(ident.name)}</div>
-      <button class="btn btn-sm btn-red" onclick="openManualCheck()">+ Write a Check</button>
+      <div style="display:flex;gap:6px">
+        ${voidedCount > 0 ? `<button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deleteAllVoided()">🗑️ Delete ${voidedCount} voided</button>` : ''}
+        <button class="btn btn-sm btn-red" onclick="openManualCheck()">+ Write a Check</button>
+      </div>
     </div>
     <div class="tbl-wrap">
     ${state.checks.length === 0 ? '<div class="tbl-empty">No checks yet. Click "Write a Check" to print one.</div>' :
@@ -8585,6 +8591,30 @@ async function voidCheck(checkId) {
   const { error } = await db.from('checks').update({ voided: true }).eq('id', checkId);
   if (error) { toast('Could not void: ' + error.message, 'error'); return; }
   toast('Check voided');
+  renderChecks();
+}
+
+// Permanently delete a voided check — only allowed on voided rows. Frees the
+// check number for reuse (nextCheckNumber reads the max remaining), which is
+// what you want when cleaning up test runs.
+async function deleteCheck(checkId) {
+  const c = state.checks.find(x => x.id === checkId);
+  if (!c) return;
+  if (!c.voided) { toast('Void the check first', 'error'); return; }
+  if (!confirm(`Permanently delete check #${c.check_number}? This cannot be undone, and the number will be reusable.`)) return;
+  const { error } = await db.from('checks').delete().eq('id', checkId);
+  if (error) { toast('Could not delete: ' + error.message, 'error'); return; }
+  toast(`Check #${c.check_number} deleted`);
+  renderChecks();
+}
+
+async function deleteAllVoided() {
+  const voided = state.checks.filter(c => c.voided);
+  if (!voided.length) return;
+  if (!confirm(`Permanently delete all ${voided.length} voided check${voided.length === 1 ? '' : 's'}? This cannot be undone, and their numbers will be reusable.`)) return;
+  const { error } = await withCompany(db.from('checks').delete().eq('voided', true));
+  if (error) { toast('Could not delete: ' + error.message, 'error'); return; }
+  toast(`Deleted ${voided.length} voided check${voided.length === 1 ? '' : 's'}`);
   renderChecks();
 }
 

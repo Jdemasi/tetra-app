@@ -1079,6 +1079,34 @@ async function openStoredFile(path) {
   window.open(url, '_blank');
 }
 
+// Download a stored file and return {base64, fileName, contentType} for use as
+// an email attachment (createPODraft's extraAttachments shape). Returns null
+// if the path is missing or download fails — callers should treat that as
+// "no attachment, send the email anyway" rather than as a hard error.
+async function fetchStoredFileBase64(path) {
+  if (!path) return null;
+  try {
+    const { data, error } = await db.storage.from(STORAGE_BUCKET).download(path);
+    if (error || !data) { console.error('Storage download error', error); return null; }
+    const buf = await data.arrayBuffer();
+    // Convert ArrayBuffer to base64 in chunks (large PDFs blow the call stack
+    // if you spread the whole Uint8Array into String.fromCharCode at once).
+    const bytes = new Uint8Array(buf);
+    let binary = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    const base64 = btoa(binary);
+    // Pull a reasonable filename out of the path's last segment.
+    const fileName = (path.split('/').pop() || 'attachment.pdf');
+    return { base64, fileName, contentType: data.type || 'application/pdf' };
+  } catch (e) {
+    console.error('fetchStoredFileBase64 failed:', e);
+    return null;
+  }
+}
+
 // ── REUSABLE FILE ATTACHMENT UI ─────────────────────────────────────
 // Builds an upload zone + indicator HTML that any modal can embed.
 // fieldId: a unique ID prefix (e.g. "po-attach", "pa-attach")
@@ -4540,14 +4568,35 @@ async function printARInvoice(invoiceId, projectId) {
 }
 
 // Email AR invoice: creates an Outlook draft with the PDF attached via the same
-// Microsoft Graph path used for POs. Falls back to print + mailto if Graph fails.
+// Microsoft Graph path used for POs. If the invoice has a pay app attached
+// (pdf_url), that PDF rides along as a second attachment — the QB invoice is
+// the cover document, the pay app is the backup. Falls back to print + mailto
+// if Graph fails.
 async function emailARInvoice(invoiceId, projectId) {
   const built = await buildARInvoice(invoiceId, projectId);
   if (!built) { toast('Could not load invoice', 'error'); return; }
+  // Fetch the stored pay app, if any, to include as backup.
+  const { data: invMeta } = await db.from('invoices').select('pdf_url').eq('id', invoiceId).single();
+  let extraAttachments = [];
+  if (invMeta && invMeta.pdf_url) {
+    toast('Loading attached pay app…');
+    const att = await fetchStoredFileBase64(invMeta.pdf_url);
+    if (att) {
+      // Rename to a clear filename so the recipient sees "Pay App INV-1001.pdf"
+      // rather than the storage path's mangled timestamped name.
+      const invNumStr = (built.fileName || '').replace(/^Invoice\s+/, '').replace(/\.pdf$/i, '') || 'PayApp';
+      extraAttachments.push({ base64: att.base64, fileName: `Pay App ${invNumStr}.pdf` });
+    } else {
+      toast('Could not load the attached pay app — sending invoice only.', 'error');
+    }
+  }
   toast('Preparing invoice draft… you may be asked to sign in to Microsoft');
   try {
-    await createPODraft({ to: built.to, subject: built.subject, body: built.body, docHTML: built.html, fileName: built.fileName });
-    toast('Invoice draft created in Outlook (Drafts folder) — PDF attached, ready to review & send', 'success');
+    await createPODraft({ to: built.to, subject: built.subject, body: built.body, docHTML: built.html, fileName: built.fileName, extraAttachments });
+    const msg = extraAttachments.length
+      ? 'Invoice draft created in Outlook (Drafts folder) — invoice + pay app attached, ready to review & send'
+      : 'Invoice draft created in Outlook (Drafts folder) — PDF attached, ready to review & send';
+    toast(msg, 'success');
   } catch (e) {
     console.error('Graph draft failed for invoice, falling back to print + mailto:', e);
     const w = window.open('', '_blank');

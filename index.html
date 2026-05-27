@@ -242,6 +242,9 @@ body.inbox-split-mode #modal-purchase .modal{width:46vw;max-width:none;max-heigh
     <button class="sb-item" data-view="vendors">
       <svg viewBox="0 0 24 24"><path d="M3 9l2-5h14l2 5"/><path d="M3 9v11a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1V9"/><line x1="9" y1="13" x2="15" y2="13"/></svg>Vendors
     </button>
+    <button class="sb-item" data-view="checks">
+      <svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/><line x1="6" y1="15" x2="14" y2="15"/></svg>Checks
+    </button>
     <button class="sb-item" data-view="trash">
       <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>Trash
     </button>
@@ -491,6 +494,22 @@ body.inbox-split-mode #modal-purchase .modal{width:46vw;max-width:none;max-heigh
         <button class="btn" onclick="closeModal('modal-invoice')">Cancel</button>
         <button class="btn btn-red" onclick="saveInvoice()">Save Invoice</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="modal-check">
+  <div class="modal" style="max-width:500px">
+    <div class="modal-hd"><div class="modal-title">Write a Check</div><button class="modal-close" onclick="closeModal('modal-check')">×</button></div>
+    <div class="form-grid">
+      <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Pay to the Order of *</label><input class="finp" id="chk-payee" placeholder="e.g. National Grid"></div>
+      <div class="fgroup"><label class="flbl">Amount ($) *</label><input class="finp" type="number" step="0.01" id="chk-amount" placeholder="0.00"></div>
+      <div class="fgroup"><label class="flbl">Date</label><input class="finp" type="date" id="chk-date"></div>
+      <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Memo</label><input class="finp" id="chk-memo" placeholder="e.g. Account #12345"></div>
+    </div>
+    <div class="form-actions" style="display:flex;justify-content:flex-end;gap:8px">
+      <button class="btn" onclick="closeModal('modal-check')">Cancel</button>
+      <button class="btn btn-red" onclick="saveAndPrintManualCheck()">Save &amp; Print</button>
     </div>
   </div>
 </div>
@@ -1394,6 +1413,7 @@ async function render() {
   else if (state.view === 'ar-aging') await renderARaging();
   else if (state.view === 'employees') await renderEmployees();
   else if (state.view === 'vendors') await renderVendors();
+  else if (state.view === 'checks') await renderChecks();
   else if (state.view === 'trash') await renderTrash();
   else if (state.view === 'ap-aging') await renderAPAging();
   else if (state.view === 'master-pos') await renderMasterPOs();
@@ -2164,6 +2184,7 @@ async function renderPurchases() {
           <div style="display:flex;gap:4px">
             ${pu.pdf_url?`<button class="btn btn-sm" title="View attached invoice" onclick="openStoredFile('${pu.pdf_url}')">📎</button>`:''}
             ${balance>0?`<button class="btn btn-sm" style="color:var(--green);border-color:var(--green)" onclick="openPayPurchase('${pu.id}',${balance})">💰 Pay</button>`:''}
+            <button class="btn btn-sm" title="Print a check for this invoice" onclick="printVendorCheck('${pu.id}')">🖨️ Check</button>
             <button class="btn btn-sm" onclick="editPurchase('${pu.id}','${p.id}')">Edit</button>
           </div>
         </td>
@@ -4356,6 +4377,7 @@ async function renderInvoices() {
         <td><span class="badge b-${(i.status||'pending').toLowerCase()}">${i.status}</span></td>
         <td><div style="display:flex;gap:4px">
           ${i.pdf_url?`<button class="btn btn-sm" title="View attached pay app" onclick="openStoredFile('${i.pdf_url}')">📎</button>`:''}
+          <button class="btn btn-sm" title="Print QuickBooks-style invoice" onclick="printARInvoice('${i.id}','${p.id}')">🧾 Invoice</button>
           <button class="btn btn-sm" onclick="openEditInvoice('${i.id}','${p.id}')">Edit</button>
         </div></td>
       </tr>`;
@@ -4370,6 +4392,119 @@ async function renderInvoices() {
     </div>
   </div>`;
   $('topbar-actions').innerHTML = `<button class="btn btn-sm btn-red" onclick="openNewInvoice('${p.id}')">+ New Invoice</button>`;
+}
+
+// QuickBooks-style AR invoice — a lighter, company-branded invoice (vs the full
+// AIA billing packet). Renders from an `invoices` row + the active project for
+// bill-to (owner_name / general_contractor). Company-aware via companyDocIdentity().
+async function printARInvoice(invoiceId, projectId) {
+  const { data: inv } = await db.from('invoices').select('*').eq('id', invoiceId).single();
+  if (!inv) { toast('Could not load invoice', 'error'); return; }
+  let project = state.activeProject && state.activeProject.id === projectId ? state.activeProject : null;
+  if (!project) { const { data: p } = await db.from('projects').select('*').eq('id', projectId).single(); project = p; }
+  project = project || {};
+  const ident = companyDocIdentity();
+
+  const billed = parseFloat(inv.billed_amount || 0);
+  const retPct = parseFloat(inv.retainage_pct || 0);
+  const ret = billed * (retPct / 100);
+  const net = billed - ret;
+  const paid = parseFloat(inv.paid_amount || 0);
+  const due = net - paid;
+  const invDateStr = inv.invoice_date ? new Date(inv.invoice_date + 'T00:00:00').toLocaleDateString('en-US') : '';
+  const dueDate = inv.invoice_date ? new Date(new Date(inv.invoice_date + 'T00:00:00').getTime() + (inv.terms_days || 30) * 86400000) : null;
+  const dueDateStr = dueDate ? dueDate.toLocaleDateString('en-US') : '';
+
+  // Bill-to: prefer the GC, fall back to the owner; include project address.
+  const billToName = project.general_contractor || project.owner_name || '';
+  const billToAddr = project.project_address || '';
+  const jobLine = [project.job_number, project.job_name].filter(Boolean).join(' — ');
+
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Invoice ${esc(inv.invoice_number || '')}</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;font-family:Arial,Helvetica,sans-serif}
+body{background:#fff;color:#000;padding:24px}
+.page{max-width:760px;margin:0 auto}
+.hdr{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:24px}
+.hdr .logo{height:56px;max-width:280px;object-fit:contain;margin-bottom:8px}
+.co{font-size:12px;line-height:1.5}
+.co .nm{font-size:15px;font-weight:bold}
+.title{text-align:right}
+.title h1{font-size:30px;letter-spacing:3px;color:#1B2A5E;margin-bottom:6px}
+.meta{font-size:12px;line-height:1.7}
+.meta .lbl{color:#666;display:inline-block;min-width:64px}
+.parties{display:flex;gap:24px;margin-bottom:20px}
+.party{flex:1;border:1px solid #ddd;border-radius:6px;padding:10px 12px;font-size:12px;line-height:1.5}
+.party .ph{font-size:10px;letter-spacing:1px;color:#888;text-transform:uppercase;margin-bottom:4px}
+.party .nm{font-weight:bold}
+table.items{width:100%;border-collapse:collapse;margin-bottom:18px;font-size:12px}
+table.items th{background:#1B2A5E;color:#fff;text-align:left;padding:8px 10px;font-size:11px;letter-spacing:.5px}
+table.items th.r,table.items td.r{text-align:right}
+table.items td{padding:8px 10px;border-bottom:1px solid #eee;vertical-align:top}
+.totals{margin-left:auto;width:280px;font-size:13px}
+.totals .row{display:flex;justify-content:space-between;padding:5px 0}
+.totals .row.sub{border-top:1px solid #ccc}
+.totals .row.due{border-top:2px solid #1B2A5E;margin-top:4px;padding-top:8px;font-size:16px;font-weight:bold;color:#1B2A5E}
+.terms{margin-top:28px;font-size:11px;color:#555;line-height:1.6;border-top:1px solid #eee;padding-top:12px}
+@media print{.no-print{display:none}body{padding:0}@page{size:letter;margin:0.5in}}
+</style></head><body>
+<div class="page">
+  <div class="hdr">
+    <div class="co">
+      ${ident.logo ? `<img class="logo" src="${ident.logo}" alt="${esc(ident.name)}"><br>` : ''}
+      <span class="nm">${esc(ident.name)}</span><br>
+      ${esc(ident.addr1)}<br>
+      ${esc(ident.cityStateZip)}<br>
+      ${esc(ident.phone)}<br>
+      ${esc(ident.email)}
+    </div>
+    <div class="title">
+      <h1>INVOICE</h1>
+      <div class="meta">
+        <div><span class="lbl">Invoice #</span><strong>${esc(inv.invoice_number || '—')}</strong></div>
+        <div><span class="lbl">Date</span>${invDateStr}</div>
+        <div><span class="lbl">Terms</span>Net ${inv.terms_days || 30}</div>
+        <div><span class="lbl">Due</span>${dueDateStr}</div>
+      </div>
+    </div>
+  </div>
+  <div class="parties">
+    <div class="party">
+      <div class="ph">Bill To</div>
+      <div class="nm">${esc(billToName || '—')}</div>
+      ${billToAddr ? esc(billToAddr) + '<br>' : ''}
+    </div>
+    <div class="party">
+      <div class="ph">Project</div>
+      <div class="nm">${esc(jobLine || '—')}</div>
+      ${billToAddr ? esc(billToAddr) : ''}
+    </div>
+  </div>
+  <table class="items">
+    <thead><tr><th>Description</th><th class="r">Amount</th></tr></thead>
+    <tbody>
+      <tr><td>${esc(inv.description || 'Work performed per contract')}</td><td class="r">${fmtD(billed)}</td></tr>
+    </tbody>
+  </table>
+  <div class="totals">
+    <div class="row"><span>Subtotal</span><span>${fmtD(billed)}</span></div>
+    ${retPct > 0 ? `<div class="row"><span>Less Retainage (${retPct}%)</span><span>-${fmtD(ret)}</span></div>
+    <div class="row sub"><span>Net Invoice</span><span>${fmtD(net)}</span></div>` : ''}
+    ${paid > 0 ? `<div class="row"><span>Payments Received</span><span>-${fmtD(paid)}</span></div>` : ''}
+    <div class="row due"><span>Amount Due</span><span>${fmtD(due)}</span></div>
+  </div>
+  <div class="terms">
+    Please make checks payable to ${esc(ident.name)}. Payment is due within ${inv.terms_days || 30} days of the invoice date${inv.invoice_number ? `. Please reference invoice #${esc(inv.invoice_number)} on your remittance.` : '.'}
+  </div>
+</div>
+<div class="no-print" style="text-align:center;margin:20px;display:flex;gap:12px;justify-content:center">
+  <button onclick="window.print()" style="padding:10px 30px;background:#1B2A5E;color:#fff;border:none;border-radius:6px;font-size:14px;cursor:pointer">🖨️ Print / Save as PDF</button>
+</div>
+</body></html>`;
+  const win = window.open('', '_blank');
+  win.document.write(html);
+  win.document.close();
+  setTimeout(() => win.focus(), 300);
 }
 
 function calcInvPreview() {
@@ -8023,6 +8158,260 @@ function getTetraLogoDataURL() {
   // Fallback: pay-app letterhead img (only present on that page)
   const img = document.querySelector('.logo-area img, img[alt="Tetra Mechanical Services"]');
   return img ? img.src : '';
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// CHECK PRINTING HELPERS
+// numberToWords: legal amount line, e.g. 1234.56 -> "One Thousand Two Hundred
+//   Thirty-Four and 56/100". nextCheckNumber: per-company sequence read from
+//   the checks table (max ever issued + 1, so voided numbers aren't reused).
+// ═══════════════════════════════════════════════════════════════════════
+function numberToWords(amount) {
+  const n = Math.floor(Math.abs(parseFloat(amount) || 0));
+  const cents = Math.round((Math.abs(parseFloat(amount) || 0) - n) * 100);
+  const ones = ['','One','Two','Three','Four','Five','Six','Seven','Eight','Nine','Ten','Eleven','Twelve','Thirteen','Fourteen','Fifteen','Sixteen','Seventeen','Eighteen','Nineteen'];
+  const tens = ['','','Twenty','Thirty','Forty','Fifty','Sixty','Seventy','Eighty','Ninety'];
+  function chunk(num) {
+    let s = '';
+    if (num >= 100) { s += ones[Math.floor(num/100)] + ' Hundred'; num %= 100; if (num) s += ' '; }
+    if (num >= 20) { s += tens[Math.floor(num/10)]; if (num%10) s += '-' + ones[num%10]; }
+    else if (num > 0) { s += ones[num]; }
+    return s;
+  }
+  let words = '';
+  if (n === 0) {
+    words = 'Zero';
+  } else {
+    const scales = [['',1],['Thousand',1000],['Million',1000000],['Billion',1000000000]];
+    const parts = [];
+    let rem = n;
+    const groups = [];
+    while (rem > 0) { groups.push(rem % 1000); rem = Math.floor(rem / 1000); }
+    for (let i = groups.length - 1; i >= 0; i--) {
+      if (groups[i] === 0) continue;
+      const c = chunk(groups[i]);
+      parts.push(c + (scales[i][0] ? ' ' + scales[i][0] : ''));
+    }
+    words = parts.join(' ');
+  }
+  const centsStr = String(cents).padStart(2, '0');
+  return `${words} and ${centsStr}/100`;
+}
+
+// Per-company check sequence. Reads the highest check_number ever written for
+// the active company (including voided, so numbers aren't silently reused) and
+// returns max+1. Starts at 1001 if the company has no checks yet.
+async function nextCheckNumber(companyId) {
+  let q = db.from('checks').select('check_number').order('check_number', { ascending: false }).limit(1);
+  if (companyId) q = q.eq('company_id', companyId);
+  const { data } = await q;
+  const last = (data && data[0] && data[0].check_number) ? parseInt(data[0].check_number) : 0;
+  return last >= 1001 ? last + 1 : 1001;
+}
+
+// Shared QuickBooks-style voucher renderer: a check band on top and two stubs
+// below (vendor copy + file copy), all company-aware via companyDocIdentity().
+// Opens a print window using the same pattern as the pay-app generator.
+function printVoucherCheck({ payee, amount, memo, date, checkNumber }) {
+  const ident = companyDocIdentity();
+  const amt = parseFloat(amount) || 0;
+  const dateStr = date ? (() => { const [y,m,d] = date.split('-'); return `${m}/${d}/${y}`; })() : new Date().toLocaleDateString('en-US');
+  const words = numberToWords(amt);
+  const numStr = checkNumber ? String(checkNumber) : '';
+  const stub = (copyLabel) => `
+    <div class="stub">
+      <div class="stub-hd">
+        <span>${esc(ident.name)}</span>
+        <span class="stub-copy">${copyLabel}</span>
+      </div>
+      <table class="stub-tbl">
+        <tr><td class="sl">Check #</td><td>${esc(numStr)}</td><td class="sl">Date</td><td>${dateStr}</td></tr>
+        <tr><td class="sl">Pay to</td><td colspan="3">${esc(payee || '')}</td></tr>
+        <tr><td class="sl">Memo</td><td colspan="3">${esc(memo || '')}</td></tr>
+        <tr><td class="sl">Amount</td><td colspan="3" class="stub-amt">${fmtD(amt)}</td></tr>
+      </table>
+    </div>`;
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Check ${esc(numStr)}</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;font-family:Arial,Helvetica,sans-serif}
+body{background:#fff;color:#000}
+.sheet{width:8.5in;height:11in;margin:0 auto;padding:0;position:relative}
+/* CHECK BAND — top third of the page (standard voucher position) */
+.check{height:3.5in;padding:0.35in 0.5in;position:relative;border-bottom:1px dashed #999}
+.chk-top{display:flex;justify-content:space-between;align-items:flex-start}
+.chk-co{font-size:13px;line-height:1.4}
+.chk-co .nm{font-size:15px;font-weight:bold}
+.chk-logo{height:48px;max-width:240px;object-fit:contain;margin-bottom:4px}
+.chk-num{text-align:right;font-size:13px}
+.chk-num .lbl{color:#444}
+.chk-num .val{font-size:18px;font-weight:bold;letter-spacing:1px}
+.chk-date{position:absolute;top:0.9in;right:0.5in;font-size:13px;text-align:right}
+.chk-date .ln{border-bottom:1px solid #000;min-width:1.4in;display:inline-block;text-align:center;padding:0 6px}
+.chk-pay{position:absolute;top:1.55in;left:0.5in;right:0.5in;font-size:13px}
+.chk-pay .row{display:flex;align-items:flex-end;gap:8px}
+.chk-pay .lbl{white-space:nowrap;color:#222}
+.chk-pay .ln{flex:1;border-bottom:1px solid #000;padding:0 6px 1px;min-height:18px;font-weight:bold}
+.chk-pay .box{border:1px solid #000;padding:3px 10px;font-weight:bold;font-size:15px;white-space:nowrap}
+.chk-words{position:absolute;top:2.05in;left:0.5in;right:0.5in;font-size:13px;display:flex;align-items:flex-end;gap:8px}
+.chk-words .ln{flex:1;border-bottom:1px solid #000;padding:0 6px 1px;min-height:18px}
+.chk-words .dollars{white-space:nowrap;color:#222}
+.chk-memo{position:absolute;bottom:0.55in;left:0.5in;font-size:12px;display:flex;align-items:flex-end;gap:6px}
+.chk-memo .ln{border-bottom:1px solid #000;min-width:2.4in;display:inline-block;padding:0 6px 1px}
+.chk-sig{position:absolute;bottom:0.5in;right:0.5in;width:2.6in;text-align:center;font-size:11px}
+.chk-sig .ln{border-bottom:1px solid #000;height:0.32in;margin-bottom:2px}
+/* STUBS */
+.stub{height:3.5in;padding:0.4in 0.5in;border-bottom:1px dashed #999;font-size:12px}
+.stub:last-child{border-bottom:none}
+.stub-hd{display:flex;justify-content:space-between;font-weight:bold;font-size:13px;border-bottom:1px solid #000;padding-bottom:4px;margin-bottom:8px}
+.stub-copy{font-weight:normal;color:#555;font-size:11px}
+.stub-tbl{width:100%;border-collapse:collapse}
+.stub-tbl td{padding:4px 6px;vertical-align:top}
+.stub-tbl .sl{color:#555;width:0.9in;white-space:nowrap}
+.stub-amt{font-weight:bold}
+@media print{.no-print{display:none}.sheet{margin:0}@page{size:letter;margin:0}}
+</style></head><body>
+<div class="sheet">
+  <div class="check">
+    <div class="chk-top">
+      <div class="chk-co">
+        ${ident.logo ? `<img class="chk-logo" src="${ident.logo}" alt="${esc(ident.name)}"><br>` : ''}
+        <span class="nm">${esc(ident.name)}</span><br>
+        ${esc(ident.addr1)}<br>
+        ${esc(ident.cityStateZip)}
+      </div>
+      <div class="chk-num"><div class="lbl">Check No.</div><div class="val">${esc(numStr)}</div></div>
+    </div>
+    <div class="chk-date">Date <span class="ln">${dateStr}</span></div>
+    <div class="chk-pay">
+      <div class="row">
+        <span class="lbl">PAY TO THE<br>ORDER OF</span>
+        <span class="ln">${esc(payee || '')}</span>
+        <span class="box">${fmtD(amt)}</span>
+      </div>
+    </div>
+    <div class="chk-words">
+      <span class="ln">${esc(words)}</span>
+      <span class="dollars">DOLLARS</span>
+    </div>
+    <div class="chk-memo">Memo <span class="ln">${esc(memo || '')}</span></div>
+    <div class="chk-sig"><div class="ln"></div>Authorized Signature</div>
+  </div>
+  ${stub('Vendor Copy')}
+  ${stub('File Copy')}
+</div>
+<div class="no-print" style="text-align:center;margin:20px;display:flex;gap:12px;justify-content:center">
+  <button onclick="window.print()" style="padding:10px 30px;background:#1B2A5E;color:#fff;border:none;border-radius:6px;font-size:14px;cursor:pointer">🖨️ Print Check</button>
+</div>
+</body></html>`;
+  const win = window.open('', '_blank');
+  win.document.write(html);
+  win.document.close();
+  setTimeout(() => win.focus(), 300);
+}
+
+// Print a check from a vendor invoice (purchases row). Assigns + saves a check
+// number for the active company, links it to the purchase, then prints.
+async function printVendorCheck(purchaseId) {
+  const { data: pu } = await db.from('purchases').select('*').eq('id', purchaseId).single();
+  if (!pu) { toast('Could not load that invoice', 'error'); return; }
+  const balance = (parseFloat(pu.po_amount || 0) - parseFloat(pu.paid_amount || 0));
+  const amount = balance > 0 ? balance : parseFloat(pu.po_amount || 0);
+  const companyId = state.activeCompanyId || pu.company_id || null;
+  const checkNumber = await nextCheckNumber(companyId);
+  const memo = pu.invoice_number ? `Invoice ${pu.invoice_number}` + (pu.po_number ? ` / PO ${pu.po_number}` : '') : (pu.po_number ? `PO ${pu.po_number}` : '');
+  const { error } = await db.from('checks').insert({
+    company_id: companyId,
+    check_number: checkNumber,
+    payee: pu.vendor || '',
+    amount,
+    memo,
+    check_date: today(),
+    purchase_id: pu.id,
+  });
+  if (error) { toast('Could not save check: ' + error.message, 'error'); return; }
+  toast(`Check #${checkNumber} created for ${pu.vendor || 'vendor'}`);
+  printVoucherCheck({ payee: pu.vendor || '', amount, memo, date: today(), checkNumber });
+}
+
+// Manual check: open the form for any payee/amount/memo.
+function openManualCheck() {
+  $('chk-payee').value = '';
+  $('chk-amount').value = '';
+  $('chk-memo').value = '';
+  $('chk-date').value = today();
+  openModal('modal-check');
+}
+
+async function saveAndPrintManualCheck() {
+  const payee = $('chk-payee').value.trim();
+  const amount = parseFloat($('chk-amount').value) || 0;
+  if (!payee) { toast('Enter a payee', 'error'); return; }
+  if (amount <= 0) { toast('Enter an amount greater than zero', 'error'); return; }
+  const memo = $('chk-memo').value.trim();
+  const date = $('chk-date').value || today();
+  const companyId = state.activeCompanyId || null;
+  const checkNumber = await nextCheckNumber(companyId);
+  const { error } = await db.from('checks').insert({
+    company_id: companyId,
+    check_number: checkNumber,
+    payee, amount, memo,
+    check_date: date,
+    purchase_id: null,
+  });
+  if (error) { toast('Could not save check: ' + error.message, 'error'); return; }
+  closeModal('modal-check');
+  toast(`Check #${checkNumber} created for ${payee}`);
+  printVoucherCheck({ payee, amount, memo, date, checkNumber });
+}
+
+// Checks register: list issued checks for the active company with void.
+async function renderChecks() {
+  const { data: checks } = await withCompany(
+    db.from('checks').select('*').is('deleted_at', null)
+  ).order('check_number', { ascending: false });
+  state.checks = checks || [];
+  const ident = companyDocIdentity();
+  const rows = state.checks.map(c => {
+    const dateStr = c.check_date ? new Date(c.check_date + 'T00:00:00').toLocaleDateString('en-US') : '—';
+    return `<tr style="${c.voided ? 'opacity:.5;text-decoration:line-through' : ''}">
+      <td class="mono font-600">${c.check_number || '—'}</td>
+      <td>${dateStr}</td>
+      <td class="font-600">${esc(c.payee || '—')}</td>
+      <td>${esc(c.memo || '—')}</td>
+      <td class="text-right font-600">${fmtD(c.amount)}</td>
+      <td>${c.voided ? '<span class="badge b-hold">Void</span>' : '<span class="badge b-active">Issued</span>'}</td>
+      <td><div style="display:flex;gap:4px">
+        <button class="btn btn-sm" onclick="reprintCheck('${c.id}')">🖨️ Reprint</button>
+        ${c.voided ? '' : `<button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="voidCheck('${c.id}')">Void</button>`}
+      </div></td>
+    </tr>`;
+  }).join('');
+  $('content').innerHTML = `
+  <div class="card">
+    <div class="card-hd">
+      <div class="card-title">Checks — ${esc(ident.name)}</div>
+      <button class="btn btn-sm btn-red" onclick="openManualCheck()">+ Write a Check</button>
+    </div>
+    <div class="tbl-wrap">
+    ${state.checks.length === 0 ? '<div class="tbl-empty">No checks yet. Click "Write a Check" to print one.</div>' :
+    `<table><thead><tr><th>Check #</th><th>Date</th><th>Payee</th><th>Memo</th><th class="text-right">Amount</th><th>Status</th><th style="width:160px"></th></tr></thead><tbody>${rows}</tbody></table>`}
+    </div>
+  </div>`;
+  $('topbar-actions').innerHTML = `<button class="btn btn-sm btn-red" onclick="openManualCheck()">+ Write a Check</button>`;
+}
+
+async function reprintCheck(checkId) {
+  const { data: c } = await db.from('checks').select('*').eq('id', checkId).single();
+  if (!c) return;
+  printVoucherCheck({ payee: c.payee, amount: c.amount, memo: c.memo, date: c.check_date, checkNumber: c.check_number });
+}
+
+async function voidCheck(checkId) {
+  if (!confirm('Void this check? The number stays on record so it is not reused.')) return;
+  const { error } = await db.from('checks').update({ voided: true }).eq('id', checkId);
+  if (error) { toast('Could not void: ' + error.message, 'error'); return; }
+  toast('Check voided');
+  renderChecks();
 }
 
 // Central document identity for the ACTIVE company. Every document generator

@@ -313,6 +313,9 @@ body.inbox-split-mode #modal-purchase .modal{width:46vw;max-width:none;max-heigh
         <div class="fgroup"><label class="flbl">GC Contact Name</label><input class="finp" id="p-gc-contact" placeholder="(optional)"></div>
         <div class="fgroup"><label class="flbl">GC Contact Email</label><input class="finp" id="p-gc-email" placeholder="(optional)"></div>
         <div class="fgroup"><label class="flbl">GC Contact Phone</label><input class="finp" id="p-gc-phone" placeholder="(optional)"></div>
+        <div class="fgroup" style="grid-column:1/-1"><label class="flbl">GC Address <span style="color:var(--gray500);font-weight:400">(for billing documents)</span></label><input class="finp" id="p-gc-address" placeholder="e.g. 266 Bangor Street, Lindenhurst NY 11757"></div>
+        <div class="fgroup"><label class="flbl">Contract For <span style="color:var(--gray500);font-weight:400">(scope, e.g. Sprinkler System Installation)</span></label><input class="finp" id="p-contract-for" placeholder="e.g. Sprinkler System Installation"></div>
+        <div class="fgroup"><label class="flbl">Contract Date <span style="color:var(--gray500);font-weight:400">(your subcontract w/ the GC)</span></label><input class="finp" type="date" id="p-contract-date"></div>
         <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Site Contact (for material deliveries)</label><input class="finp" id="p-site-contact" placeholder="e.g. John (foreman) 516-555-1234"></div>
         <div class="fgroup" style="grid-column:1/-1">
           <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer">
@@ -1352,7 +1355,7 @@ document.querySelectorAll('.sb-item[data-view]').forEach(btn => {
   btn.addEventListener('click', () => navigate(btn.dataset.view));
 });
 $('btn-new-project').addEventListener('click', () => {
-  clearForm(['p-num','p-name','p-client','p-date','p-contract','p-project-name','p-project-address','p-owner','p-gc','p-gc-contact','p-gc-email','p-gc-phone','p-site-contact','p-coa','p-prime-date']);
+  clearForm(['p-num','p-name','p-client','p-date','p-contract','p-project-name','p-project-address','p-owner','p-gc','p-gc-contact','p-gc-email','p-gc-phone','p-gc-address','p-contract-for','p-contract-date','p-site-contact','p-coa','p-prime-date']);
   $('p-status').value = 'Active';
   if ($('p-tax-exempt')) $('p-tax-exempt').checked = false;
   toggleST120Fields();
@@ -3748,7 +3751,7 @@ async function openNewPayApp(projectId) {
       <div class="fgroup"><label class="flbl">Period Ending</label><input class="finp" type="date" id="pa-period" value="${today()}"></div>
       <div class="fgroup"><label class="flbl">Submitted Date</label><input class="finp" type="date" id="pa-submitted" value="${today()}"></div>
       <div class="fgroup"><label class="flbl">Retainage %</label><input class="finp" type="number" id="pa-ret-pct" value="${retPct}" step="0.5"></div>
-      <div class="fgroup"><label class="flbl">Contract Date</label><input class="finp" type="date" id="pa-contract-date" value="${p.contract_date||'2026-03-25'}"></div>
+      <div class="fgroup"><label class="flbl">Contract Date</label><input class="finp" type="date" id="pa-contract-date" value="${p.contract_date||''}"></div>
       <div class="fgroup"><label class="flbl">Status</label>
         <select class="finp" id="pa-status"><option>Draft</option><option>Submitted</option><option>Approved</option><option>Paid</option></select>
       </div>
@@ -4080,12 +4083,11 @@ h1{font-size:16px;font-weight:bold;margin-bottom:4px}
   </div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:10px">
     <div>
-      <div class="g702-field">TO: <span>${esc(p.general_contractor || p.gc_name || 'SNS Organization LTD')}</span></div>
-      <div class="g702-field" style="padding-left:20px">${p.gc_address||'266 Bangor Street'}</div>
-      <div class="g702-field" style="padding-left:20px">${esc([p.gc_city,p.gc_state,p.gc_zip].filter(Boolean).join(' '))}</div>
+      <div class="g702-field">TO: <span>${esc(p.general_contractor || p.gc_name || '—')}</span></div>
+      <div class="g702-field" style="padding-left:20px">${esc(p.gc_address||'')}</div>
       <div class="g702-field" style="margin-top:8px">FROM SUBCONTRACTOR: <strong>${esc(ident.name)}</strong></div>
       <div class="g702-field" style="padding-left:20px">${esc(ident.addrOneLine)}</div>
-      <div class="g702-field" style="margin-top:8px">CONTRACT FOR: <span>${p.contract_for||'Mechanical Piping Installation'}</span></div>
+      <div class="g702-field" style="margin-top:8px">CONTRACT FOR: <span>${esc(p.contract_for||'—')}</span></div>
     </div>
     <div>
       <div class="g702-field">PROJECT: <strong>${p.job_name}</strong></div>
@@ -4094,8 +4096,10 @@ h1{font-size:16px;font-weight:bold;margin-bottom:4px}
       <div class="g702-field">PROJECT NOS: <span>${p.job_number}</span></div>
       <div class="g702-field">CONTRACT DATE: <span>${contractDateStr}</span></div>
       <div style="margin-top:8px;border:1px solid #999;padding:5px">
-        <strong>Distribution to:</strong><br>
-        ☐ OWNER &nbsp;&nbsp; ☐ ARCHITECT &nbsp;&nbsp; ☑ SUBCONTRACTOR
+        <strong>Distribution to:</strong> <span style="font-size:10px;color:#888;font-weight:400" class="dist-hint no-print">(click to toggle)</span><br>
+        <span class="dist-box" onclick="this.textContent=this.textContent.trim().charAt(0)==='\u2611'?'\u2610 OWNER':'\u2611 OWNER'" style="cursor:pointer;user-select:none">\u2610 OWNER</span> &nbsp;&nbsp;
+        <span class="dist-box" onclick="this.textContent=this.textContent.trim().charAt(0)==='\u2611'?'\u2610 ARCHITECT':'\u2611 ARCHITECT'" style="cursor:pointer;user-select:none">\u2610 ARCHITECT</span> &nbsp;&nbsp;
+        <span class="dist-box" onclick="this.textContent=this.textContent.trim().charAt(0)==='\u2611'?'\u2610 SUBCONTRACTOR':'\u2611 SUBCONTRACTOR'" style="cursor:pointer;user-select:none">\u2611 SUBCONTRACTOR</span>
       </div>
     </div>
   </div>
@@ -5382,6 +5386,9 @@ async function saveProject() {
     gc_contact_name: $('p-gc-contact').value.trim() || null,
     gc_contact_email: $('p-gc-email').value.trim() || null,
     gc_contact_phone: $('p-gc-phone').value.trim() || null,
+    gc_address: $('p-gc-address') ? ($('p-gc-address').value.trim() || null) : null,
+    contract_for: $('p-contract-for') ? ($('p-contract-for').value.trim() || null) : null,
+    contract_date: $('p-contract-date') ? ($('p-contract-date').value || null) : null,
     site_contact: $('p-site-contact').value.trim() || null,
     tax_exempt: $('p-tax-exempt') ? $('p-tax-exempt').checked : false,
     coa_number: $('p-coa') ? ($('p-coa').value.trim() || null) : null,
@@ -5430,6 +5437,9 @@ function editProject(id) {
   $('p-gc-contact').value = p.gc_contact_name||'';
   $('p-gc-email').value = p.gc_contact_email||'';
   $('p-gc-phone').value = p.gc_contact_phone||'';
+  if ($('p-gc-address')) $('p-gc-address').value = p.gc_address||'';
+  if ($('p-contract-for')) $('p-contract-for').value = p.contract_for||'';
+  if ($('p-contract-date')) $('p-contract-date').value = p.contract_date||'';
   if ($('p-site-contact')) $('p-site-contact').value = p.site_contact||'';
   if ($('p-tax-exempt')) $('p-tax-exempt').checked = !!p.tax_exempt;
   if ($('p-coa')) $('p-coa').value = p.coa_number || '';

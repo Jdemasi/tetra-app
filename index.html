@@ -8290,8 +8290,9 @@ function printVoucherCheck({ payee, amount, memo, date, checkNumber, payeeAddres
   --words-left: 0.50in;
   --addr-top:   1.95in; /* payee address — nudge independently with --aoy */
   --addr-left:  1.30in;
-  --memo-top:   2.95in;
+  --memo-top:   2.50in;
   --memo-left:  0.80in; /* after the printed "MEMO" label */
+  --moy:        0px;    /* memo-only Y nudge (persisted) */
   --sig-top:    3.05in;
   --sig-right:  0.65in;
 }
@@ -8309,7 +8310,7 @@ body{background:#fff;color:#000}
 .sig-img{position:absolute;top:calc(var(--sig-top) + var(--soy));right:var(--sig-right);height:0.5in;max-width:2.4in;object-fit:contain}
 .sig-hide{display:none}
 .words{top:var(--words-top);left:var(--words-left);right:1.0in;white-space:nowrap;overflow:hidden}
-.memo{top:var(--memo-top);left:var(--memo-left);max-width:3in;font-size:10pt}
+.memo{top:calc(var(--memo-top) + var(--moy));left:var(--memo-left);max-width:3in;font-size:10pt}
 /* STUBS — minimal */
 .stub{height:3.5in;padding:0.4in 0.6in;border-bottom:1px dashed #999;font-size:12px}
 .stub:last-child{border-bottom:none;height:4in}
@@ -8377,6 +8378,12 @@ body{background:#fff;color:#000}
     <button onclick="nudgeSig(1)">↓ down</button>
   </div>
   <div class="vals">Sig Y: <span id="vs">0</span>px</div>
+  <div style="font-size:11px;color:#666;margin:6px 0 4px">Memo only</div>
+  <div class="row">
+    <button class="sec" onclick="nudgeMemo(-1)">↑ up</button>
+    <button onclick="nudgeMemo(1)">↓ down</button>
+  </div>
+  <div class="vals">Memo Y: <span id="vm">0</span>px</div>
   <div style="border-top:1px solid #eee;margin:8px 0 6px"></div>
   <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
     <input type="checkbox" id="sigToggle" checked> Print signature
@@ -8391,7 +8398,7 @@ body{background:#fff;color:#000}
 <script>
   const COMPANY_KEY = ${JSON.stringify('checkAlign_' + (state.activeCompanyId || 'default'))};
   // Defaults tuned to Tetra/JDM check stock — saved alignment in localStorage overrides.
-  let ox = 3, oy = 10, toy = -19, aoy = 0, soy = 0, sigOn = true;
+  let ox = 3, oy = 10, toy = -19, aoy = 0, soy = 0, moy = 0, sigOn = true;
   try {
     const saved = JSON.parse(localStorage.getItem(COMPANY_KEY) || '{}');
     if (typeof saved.ox === 'number') ox = saved.ox;
@@ -8399,6 +8406,7 @@ body{background:#fff;color:#000}
     if (typeof saved.toy === 'number') toy = saved.toy;
     if (typeof saved.aoy === 'number') aoy = saved.aoy;
     if (typeof saved.soy === 'number') soy = saved.soy;
+    if (typeof saved.moy === 'number') moy = saved.moy;
     if (typeof saved.sigOn === 'boolean') sigOn = saved.sigOn;
   } catch(e) {}
   function apply() {
@@ -8407,11 +8415,13 @@ body{background:#fff;color:#000}
     document.documentElement.style.setProperty('--toy', toy + 'px');
     document.documentElement.style.setProperty('--aoy', aoy + 'px');
     document.documentElement.style.setProperty('--soy', soy + 'px');
+    document.documentElement.style.setProperty('--moy', moy + 'px');
     document.getElementById('vx').textContent = ox;
     document.getElementById('vy').textContent = oy;
     document.getElementById('vt').textContent = toy;
     const va = document.getElementById('va'); if (va) va.textContent = aoy;
     const vs = document.getElementById('vs'); if (vs) vs.textContent = soy;
+    const vm = document.getElementById('vm'); if (vm) vm.textContent = moy;
     const sigEl = document.getElementById('sigImg');
     if (sigEl) sigEl.classList.toggle('sig-hide', !sigOn);
     const tg = document.getElementById('sigToggle');
@@ -8421,9 +8431,10 @@ body{background:#fff;color:#000}
   function nudgeTop(dy) { toy += dy; apply(); }
   function nudgeAddr(dy) { aoy += dy; apply(); }
   function nudgeSig(dy) { soy += dy; apply(); }
-  function reset() { ox = 0; oy = 0; toy = 0; aoy = 0; soy = 0; apply(); }
+  function nudgeMemo(dy) { moy += dy; apply(); }
+  function reset() { ox = 0; oy = 0; toy = 0; aoy = 0; soy = 0; moy = 0; apply(); }
   function saveAlign() {
-    localStorage.setItem(COMPANY_KEY, JSON.stringify({ ox, oy, toy, aoy, soy, sigOn }));
+    localStorage.setItem(COMPANY_KEY, JSON.stringify({ ox, oy, toy, aoy, soy, moy, sigOn }));
     const saveBtn = document.getElementById('saveAlignBtn');
     if (saveBtn) {
       const orig = saveBtn.textContent;

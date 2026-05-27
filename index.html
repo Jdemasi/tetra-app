@@ -1994,13 +1994,13 @@ async function saveCostLineItem(projectId, itemName, amount) {
   if (existing) {
     await db.from('cost_line_items').update({ budgeted_amount: parseFloat(amount)||0 }).eq('id', existing.id);
   } else {
-    await db.from('cost_line_items').insert({ project_id: projectId, item_name: itemName, budgeted_amount: parseFloat(amount)||0 });
+    await db.from('cost_line_items').insert({ project_id: projectId, company_id: state.activeCompanyId || null, item_name: itemName, budgeted_amount: parseFloat(amount)||0 });
   }
   toast(itemName + ' saved');
 }
 
 async function saveBudget(projectId, category, amount) {
-  const { error } = await db.from('project_budgets').upsert({ project_id: projectId, category, budgeted_amount: parseFloat(amount)||0 }, { onConflict: 'project_id,category' });
+  const { error } = await db.from('project_budgets').upsert({ project_id: projectId, company_id: state.activeCompanyId || null, category, budgeted_amount: parseFloat(amount)||0 }, { onConflict: 'project_id,category' });
   if (!error) toast('Budget saved');
 }
 
@@ -2071,6 +2071,7 @@ async function savePhase() {
     ({error} = await db.from('phases').insert({
       ...phData,
       project_id: projectId,
+      company_id: state.activeCompanyId || null,
       sort_order: state.phases.length
     }));
   }
@@ -3628,7 +3629,7 @@ async function saveLabor() {
   if (editId) {
     ({error} = await db.from('labor_entries').update(entryData).eq('id', editId));
   } else {
-    ({error} = await db.from('labor_entries').insert(entryData));
+    ({error} = await db.from('labor_entries').insert({ ...entryData, company_id: state.activeCompanyId || null }));
   }
   if (error) { toast('Error: '+error.message,'error'); return; }
 
@@ -3940,6 +3941,7 @@ async function saveAndGeneratePayApp(projectId, appNum, prevBilled, prevRetainag
   // Save pay application
   const { data: savedApp, error } = await db.from('pay_applications').insert({
     project_id: projectId,
+    company_id: state.activeCompanyId || null,
     app_number: appNum,
     period_ending: periodEnding,
     retainage_pct: retPct,
@@ -4281,6 +4283,7 @@ async function markPayAppPaid(payAppId, projectId, netDue) {
   if (p && pa) {
     await db.from('invoices').insert({
       project_id: projectId,
+      company_id: state.activeCompanyId || null,
       invoice_number: 'PAY-APP-' + pa.app_number,
       billed_amount: parseFloat(pa.current_billed||0),
       paid_amount: amount,
@@ -4456,7 +4459,7 @@ async function saveInvoice() {
     }
     ({error} = await db.from('invoices').update(invData).eq('id', editId));
   } else {
-    ({error} = await db.from('invoices').insert(invData));
+    ({error} = await db.from('invoices').insert({ ...invData, company_id: state.activeCompanyId || null }));
   }
   if (error) {
     if (pdfPath) await deleteFile(pdfPath);
@@ -4804,7 +4807,7 @@ async function saveCO() {
       }
     }
   } else {
-    ({data: savedCO, error} = await db.from('change_orders').insert(coData).select().single());
+    ({data: savedCO, error} = await db.from('change_orders').insert({ ...coData, company_id: state.activeCompanyId || null }).select().single());
 
     // First-time approved CO — update contract total AND offer to add SOV
     if (!error && status === 'Approved' && amount !== 0) {
@@ -5383,7 +5386,7 @@ async function saveProject() {
   if (editId) {
     ({error} = await db.from('projects').update(data).eq('id',editId));
   } else {
-    ({error} = await db.from('projects').insert(data));
+    ({error} = await db.from('projects').insert({ ...data, company_id: state.activeCompanyId || null }));
   }
   if (error) { toast('Error: '+error.message,'error'); return; }
   delete $('modal-project').dataset.editId;
@@ -6013,6 +6016,7 @@ async function confirmImport() {
     console.log('Inserting:', item.name, '| type:', item.type, '| budget:', budget, '| category:', category);
     const { error } = await db.from('phases').insert({
       project_id: projectId,
+      company_id: state.activeCompanyId || null,
       phase_name: item.name,
       status: 'Not Started',
       budgeted_hours: hours,
@@ -6039,7 +6043,7 @@ async function confirmImport() {
     ].filter(c => c.budgeted_amount > 0);
     for (const cb of cats) {
       if (cb.budgeted_amount>0) {
-        await db.from('project_budgets').upsert({ project_id:projectId, ...cb }, { onConflict:'project_id,category' });
+        await db.from('project_budgets').upsert({ project_id:projectId, company_id: state.activeCompanyId || null, ...cb }, { onConflict:'project_id,category' });
       }
     }
     // Save allowances to cost_line_items
@@ -6053,7 +6057,7 @@ async function confirmImport() {
       if (a.budgeted_amount>0) {
         const { data:ex } = await db.from('cost_line_items').select('id').eq('project_id',projectId).eq('item_name',a.item_name).maybeSingle();
         if (ex) await db.from('cost_line_items').update({ budgeted_amount:a.budgeted_amount }).eq('id',ex.id);
-        else await db.from('cost_line_items').insert({ project_id:projectId, ...a });
+        else await db.from('cost_line_items').insert({ project_id:projectId, company_id: state.activeCompanyId || null, ...a });
       }
     }
   }
@@ -6615,7 +6619,7 @@ async function savePO() {
     }
     ({error} = await db.from('purchase_orders').update(poData).eq('id', editId));
   } else {
-    ({error} = await db.from('purchase_orders').insert(poData));
+    ({error} = await db.from('purchase_orders').insert({ ...poData, company_id: state.activeCompanyId || null }));
   }
   if (error) {
     if (pdfPath) await deleteFile(pdfPath);
@@ -6722,6 +6726,7 @@ async function saveAssignSub() {
   if (!subId) { toast('Select a subcontractor','error'); return; }
   const { error } = await db.from('project_subs').insert({
     project_id: projectId,
+    company_id: state.activeCompanyId || null,
     subcontractor_id: subId,
     contract_amount: parseFloat($('assign-sub-contract').value)||0,
     status: 'Active',
@@ -6872,6 +6877,7 @@ async function saveLien() {
   const projectId = $('modal-lien').dataset.projectId;
   const { error } = await db.from('lien_waivers').insert({
     project_id: projectId,
+    company_id: state.activeCompanyId || null,
     waiver_type: $('lien-type').value,
     party_type: $('lien-party-type').value,
     party_name: $('lien-name').value,
@@ -10041,8 +10047,11 @@ async function confirmImportPOs() {
 
   let okCount = 0, failCount = 0;
   for (const r of _importPOData) {
+    // Company comes from the PO's project (import may span jobs); fallback active.
+    const proj = (state.projects||[]).find(p => p.id === r.project_id);
     const data = {
       project_id: r.project_id,
+      company_id: (proj && proj.company_id) || state.activeCompanyId || null,
       po_number: r.po_number,
       vendor: r.vendor,
       description: r.description,

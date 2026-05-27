@@ -4852,11 +4852,11 @@ async function saveCO() {
 // ── WIP SCHEDULE ─────────────────────────────────────────────────────
 async function renderWIP() {
   const [{ data: projects }, { data: purchases }, { data: labor }, { data: invoices }, { data: budgets }] = await Promise.all([
-    db.from('projects').select('*').is('deleted_at',null).eq('status','Active'),
-    db.from('purchases').select('*').is('deleted_at',null),
-    db.from('labor_entries').select('*').is('deleted_at',null),
-    db.from('invoices').select('*').is('deleted_at',null),
-    db.from('project_budgets').select('*'),
+    withCompany(db.from('projects').select('*').is('deleted_at',null).eq('status','Active')),
+    withCompany(db.from('purchases').select('*').is('deleted_at',null)),
+    withCompany(db.from('labor_entries').select('*').is('deleted_at',null)),
+    withCompany(db.from('invoices').select('*').is('deleted_at',null)),
+    withCompany(db.from('project_budgets').select('*')),
   ]);
   const laborCost = l => (parseFloat(l.st_hours||0)*parseFloat(l.st_rate||0))+(parseFloat(l.ot15_hours||0)*parseFloat(l.st_rate||0)*1.5)+(parseFloat(l.ot2_hours||0)*parseFloat(l.st_rate||0)*2);
   $('content').innerHTML = `
@@ -4890,9 +4890,9 @@ async function renderWIP() {
 // ── AR AGING ─────────────────────────────────────────────────────────
 async function renderARaging() {
   const [{ data: invoices }, { data: payApps }, { data: projects }] = await Promise.all([
-    db.from('invoices').select('*').is('deleted_at',null),
-    db.from('pay_applications').select('*').in('status',['Submitted','Approved','Paid']),
-    db.from('projects').select('*').is('deleted_at',null),
+    withCompany(db.from('invoices').select('*').is('deleted_at',null)),
+    withCompany(db.from('pay_applications').select('*').in('status',['Submitted','Approved','Paid'])),
+    withCompany(db.from('projects').select('*').is('deleted_at',null)),
   ]);
   const projMap = {};
   (projects||[]).forEach(p=>projMap[p.id]=p);
@@ -5392,7 +5392,7 @@ async function saveProject() {
   delete $('modal-project').dataset.editId;
   closeModal('modal-project');
   toast('Project saved');
-  const { data: projects } = await db.from('projects').select('*').is('deleted_at',null).order('created_at');
+  const { data: projects } = await withCompany(db.from('projects').select('*').is('deleted_at',null)).order('created_at');
   state.projects = projects || [];
   if (!editId && state.projects.length) {
     state.activeProject = state.projects[state.projects.length-1];
@@ -6896,8 +6896,8 @@ async function saveLien() {
 // ── AP AGING ─────────────────────────────────────────────────────────
 async function renderAPAging() {
   const [{ data: purchases }, { data: projects }, { data: costCodes }] = await Promise.all([
-    db.from('purchases').select('*').is('deleted_at',null),
-    db.from('projects').select('*').is('deleted_at',null),
+    withCompany(db.from('purchases').select('*').is('deleted_at',null)),
+    withCompany(db.from('projects').select('*').is('deleted_at',null)),
     db.from('cost_codes').select('*'),
   ]);
   const projMap = {};
@@ -7336,8 +7336,8 @@ async function permanentDeleteItem(table, id) {
 
 async function renderMasterPOs() {
   const [{ data: pos }, { data: projects }, { data: costCodes }] = await Promise.all([
-    db.from('purchase_orders').select('*').is('deleted_at',null).order('po_number', {ascending:false}),
-    db.from('projects').select('*').is('deleted_at',null),
+    withCompany(db.from('purchase_orders').select('*').is('deleted_at',null).order('po_number', {ascending:false})),
+    withCompany(db.from('projects').select('*').is('deleted_at',null)),
     db.from('cost_codes').select('*').order('code'),
   ]);
   const projMap = {};
@@ -7579,8 +7579,8 @@ function confirmJobPicker() {
 // ── MASTER AP — All Vendor Invoices ─────────────────────────────────
 async function renderMasterAP() {
   const [{ data: purchases }, { data: projects }, { data: costCodes }] = await Promise.all([
-    db.from('purchases').select('*').is('deleted_at',null).order('invoice_date', {ascending:false}),
-    db.from('projects').select('*').is('deleted_at',null),
+    withCompany(db.from('purchases').select('*').is('deleted_at',null).order('invoice_date', {ascending:false})),
+    withCompany(db.from('projects').select('*').is('deleted_at',null)),
     db.from('cost_codes').select('*'),
   ]);
   const projMap = {}; (projects||[]).forEach(p=>projMap[p.id]=p);
@@ -7693,8 +7693,8 @@ function renderMasterAPView() {
 // ── MASTER AR — All Client Invoices / Pay Apps ──────────────────────
 async function renderMasterAR() {
   const [{ data: invoices }, { data: projects }] = await Promise.all([
-    db.from('invoices').select('*').is('deleted_at',null).order('invoice_date', {ascending:false}),
-    db.from('projects').select('*').is('deleted_at',null),
+    withCompany(db.from('invoices').select('*').is('deleted_at',null).order('invoice_date', {ascending:false})),
+    withCompany(db.from('projects').select('*').is('deleted_at',null)),
   ]);
   const projMap = {}; (projects||[]).forEach(p=>projMap[p.id]=p);
   window._marRows = (invoices||[]).map(i => ({i, proj: projMap[i.project_id]}));
@@ -7800,8 +7800,8 @@ function renderMasterARView() {
 // ── MASTER CO LOG — All Change Orders ───────────────────────────────
 async function renderMasterCOs() {
   const [{ data: cos }, { data: projects }] = await Promise.all([
-    db.from('change_orders').select('*').order('submitted_date', {ascending:false}),
-    db.from('projects').select('*').is('deleted_at',null),
+    withCompany(db.from('change_orders').select('*').order('submitted_date', {ascending:false})),
+    withCompany(db.from('projects').select('*').is('deleted_at',null)),
   ]);
   const projMap = {}; (projects||[]).forEach(p=>projMap[p.id]=p);
   window._mcoRows = (cos||[]).map(c => ({c, proj: projMap[c.project_id]}));

@@ -502,9 +502,11 @@ body.inbox-split-mode #modal-purchase .modal{width:46vw;max-width:none;max-heigh
   <div class="modal" style="max-width:500px">
     <div class="modal-hd"><div class="modal-title">Write a Check</div><button class="modal-close" onclick="closeModal('modal-check')">×</button></div>
     <div class="form-grid">
+      <div class="fgroup"><label class="flbl">Check # *</label><input class="finp" type="number" id="chk-number" placeholder="1001"></div>
+      <div class="fgroup"><label class="flbl">Date</label><input class="finp" type="date" id="chk-date"></div>
       <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Pay to the Order of *</label><input class="finp" id="chk-payee" placeholder="e.g. National Grid"></div>
       <div class="fgroup"><label class="flbl">Amount ($) *</label><input class="finp" type="number" step="0.01" id="chk-amount" placeholder="0.00"></div>
-      <div class="fgroup"><label class="flbl">Date</label><input class="finp" type="date" id="chk-date"></div>
+      <div class="fgroup"><label class="flbl">&nbsp;</label><div style="font-size:11px;color:var(--gray600);padding-top:6px">Suggested # is last+1 — confirm or type the number on the stock you'll feed in.</div></div>
       <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Memo</label><input class="finp" id="chk-memo" placeholder="e.g. Account #12345"></div>
     </div>
     <div class="form-actions" style="display:flex;justify-content:flex-end;gap:8px">
@@ -8209,21 +8211,20 @@ async function nextCheckNumber(companyId) {
   return last >= 1001 ? last + 1 : 1001;
 }
 
-// Shared QuickBooks-style voucher renderer: a check band on top and two stubs
-// below (vendor copy + file copy), all company-aware via companyDocIdentity().
-// Opens a print window using the same pattern as the pay-app generator.
+// Shared voucher renderer for PRE-PRINTED check stock. The stock already has
+// the company name/address, routing/account (MICR), and check number on the
+// check face — so the face prints only the variable data that fills the blanks:
+// date, payee, amount box, written-amount line, memo, signature. Stubs are kept
+// minimal (no company name) — just the record of what was paid.
+// All offsets live in clearly-labeled CSS variables; nudge them after a test
+// print on plain paper overlaid on a real check.
 function printVoucherCheck({ payee, amount, memo, date, checkNumber }) {
-  const ident = companyDocIdentity();
   const amt = parseFloat(amount) || 0;
   const dateStr = date ? (() => { const [y,m,d] = date.split('-'); return `${m}/${d}/${y}`; })() : new Date().toLocaleDateString('en-US');
   const words = numberToWords(amt);
   const numStr = checkNumber ? String(checkNumber) : '';
-  const stub = (copyLabel) => `
+  const stub = () => `
     <div class="stub">
-      <div class="stub-hd">
-        <span>${esc(ident.name)}</span>
-        <span class="stub-copy">${copyLabel}</span>
-      </div>
       <table class="stub-tbl">
         <tr><td class="sl">Check #</td><td>${esc(numStr)}</td><td class="sl">Date</td><td>${dateStr}</td></tr>
         <tr><td class="sl">Pay to</td><td colspan="3">${esc(payee || '')}</td></tr>
@@ -8233,73 +8234,60 @@ function printVoucherCheck({ payee, amount, memo, date, checkNumber }) {
     </div>`;
   const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Check ${esc(numStr)}</title>
 <style>
+/* ── PRINT-POSITION VARIABLES (nudge these after a plain-paper test print) ──
+   Each "top" puts the field's baseline at that distance from the top of the
+   8.5x11 sheet. Standard QuickBooks voucher = check on top, then two stubs.
+   The check face occupies the top 3.5in. */
+:root{
+  --date-top:   0.75in;   /* date line baseline */
+  --pay-top:    1.30in;   /* "PAY TO THE ORDER OF" line baseline */
+  --words-top:  1.85in;   /* written amount line baseline */
+  --memo-top:   2.95in;   /* memo line baseline */
+  --sig-top:    2.75in;   /* signature box top */
+  --left-pad:   0.75in;
+  --right-pad:  0.50in;
+  --amount-box-right: 0.65in; /* distance from right edge to amount-box right edge */
+}
 *{box-sizing:border-box;margin:0;padding:0;font-family:Arial,Helvetica,sans-serif}
 body{background:#fff;color:#000}
 .sheet{width:8.5in;height:11in;margin:0 auto;padding:0;position:relative}
-/* CHECK BAND — top third of the page (standard voucher position) */
-.check{height:3.5in;padding:0.35in 0.5in;position:relative;border-bottom:1px dashed #999}
-.chk-top{display:flex;justify-content:space-between;align-items:flex-start}
-.chk-co{font-size:13px;line-height:1.4}
-.chk-co .nm{font-size:15px;font-weight:bold}
-.chk-logo{height:48px;max-width:240px;object-fit:contain;margin-bottom:4px}
-.chk-num{text-align:right;font-size:13px}
-.chk-num .lbl{color:#444}
-.chk-num .val{font-size:18px;font-weight:bold;letter-spacing:1px}
-.chk-date{position:absolute;top:0.9in;right:0.5in;font-size:13px;text-align:right}
-.chk-date .ln{border-bottom:1px solid #000;min-width:1.4in;display:inline-block;text-align:center;padding:0 6px}
-.chk-pay{position:absolute;top:1.55in;left:0.5in;right:0.5in;font-size:13px}
-.chk-pay .row{display:flex;align-items:flex-end;gap:8px}
-.chk-pay .lbl{white-space:nowrap;color:#222}
-.chk-pay .ln{flex:1;border-bottom:1px solid #000;padding:0 6px 1px;min-height:18px;font-weight:bold}
-.chk-pay .box{border:1px solid #000;padding:3px 10px;font-weight:bold;font-size:15px;white-space:nowrap}
-.chk-words{position:absolute;top:2.05in;left:0.5in;right:0.5in;font-size:13px;display:flex;align-items:flex-end;gap:8px}
-.chk-words .ln{flex:1;border-bottom:1px solid #000;padding:0 6px 1px;min-height:18px}
-.chk-words .dollars{white-space:nowrap;color:#222}
-.chk-memo{position:absolute;bottom:0.55in;left:0.5in;font-size:12px;display:flex;align-items:flex-end;gap:6px}
-.chk-memo .ln{border-bottom:1px solid #000;min-width:2.4in;display:inline-block;padding:0 6px 1px}
-.chk-sig{position:absolute;bottom:0.5in;right:0.5in;width:2.6in;text-align:center;font-size:11px}
-.chk-sig .ln{border-bottom:1px solid #000;height:0.32in;margin-bottom:2px}
-/* STUBS */
-.stub{height:3.5in;padding:0.4in 0.5in;border-bottom:1px dashed #999;font-size:12px}
+/* CHECK FACE — only variable data prints; stock supplies the rest. */
+.check{height:3.5in;position:relative;border-bottom:1px dashed #999}
+.fld{position:absolute;font-size:13px}
+.fld .v{font-weight:bold}
+.date{top:var(--date-top);right:var(--right-pad);text-align:right;min-width:1.6in}
+.pay-name{top:var(--pay-top);left:var(--left-pad);right:calc(var(--amount-box-right) + 1.4in);overflow:hidden;white-space:nowrap}
+.pay-amount{top:var(--pay-top);right:var(--amount-box-right);border:1px solid #000;padding:2px 8px;font-weight:bold;font-size:14px}
+.words{top:var(--words-top);left:var(--left-pad);right:calc(var(--right-pad) + 0.9in);overflow:hidden;white-space:nowrap}
+.memo{top:var(--memo-top);left:var(--left-pad);max-width:3in}
+.sig{position:absolute;top:var(--sig-top);right:var(--right-pad);width:2.6in;text-align:center;font-size:10px;color:#555}
+.sig .ln{height:0.32in}
+/* STUBS — minimal, no company branding */
+.stub{height:3.5in;padding:0.4in 0.6in;border-bottom:1px dashed #999;font-size:12px}
 .stub:last-child{border-bottom:none}
-.stub-hd{display:flex;justify-content:space-between;font-weight:bold;font-size:13px;border-bottom:1px solid #000;padding-bottom:4px;margin-bottom:8px}
-.stub-copy{font-weight:normal;color:#555;font-size:11px}
-.stub-tbl{width:100%;border-collapse:collapse}
-.stub-tbl td{padding:4px 6px;vertical-align:top}
-.stub-tbl .sl{color:#555;width:0.9in;white-space:nowrap}
-.stub-amt{font-weight:bold}
+.stub-tbl{width:100%;border-collapse:collapse;border:1px solid #ccc}
+.stub-tbl td{padding:6px 8px;vertical-align:top;border-bottom:1px solid #eee}
+.stub-tbl tr:last-child td{border-bottom:none}
+.stub-tbl .sl{color:#555;width:0.9in;white-space:nowrap;background:#fafafa}
+.stub-amt{font-weight:bold;font-size:14px}
 @media print{.no-print{display:none}.sheet{margin:0}@page{size:letter;margin:0}}
 </style></head><body>
 <div class="sheet">
   <div class="check">
-    <div class="chk-top">
-      <div class="chk-co">
-        ${ident.logo ? `<img class="chk-logo" src="${ident.logo}" alt="${esc(ident.name)}"><br>` : ''}
-        <span class="nm">${esc(ident.name)}</span><br>
-        ${esc(ident.addr1)}<br>
-        ${esc(ident.cityStateZip)}
-      </div>
-      <div class="chk-num"><div class="lbl">Check No.</div><div class="val">${esc(numStr)}</div></div>
-    </div>
-    <div class="chk-date">Date <span class="ln">${dateStr}</span></div>
-    <div class="chk-pay">
-      <div class="row">
-        <span class="lbl">PAY TO THE<br>ORDER OF</span>
-        <span class="ln">${esc(payee || '')}</span>
-        <span class="box">${fmtD(amt)}</span>
-      </div>
-    </div>
-    <div class="chk-words">
-      <span class="ln">${esc(words)}</span>
-      <span class="dollars">DOLLARS</span>
-    </div>
-    <div class="chk-memo">Memo <span class="ln">${esc(memo || '')}</span></div>
-    <div class="chk-sig"><div class="ln"></div>Authorized Signature</div>
+    <div class="fld date"><span class="v">${dateStr}</span></div>
+    <div class="fld pay-name"><span class="v">${esc(payee || '')}</span></div>
+    <div class="fld pay-amount">${fmtD(amt)}</div>
+    <div class="fld words"><span class="v">${esc(words)}</span></div>
+    <div class="fld memo">${esc(memo || '')}</div>
+    <div class="sig"><div class="ln"></div></div>
   </div>
-  ${stub('Vendor Copy')}
-  ${stub('File Copy')}
+  ${stub()}
+  ${stub()}
 </div>
-<div class="no-print" style="text-align:center;margin:20px;display:flex;gap:12px;justify-content:center">
+<div class="no-print" style="text-align:center;margin:20px;display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+  <div style="font-size:12px;color:#555;width:100%;max-width:560px;text-align:center;margin-bottom:4px">
+    First print on plain paper and overlay it on a real check — if the date/payee/amount don't land in the pre-printed blanks, adjust the <code>--date-top</code>, <code>--pay-top</code>, <code>--words-top</code>, <code>--memo-top</code> values in the stylesheet.
+  </div>
   <button onclick="window.print()" style="padding:10px 30px;background:#1B2A5E;color:#fff;border:none;border-radius:6px;font-size:14px;cursor:pointer">🖨️ Print Check</button>
 </div>
 </body></html>`;
@@ -8309,15 +8297,19 @@ body{background:#fff;color:#000}
   setTimeout(() => win.focus(), 300);
 }
 
-// Print a check from a vendor invoice (purchases row). Assigns + saves a check
-// number for the active company, links it to the purchase, then prints.
+// Print a check from a vendor invoice (purchases row). The check number on
+// PRE-PRINTED stock is physical, so the app records it rather than assigning
+// it — we default to last-issued + 1 for that company and prompt to confirm.
 async function printVendorCheck(purchaseId) {
   const { data: pu } = await db.from('purchases').select('*').eq('id', purchaseId).single();
   if (!pu) { toast('Could not load that invoice', 'error'); return; }
   const balance = (parseFloat(pu.po_amount || 0) - parseFloat(pu.paid_amount || 0));
   const amount = balance > 0 ? balance : parseFloat(pu.po_amount || 0);
   const companyId = state.activeCompanyId || pu.company_id || null;
-  const checkNumber = await nextCheckNumber(companyId);
+  const suggested = await nextCheckNumber(companyId);
+  const entered = prompt(`Check number on the stock you're about to print on?\n(Default: ${suggested})`, String(suggested));
+  if (entered === null) return; // user cancelled
+  const checkNumber = parseInt(String(entered).trim()) || suggested;
   const memo = pu.invoice_number ? `Invoice ${pu.invoice_number}` + (pu.po_number ? ` / PO ${pu.po_number}` : '') : (pu.po_number ? `PO ${pu.po_number}` : '');
   const { error } = await db.from('checks').insert({
     company_id: companyId,
@@ -8329,28 +8321,33 @@ async function printVendorCheck(purchaseId) {
     purchase_id: pu.id,
   });
   if (error) { toast('Could not save check: ' + error.message, 'error'); return; }
-  toast(`Check #${checkNumber} created for ${pu.vendor || 'vendor'}`);
+  toast(`Check #${checkNumber} recorded for ${pu.vendor || 'vendor'}`);
   printVoucherCheck({ payee: pu.vendor || '', amount, memo, date: today(), checkNumber });
 }
 
-// Manual check: open the form for any payee/amount/memo.
-function openManualCheck() {
+// Manual check: open the form for any payee/amount/memo. Pre-fill the check-
+// number field with last+1 as a convenience; the user types/confirms the
+// number actually on the check stock about to be printed.
+async function openManualCheck() {
   $('chk-payee').value = '';
   $('chk-amount').value = '';
   $('chk-memo').value = '';
   $('chk-date').value = today();
+  const suggested = await nextCheckNumber(state.activeCompanyId || null);
+  $('chk-number').value = suggested;
   openModal('modal-check');
 }
 
 async function saveAndPrintManualCheck() {
   const payee = $('chk-payee').value.trim();
   const amount = parseFloat($('chk-amount').value) || 0;
+  const checkNumber = parseInt($('chk-number').value) || 0;
   if (!payee) { toast('Enter a payee', 'error'); return; }
   if (amount <= 0) { toast('Enter an amount greater than zero', 'error'); return; }
+  if (checkNumber <= 0) { toast('Enter the check number', 'error'); return; }
   const memo = $('chk-memo').value.trim();
   const date = $('chk-date').value || today();
   const companyId = state.activeCompanyId || null;
-  const checkNumber = await nextCheckNumber(companyId);
   const { error } = await db.from('checks').insert({
     company_id: companyId,
     check_number: checkNumber,
@@ -8360,7 +8357,7 @@ async function saveAndPrintManualCheck() {
   });
   if (error) { toast('Could not save check: ' + error.message, 'error'); return; }
   closeModal('modal-check');
-  toast(`Check #${checkNumber} created for ${payee}`);
+  toast(`Check #${checkNumber} recorded for ${payee}`);
   printVoucherCheck({ payee, amount, memo, date, checkNumber });
 }
 

@@ -8227,10 +8227,35 @@ function printVoucherCheck({ payee, amount, memo, date, checkNumber, payeeAddres
   const dateStr = date ? (() => { const [y,m,d] = date.split('-'); return `${m}/${d}/${y}`; })() : new Date().toLocaleDateString('en-US');
   const words = numberToWords(amt);
   const numStr = checkNumber ? String(checkNumber) : '';
-  // Payee address for the lower window of #10 double-window envelopes — one
-  // line, no comma splitting (multi-line addresses overflow the gap between
-  // payee and words).
-  const addrHtml = (payeeAddress || '').trim() ? `<div>${esc(payeeAddress.trim())}</div>` : '';
+  // Payee address for the lower window of #10 double-window envelopes.
+  // Render as two lines: street on top, "city, state zip" below — the standard
+  // mailing format. Splitter handles common inputs:
+  //  • "123 Main St, Anytown, NY 11101"  → split on commas
+  //  • "123 Main St Anytown NY 11101"    → find the 2-letter state and split before the word preceding it (the city)
+  //  • single line / no clear split      → render as one line, no crash
+  function splitAddr(s) {
+    const raw = (s || '').trim();
+    if (!raw) return [];
+    // Prefer explicit comma split when present.
+    if (raw.includes(',')) {
+      const parts = raw.split(',').map(p => p.trim()).filter(Boolean);
+      if (parts.length >= 3) return [parts[0], parts.slice(1).join(', ')];
+      if (parts.length === 2) return parts;
+      return [parts[0]];
+    }
+    // No commas — try to find a US state abbreviation (2 capital or lowercase
+    // letters followed by digits, or surrounded by spaces near the end).
+    const m = raw.match(/^(.+?)\s+([A-Za-z][a-z]+)\s+([A-Za-z]{2})\s+(\d{5}(?:-\d{4})?)\s*$/);
+    if (m) {
+      // m[1]=street remainder, m[2]=city, m[3]=state, m[4]=zip
+      const state = m[3].toUpperCase();
+      const city = m[2].charAt(0).toUpperCase() + m[2].slice(1);
+      return [m[1].trim(), `${city}, ${state} ${m[4]}`];
+    }
+    return [raw];
+  }
+  const addrLines = splitAddr(payeeAddress);
+  const addrHtml = addrLines.length ? addrLines.map(l => `<div>${esc(l)}</div>`).join('') : '';
   // Signature image — ST120_SIG_B64 lives in assets.js. Toggle in the alignment
   // panel lets you suppress it for void/hand-signed runs.
   const sigSrc = (typeof ST120_SIG_B64 !== 'undefined' && ST120_SIG_B64) ? `data:image/png;base64,${ST120_SIG_B64}` : '';
@@ -8281,7 +8306,7 @@ body{background:#fff;color:#000}
 .date{top:calc(var(--date-top) + var(--toy));right:var(--date-right);min-width:1.2in;text-align:right}
 .pay-name{top:calc(var(--pay-top) + var(--toy));left:var(--pay-left);right:1.4in;white-space:nowrap;overflow:hidden;font-weight:bold}
 .pay-amount{top:calc(var(--amt-top) + var(--toy));right:var(--amt-right);font-weight:bold;font-size:13pt;min-width:1.0in;text-align:right}
-.pay-addr{top:calc(var(--addr-top) + var(--aoy));left:var(--addr-left);font-size:11pt;line-height:1.3;white-space:nowrap}
+.pay-addr{top:calc(var(--addr-top) + var(--aoy));left:var(--addr-left);font-size:11pt;line-height:1.3}
 .pay-addr div{padding:1px 0}
 .sig-img{position:absolute;top:calc(var(--sig-top) + var(--soy));right:var(--sig-right);height:0.5in;max-width:2.4in;object-fit:contain}
 .sig-hide{display:none}
@@ -8359,7 +8384,7 @@ body{background:#fff;color:#000}
     <input type="checkbox" id="sigToggle" checked> Print signature
   </label>
   <div class="row">
-    <button onclick="saveAlign()">Save</button>
+    <button onclick="saveAlign()" id="saveAlignBtn">Save</button>
     <button class="sec" onclick="window.print()">🖨️ Print</button>
   </div>
   <div class="hint">Print on plain paper first, hold against a real check, nudge until fields land in the blanks. Save persists for this browser.</div>
@@ -8401,7 +8426,7 @@ body{background:#fff;color:#000}
   function reset() { ox = 0; oy = 0; toy = 0; aoy = 0; soy = 0; apply(); }
   function saveAlign() {
     localStorage.setItem(COMPANY_KEY, JSON.stringify({ ox, oy, toy, aoy, soy, sigOn }));
-    const saveBtn = document.querySelector('.align-panel .row:nth-last-of-type(1) button:first-child');
+    const saveBtn = document.getElementById('saveAlignBtn');
     if (saveBtn) {
       const orig = saveBtn.textContent;
       saveBtn.textContent = '✓ Saved';

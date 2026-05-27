@@ -477,6 +477,7 @@ body.inbox-split-mode #modal-purchase .modal{width:46vw;max-width:none;max-heigh
       <div class="fgroup"><label class="flbl">Invoice #</label><input class="finp" id="inv-num" placeholder="e.g. INV-2601-07"></div>
       <div class="fgroup"><label class="flbl">Invoice Date</label><input class="finp" type="date" id="inv-date"></div>
       <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Description</label><input class="finp" id="inv-desc" placeholder="e.g. Application #7 — Buildings 14 & 15"></div>
+      <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Bill To <span style="color:var(--gray600);font-weight:normal">(optional — overrides project GC/Owner on printed invoice)</span></label><textarea class="finp" id="inv-bill-to" rows="2" placeholder="Name and address — leave blank to use the project's GC/Owner"></textarea></div>
       <div class="fgroup"><label class="flbl">Billed Amount ($)</label><input class="finp" type="number" id="inv-billed" placeholder="0.00" oninput="calcInvPreview()"></div>
       <div class="fgroup"><label class="flbl">Retainage %</label><input class="finp" type="number" id="inv-ret-pct" value="10" oninput="calcInvPreview()"></div>
       <div class="fgroup"><label class="flbl">Retainage Held ($)</label><input class="finp" id="inv-ret-held" readonly style="background:var(--gray50)"></div>
@@ -4381,6 +4382,7 @@ async function renderInvoices() {
         <td><div style="display:flex;gap:4px">
           ${i.pdf_url?`<button class="btn btn-sm" title="View attached pay app" onclick="openStoredFile('${i.pdf_url}')">📎</button>`:''}
           <button class="btn btn-sm" title="Print QuickBooks-style invoice" onclick="printARInvoice('${i.id}','${p.id}')">🧾 Invoice</button>
+          <button class="btn btn-sm" title="Email invoice as PDF (Outlook draft)" onclick="emailARInvoice('${i.id}','${p.id}')">📧 Email</button>
           <button class="btn btn-sm" onclick="openEditInvoice('${i.id}','${p.id}')">Edit</button>
         </div></td>
       </tr>`;
@@ -4400,9 +4402,12 @@ async function renderInvoices() {
 // QuickBooks-style AR invoice — a lighter, company-branded invoice (vs the full
 // AIA billing packet). Renders from an `invoices` row + the active project for
 // bill-to (owner_name / general_contractor). Company-aware via companyDocIdentity().
-async function printARInvoice(invoiceId, projectId) {
+// Build the AR invoice HTML and email-ready metadata from an invoice row +
+// project. Returns {html, subject, body, fileName, to} — used by both
+// printARInvoice (opens print window) and emailARInvoice (creates Outlook draft).
+async function buildARInvoice(invoiceId, projectId) {
   const { data: inv } = await db.from('invoices').select('*').eq('id', invoiceId).single();
-  if (!inv) { toast('Could not load invoice', 'error'); return; }
+  if (!inv) return null;
   let project = state.activeProject && state.activeProject.id === projectId ? state.activeProject : null;
   if (!project) { const { data: p } = await db.from('projects').select('*').eq('id', projectId).single(); project = p; }
   project = project || {};
@@ -4418,9 +4423,19 @@ async function printARInvoice(invoiceId, projectId) {
   const dueDate = inv.invoice_date ? new Date(new Date(inv.invoice_date + 'T00:00:00').getTime() + (inv.terms_days || 30) * 86400000) : null;
   const dueDateStr = dueDate ? dueDate.toLocaleDateString('en-US') : '';
 
-  // Bill-to: prefer the GC, fall back to the owner; include project address.
-  const billToName = project.general_contractor || project.owner_name || '';
-  const billToAddr = project.project_address || '';
+  // Bill-to: prefer the invoice's bill_to override (set on the invoice itself),
+  // fall back to the project GC, then owner. Multi-line bill_to is split: first
+  // line is the name, remaining lines form the address.
+  const billToRaw = (inv.bill_to || '').trim();
+  let billToName, billToAddr;
+  if (billToRaw) {
+    const lines = billToRaw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    billToName = lines[0] || '';
+    billToAddr = lines.slice(1).map(l => esc(l)).join('<br>');
+  } else {
+    billToName = project.general_contractor || project.owner_name || '';
+    billToAddr = project.project_address ? esc(project.project_address) : '';
+  }
   const jobLine = [project.job_number, project.job_name].filter(Boolean).join(' — ');
 
   const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Invoice ${esc(inv.invoice_number || '')}</title>
@@ -4475,12 +4490,12 @@ table.items td{padding:8px 10px;border-bottom:1px solid #eee;vertical-align:top}
     <div class="party">
       <div class="ph">Bill To</div>
       <div class="nm">${esc(billToName || '—')}</div>
-      ${billToAddr ? esc(billToAddr) + '<br>' : ''}
+      ${billToAddr}
     </div>
     <div class="party">
       <div class="ph">Project</div>
       <div class="nm">${esc(jobLine || '—')}</div>
-      ${billToAddr ? esc(billToAddr) : ''}
+      ${project.project_address ? esc(project.project_address) : ''}
     </div>
   </div>
   <table class="items">
@@ -4504,10 +4519,49 @@ table.items td{padding:8px 10px;border-bottom:1px solid #eee;vertical-align:top}
   <button onclick="window.print()" style="padding:10px 30px;background:#1B2A5E;color:#fff;border:none;border-radius:6px;font-size:14px;cursor:pointer">🖨️ Print / Save as PDF</button>
 </div>
 </body></html>`;
+  const invNumStr = inv.invoice_number || invoiceId.slice(0, 8);
+  const projLabel = jobLine || 'our project';
+  return {
+    html,
+    subject: `Invoice #${invNumStr} — ${ident.name}`,
+    body: `Please find attached Invoice #${invNumStr} for ${projLabel}.\n\nAmount Due: ${fmtD(due)}\nTerms: Net ${inv.terms_days || 30}\n\nPlease reference invoice #${invNumStr} on your remittance.\n\nThank you,\n${ident.name}\n${ident.phone}`,
+    fileName: `Invoice ${invNumStr}.pdf`,
+    to: '', // no billing email column on projects yet — user fills in Outlook
+  };
+}
+
+async function printARInvoice(invoiceId, projectId) {
+  const built = await buildARInvoice(invoiceId, projectId);
+  if (!built) { toast('Could not load invoice', 'error'); return; }
   const win = window.open('', '_blank');
-  win.document.write(html);
+  win.document.write(built.html);
   win.document.close();
   setTimeout(() => win.focus(), 300);
+}
+
+// Email AR invoice: creates an Outlook draft with the PDF attached via the same
+// Microsoft Graph path used for POs. Falls back to print + mailto if Graph fails.
+async function emailARInvoice(invoiceId, projectId) {
+  const built = await buildARInvoice(invoiceId, projectId);
+  if (!built) { toast('Could not load invoice', 'error'); return; }
+  toast('Preparing invoice draft… you may be asked to sign in to Microsoft');
+  try {
+    await createPODraft({ to: built.to, subject: built.subject, body: built.body, docHTML: built.html, fileName: built.fileName });
+    toast('Invoice draft created in Outlook (Drafts folder) — PDF attached, ready to review & send', 'success');
+  } catch (e) {
+    console.error('Graph draft failed for invoice, falling back to print + mailto:', e);
+    const w = window.open('', '_blank');
+    w.document.write(built.html);
+    w.document.close();
+    setTimeout(() => { try { w.focus(); w.print(); } catch(err){} }, 500);
+    const mailtoUrl = `mailto:${encodeURIComponent(built.to)}?subject=${encodeURIComponent(built.subject)}&body=${encodeURIComponent(built.body)}`;
+    setTimeout(() => {
+      const a = document.createElement('a');
+      a.href = mailtoUrl; a.style.display = 'none';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    }, 700);
+    toast('Couldn\'t auto-create the draft (' + (e.message||'sign-in/permission issue') + '). Falling back: save the PDF, then attach to the email.', 'error');
+  }
 }
 
 function calcInvPreview() {
@@ -4518,12 +4572,15 @@ function calcInvPreview() {
   $('inv-net').value = (billed-ret).toFixed(2);
 }
 
-function openNewInvoice(projectId) {
-  clearForm(['inv-num','inv-desc','inv-billed','inv-paid','inv-ret-held','inv-net']);
+async function openNewInvoice(projectId) {
+  clearForm(['inv-num','inv-desc','inv-billed','inv-paid','inv-ret-held','inv-net','inv-bill-to']);
   $('inv-date').value = today();
   $('inv-ret-pct').value = 10;
   $('inv-terms').value = 30;
   $('inv-status').value = 'Pending';
+  // Suggest next invoice number per active company (one running sequence).
+  const suggested = await nextInvoiceNumber(state.activeCompanyId || null);
+  $('inv-num').value = suggested;
   $('modal-invoice').dataset.projectId = projectId;
   $('modal-invoice').dataset.editId = '';
   document.querySelector('#modal-invoice .modal-title').textContent = 'New Invoice to Client';
@@ -4541,6 +4598,7 @@ async function openEditInvoice(invoiceId, projectId) {
   $('inv-num').value = i.invoice_number||'';
   $('inv-date').value = i.invoice_date||'';
   $('inv-desc').value = i.description||'';
+  $('inv-bill-to').value = i.bill_to||'';
   $('inv-billed').value = i.billed_amount||'';
   $('inv-ret-pct').value = i.retainage_pct ?? 10;
   $('inv-paid').value = i.paid_amount||'';
@@ -4575,6 +4633,7 @@ async function saveInvoice() {
     invoice_number: $('inv-num').value,
     invoice_date: $('inv-date').value,
     description: $('inv-desc').value,
+    bill_to: $('inv-bill-to').value || null,
     billed_amount: parseFloat($('inv-billed').value)||0,
     retainage_pct: parseFloat($('inv-ret-pct').value)||10,
     paid_amount: parseFloat($('inv-paid').value)||0,
@@ -8199,6 +8258,25 @@ function numberToWords(amount) {
   }
   const centsStr = String(cents).padStart(2, '0');
   return `${words} and ${centsStr}/100`;
+}
+
+// Per-company AR invoice sequence. Parses existing invoice_number values for
+// purely-numeric IDs and returns max+1. Mixed/legacy alphanumeric numbers
+// (e.g. "INV-2601-07") are ignored — they don't participate in the sequence.
+// Starts at 1001 if no numeric invoices exist yet for the company.
+async function nextInvoiceNumber(companyId) {
+  let q = db.from('invoices').select('invoice_number').is('deleted_at', null);
+  if (companyId) q = q.eq('company_id', companyId);
+  const { data } = await q;
+  let max = 0;
+  (data || []).forEach(row => {
+    const s = String(row.invoice_number || '').trim();
+    if (/^\d+$/.test(s)) {
+      const n = parseInt(s, 10);
+      if (n > max) max = n;
+    }
+  });
+  return max >= 1001 ? max + 1 : 1001;
 }
 
 // Per-company check sequence. Reads the highest check_number ever written for

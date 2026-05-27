@@ -8530,7 +8530,7 @@ body{background:#fff;color:#000}
 <script>
   const COMPANY_KEY = ${JSON.stringify('checkAlign_' + (state.activeCompanyId || 'default'))};
   // Defaults tuned to Tetra/JDM check stock — saved alignment in localStorage overrides.
-  let ox = 3, oy = 10, toy = -19, aoy = 0, soy = 0, moy = 0, sigOn = true;
+  let ox = 3, oy = 10, toy = -19, aoy = 19, soy = -44, moy = 26, sigOn = true;
   try {
     const saved = JSON.parse(localStorage.getItem(COMPANY_KEY) || '{}');
     if (typeof saved.ox === 'number') ox = saved.ox;

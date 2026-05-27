@@ -370,6 +370,10 @@ body.inbox-split-mode #modal-purchase .modal{width:46vw;max-width:none;max-heigh
 
     <div class="form-grid">
       <div class="fgroup" style="grid-column:1/-1">
+        <label class="flbl">Company</label>
+        <select class="finp" id="pu-company-select" onchange="onPuCompanyChange(this.value)"></select>
+      </div>
+      <div class="fgroup" style="grid-column:1/-1">
         <label class="flbl">Job Assignment</label>
         <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px">
           <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
@@ -2960,6 +2964,34 @@ function onPuVendorSelect() {
   }
 }
 
+// Populate the purchase modal's company dropdown (defaults to active company).
+function populatePuCompanyDropdown() {
+  const sel = $('pu-company-select');
+  if (!sel) return;
+  sel.innerHTML = (state.companies||[]).map(c =>
+    `<option value="${c.id}" ${c.id===state.activeCompanyId?'selected':''}>${esc(c.short_name || c.name)}</option>`
+  ).join('');
+}
+
+// When the company is changed in the purchase modal, switch the active company
+// and reload that company's jobs/POs so the job dropdown reflects it.
+async function onPuCompanyChange(companyId) {
+  if (!companyId || companyId === state.activeCompanyId) return;
+  state.activeCompanyId = companyId;
+  try { await db.from('app_settings').upsert({ key:'active_company_id', value: companyId }); } catch(e){}
+  renderCompanySwitcher();
+  // Reload this company's projects for the job dropdown.
+  const { data: projects } = await withCompany(db.from('projects').select('*').is('deleted_at',null)).order('created_at');
+  state.projects = projects || [];
+  renderSidebarProjects();
+  // Rebuild the job dropdown in the modal to this company's jobs.
+  const jobSel = $('pu-job-select');
+  if (jobSel) {
+    jobSel.innerHTML = '<option value="">Select job...</option>' +
+      (state.projects||[]).map(p => `<option value="${p.id}">${esc(p.job_number)} — ${esc(p.job_name)}</option>`).join('');
+  }
+}
+
 async function openNewPurchase(projectId) {
   clearForm(['pu-vendor','pu-inv','pu-amount','pu-paid','pu-notes']);
   $('pu-date').value = today();
@@ -2980,6 +3012,9 @@ async function openNewPurchase(projectId) {
   if (attachIndicator) attachIndicator.style.display = 'none';
   // Hide delete button (only for edit mode)
   if ($('pu-delete-btn')) $('pu-delete-btn').style.display = 'none';
+
+  // Populate the company dropdown, defaulting to the active company.
+  populatePuCompanyDropdown();
 
   // Reset job-type toggle
   document.querySelectorAll('input[name="pu-job-type"]').forEach(r => r.checked = r.value === 'job');

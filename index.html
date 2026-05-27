@@ -194,6 +194,9 @@ body.inbox-split-mode #modal-purchase .modal{width:46vw;max-width:none;max-heigh
   </div>
   <div class="sb-sec">
     <div class="sb-lbl">Dashboards</div>
+    <button class="sb-item" data-view="portfolio" title="Across all companies — does not change active company">
+      <svg viewBox="0 0 24 24"><path d="M2 7h20v13a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V7z"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>Portfolio
+    </button>
     <button class="sb-item active" data-view="dashboard">
       <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>Dashboard
     </button>
@@ -1441,6 +1444,7 @@ async function render() {
   updateBreadcrumb();
   $('topbar-actions').innerHTML = '';
   if (state.view === 'dashboard') await renderDashboard();
+  else if (state.view === 'portfolio') await renderPortfolio();
   else if (state.view === 'wip') await renderWIP();
   else if (state.view === 'ar-aging') await renderARaging();
   else if (state.view === 'employees') await renderEmployees();
@@ -1473,6 +1477,7 @@ async function render() {
 function updateBreadcrumb() {
   let html = '';
   if (state.view === 'dashboard') html = '<span class="cur">Company Dashboard</span>';
+  else if (state.view === 'portfolio') html = '<span class="cur">Portfolio — All Companies</span>';
   else if (state.view === 'wip') html = '<span>Dashboard</span><span class="sep">/</span><span class="cur">WIP Schedule</span>';
   else if (state.view === 'ar-aging') html = '<span>Dashboard</span><span class="sep">/</span><span class="cur">AR Aging</span>';
   else if (state.view === 'ap-aging') html = '<span>Dashboard</span><span class="sep">/</span><span class="cur">AP Aging</span>';
@@ -1558,6 +1563,173 @@ function openProject(id) {
 }
 
 // ── DASHBOARD ────────────────────────────────────────────────────────
+// ── PORTFOLIO — ALL COMPANIES ────────────────────────────────────────
+// Operational visibility across Tetra Mechanical, Tetra Fire, and JDM.
+// Bypasses withCompany() so queries see every row, then groups in memory.
+// Clicking a card or row switches the active company and routes you in.
+async function renderPortfolio() {
+  // One unfiltered fetch each — no withCompany() so we see everything.
+  const [{ data: companies }, { data: projects }, { data: invoices }, { data: purchases }] = await Promise.all([
+    db.from('companies').select('*').order('name'),
+    db.from('projects').select('*').is('deleted_at', null),
+    db.from('invoices').select('*').is('deleted_at', null),
+    db.from('purchases').select('*').is('deleted_at', null),
+  ]);
+  const comps = companies || [];
+  const projs = projects || [];
+  const invs = invoices || [];
+  const purs = purchases || [];
+
+  // Per-company rollups.
+  const byCompany = comps.map(c => {
+    const cProjs = projs.filter(p => p.company_id === c.id);
+    const activeProjs = cProjs.filter(p => p.status === 'Active');
+    const cProjIds = new Set(cProjs.map(p => p.id));
+    const cInvs = invs.filter(i => cProjIds.has(i.project_id));
+    const cPurs = purs.filter(pu => cProjIds.has(pu.project_id));
+    // AR outstanding = sum of (billed - retainage held - paid) — i.e. net due,
+    // since the QB invoice shows "Amount Due" net of retainage.
+    const ar = cInvs.reduce((s, i) => {
+      const billed = parseFloat(i.billed_amount || 0);
+      const retPct = parseFloat(i.retainage_pct || 0);
+      const net = billed - (billed * retPct / 100);
+      const paid = parseFloat(i.paid_amount || 0);
+      return s + Math.max(0, net - paid);
+    }, 0);
+    const ap = cPurs.reduce((s, pu) => {
+      const po = parseFloat(pu.po_amount || 0);
+      const paid = parseFloat(pu.paid_amount || 0);
+      return s + Math.max(0, po - paid);
+    }, 0);
+    const contract = cProjs.reduce((s, p) => s + parseFloat(p.base_contract || 0) + parseFloat(p.approved_cos || 0), 0);
+    return { company: c, activeCount: activeProjs.length, totalCount: cProjs.length, ar, ap, contract };
+  });
+
+  const grandAR = byCompany.reduce((s, r) => s + r.ar, 0);
+  const grandAP = byCompany.reduce((s, r) => s + r.ap, 0);
+  const grandActive = byCompany.reduce((s, r) => s + r.activeCount, 0);
+  const grandContract = byCompany.reduce((s, r) => s + r.contract, 0);
+
+  // Active-project list, sorted by company then job number.
+  const activeRows = projs.filter(p => p.status === 'Active').map(p => {
+    const c = comps.find(x => x.id === p.company_id);
+    const cInvs = invs.filter(i => i.project_id === p.id);
+    const billed = cInvs.reduce((s, i) => s + parseFloat(i.billed_amount || 0), 0);
+    const contract = parseFloat(p.base_contract || 0) + parseFloat(p.approved_cos || 0);
+    const balance = Math.max(0, contract - billed);
+    return { project: p, company: c, contract, billed, balance };
+  }).sort((a, b) => {
+    const an = (a.company?.short_name || a.company?.name || '').localeCompare(b.company?.short_name || b.company?.name || '');
+    if (an !== 0) return an;
+    return String(a.project.job_number || '').localeCompare(String(b.project.job_number || ''));
+  });
+
+  const cardHtml = byCompany.map(r => {
+    const c = r.company;
+    const color = c.color || '#1B2A5E';
+    const label = esc(c.short_name || c.name || '—');
+    return `<div class="portfolio-card" style="border-top:4px solid ${color}" onclick="portfolioGoToCompany('${c.id}')" title="Open ${label}">
+      <div class="pc-hd">
+        ${c.logo_url ? `<img src="${c.logo_url}" alt="${label}" style="height:32px;max-width:160px;object-fit:contain">` : `<div style="font-weight:700;font-size:15px;color:${color}">${label}</div>`}
+        <div class="pc-jobs">${r.activeCount} active${r.totalCount > r.activeCount ? ` <span style="color:var(--gray500)">/ ${r.totalCount} total</span>` : ''}</div>
+      </div>
+      <div class="pc-grid">
+        <div class="pc-stat">
+          <div class="pc-stat-lbl">AR Outstanding</div>
+          <div class="pc-stat-val" style="color:${color}">${fmtD(r.ar)}</div>
+        </div>
+        <div class="pc-stat">
+          <div class="pc-stat-lbl">AP Outstanding</div>
+          <div class="pc-stat-val">${fmtD(r.ap)}</div>
+        </div>
+        <div class="pc-stat" style="grid-column:1/-1">
+          <div class="pc-stat-lbl">Contract Value (Active + Closed)</div>
+          <div class="pc-stat-val" style="font-size:15px">${fmtD(r.contract)}</div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  const rowsHtml = activeRows.length === 0
+    ? '<tr><td colspan="7" style="text-align:center;color:var(--gray500);padding:24px">No active projects across any company.</td></tr>'
+    : activeRows.map(r => {
+        const color = r.company?.color || '#1B2A5E';
+        const cName = esc(r.company?.short_name || r.company?.name || '—');
+        return `<tr style="cursor:pointer" onclick="portfolioOpenProject('${r.company?.id || ''}','${r.project.id}')">
+          <td><span class="pf-badge" style="background:${color}">${cName}</span></td>
+          <td class="mono font-600">${esc(r.project.job_number || '—')}</td>
+          <td class="font-600">${esc(r.project.job_name || '—')}</td>
+          <td>${esc(r.project.general_contractor || r.project.owner_name || '—')}</td>
+          <td class="text-right">${fmtD(r.contract)}</td>
+          <td class="text-right">${fmtD(r.billed)}</td>
+          <td class="text-right font-600">${fmtD(r.balance)}</td>
+        </tr>`;
+      }).join('');
+
+  $('content').innerHTML = `
+    <style>
+      .portfolio-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin-bottom:18px}
+      .portfolio-card{background:#fff;border:1px solid var(--border);border-radius:8px;padding:14px;cursor:pointer;transition:transform .1s,box-shadow .1s}
+      .portfolio-card:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,.08)}
+      .pc-hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--gray100)}
+      .pc-jobs{font-size:11px;color:var(--gray600);font-weight:600}
+      .pc-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+      .pc-stat-lbl{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--gray500);margin-bottom:2px}
+      .pc-stat-val{font-size:17px;font-weight:700;color:var(--gray900)}
+      .portfolio-totals{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:18px}
+      .pt-card{background:linear-gradient(135deg,#1B2A5E 0%,#2c4080 100%);color:#fff;border-radius:8px;padding:14px 18px}
+      .pt-lbl{font-size:11px;text-transform:uppercase;letter-spacing:1px;opacity:.8;margin-bottom:4px}
+      .pt-val{font-size:22px;font-weight:700}
+      .pf-badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;color:#fff;font-weight:600;letter-spacing:.3px;white-space:nowrap}
+    </style>
+    <div class="portfolio-totals">
+      <div class="pt-card"><div class="pt-lbl">Total AR Outstanding</div><div class="pt-val">${fmtD(grandAR)}</div></div>
+      <div class="pt-card" style="background:linear-gradient(135deg,#7a3030 0%,#a04545 100%)"><div class="pt-lbl">Total AP Outstanding</div><div class="pt-val">${fmtD(grandAP)}</div></div>
+      <div class="pt-card" style="background:linear-gradient(135deg,#1f5e3a 0%,#2d8055 100%)"><div class="pt-lbl">Active Projects</div><div class="pt-val">${grandActive}<span style="font-size:13px;opacity:.7;font-weight:400"> · ${fmtD(grandContract)}</span></div></div>
+    </div>
+    <div class="portfolio-grid">${cardHtml}</div>
+    <div class="card">
+      <div class="card-hd"><div class="card-title">Active Projects — All Companies</div></div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr>
+            <th>Company</th><th>Job #</th><th>Project</th><th>GC / Owner</th>
+            <th class="text-right">Contract</th><th class="text-right">Billed</th><th class="text-right">Balance to Bill</th>
+          </tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  $('topbar-actions').innerHTML = '';
+}
+
+// Card click: switch active company + go to its dashboard.
+async function portfolioGoToCompany(companyId) {
+  if (!companyId) return;
+  if (companyId === state.activeCompanyId) {
+    navigate('dashboard');
+    return;
+  }
+  await switchCompany(companyId);
+  // switchCompany already navigates to dashboard.
+}
+
+// Row click: switch active company (if needed), then open the project.
+async function portfolioOpenProject(companyId, projectId) {
+  if (!companyId || !projectId) return;
+  if (companyId !== state.activeCompanyId) {
+    state.activeCompanyId = companyId;
+    try { await db.from('app_settings').upsert({ key: 'active_company_id', value: companyId }); } catch(e) {}
+    const { data: projects } = await withCompany(db.from('projects').select('*').is('deleted_at',null)).order('created_at');
+    state.projects = projects || [];
+    renderSidebarProjects();
+    renderCompanySwitcher();
+  }
+  // openProject reads state.projects, which is now the new company's list.
+  openProject(projectId);
+}
+
 async function renderDashboard() {
   const [{ data: projects }, { data: purchases }, { data: invoices }, { data: labor }, { data: subs }, { data: phases }, { data: budgets }, { data: lineItems }] = await Promise.all([
     withCompany(db.from('projects').select('*').is('deleted_at',null)).order('created_at'),

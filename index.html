@@ -254,6 +254,8 @@ body.inbox-split-mode #modal-purchase .modal{width:46vw;max-width:none;max-heigh
   <div class="topbar">
     <div class="breadcrumb" id="breadcrumb"><span class="cur">Company Dashboard</span></div>
     <div style="display:flex;align-items:center;gap:10px">
+      <!-- Company switcher (multi-company) -->
+      <div id="company-switcher"></div>
       <!-- Quick Add — global button always available -->
       <div style="position:relative">
         <button class="btn btn-sm btn-red" id="quick-add-btn" onclick="toggleQuickAdd()" style="display:flex;align-items:center;gap:4px">
@@ -1295,7 +1297,20 @@ let state = {
   purchases: [],
   laborEntries: [],
   invoices: [],
+  companies: [],
+  activeCompanyId: null,
 };
+
+// Apply the active-company filter to a Supabase query on a company-scoped table.
+// Central chokepoint so reads can't accidentally cross companies. If no active
+// company is set yet (shouldn't happen post-init), returns the query unfiltered.
+function withCompany(query) {
+  if (state.activeCompanyId) return query.eq('company_id', state.activeCompanyId);
+  return query;
+}
+function activeCompany() {
+  return (state.companies || []).find(c => c.id === state.activeCompanyId) || null;
+}
 
 const $ = id => document.getElementById(id);
 const fmt = n => n == null ? '$0' : '$' + Math.round(n).toLocaleString();
@@ -1484,14 +1499,14 @@ function openProject(id) {
 // ── DASHBOARD ────────────────────────────────────────────────────────
 async function renderDashboard() {
   const [{ data: projects }, { data: purchases }, { data: invoices }, { data: labor }, { data: subs }, { data: phases }, { data: budgets }, { data: lineItems }] = await Promise.all([
-    db.from('projects').select('*').is('deleted_at',null).order('created_at'),
-    db.from('purchases').select('*').is('deleted_at',null),
-    db.from('invoices').select('*').is('deleted_at',null),
-    db.from('labor_entries').select('*').is('deleted_at',null),
+    withCompany(db.from('projects').select('*').is('deleted_at',null)).order('created_at'),
+    withCompany(db.from('purchases').select('*').is('deleted_at',null)),
+    withCompany(db.from('invoices').select('*').is('deleted_at',null)),
+    withCompany(db.from('labor_entries').select('*').is('deleted_at',null)),
     db.from('subcontractors').select('*').eq('active',true),
-    db.from('phases').select('*'),
-    db.from('project_budgets').select('*'),
-    db.from('cost_line_items').select('*'),
+    withCompany(db.from('phases').select('*')),
+    withCompany(db.from('project_budgets').select('*')),
+    withCompany(db.from('cost_line_items').select('*')),
   ]);
   state.projects = projects || [];
   renderSidebarProjects();
@@ -9992,12 +10007,69 @@ async function confirmImportPOs() {
 }
 
 async function init() {
-  const { data: projects } = await db.from('projects').select('*').is('deleted_at',null).order('created_at');
+  // Multi-company: load companies and restore the last-active one BEFORE any
+  // data loads, so company-filtered reads have a company to filter by.
+  await loadCompanies();
+  const { data: projects } = await withCompany(db.from('projects').select('*').is('deleted_at',null)).order('created_at');
   state.projects = projects || [];
   const { data: employees } = await db.from('employees').select('*').order('name');
   state.employees = employees || [];
   renderSidebarProjects();
+  renderCompanySwitcher();
   await renderDashboard();
+}
+
+// Load the companies list and set the active company (restored from app_settings,
+// defaulting to the first active company — Tetra Mechanical).
+async function loadCompanies() {
+  const { data: companies } = await db.from('companies').select('*').order('name');
+  state.companies = (companies || []).filter(c => c.active !== false);
+  let saved = null;
+  try {
+    const { data } = await db.from('app_settings').select('value').eq('key', 'active_company_id').single();
+    saved = (typeof data?.value === 'string') ? data.value : null;
+  } catch (e) { /* none saved yet */ }
+  // Use saved if it's still a valid active company; else default to first.
+  if (saved && state.companies.some(c => c.id === saved)) {
+    state.activeCompanyId = saved;
+  } else {
+    // Prefer Tetra Mechanical as the default if present.
+    const tetra = state.companies.find(c => /tetra mechanical/i.test(c.name));
+    state.activeCompanyId = (tetra || state.companies[0])?.id || null;
+  }
+}
+
+// Render the top-bar company switcher dropdown.
+function renderCompanySwitcher() {
+  const el = $('company-switcher');
+  if (!el) return;
+  const cur = activeCompany();
+  if (!state.companies.length) { el.innerHTML = ''; return; }
+  el.innerHTML = `
+    <select onchange="switchCompany(this.value)" title="Active company"
+      style="font-size:13px;font-weight:600;color:var(--navy);border:1px solid var(--border);border-radius:6px;padding:5px 8px;background:#fff;cursor:pointer;max-width:200px">
+      ${state.companies.map(c =>
+        `<option value="${c.id}" ${c.id===state.activeCompanyId?'selected':''}>${esc(c.short_name || c.name)}</option>`
+      ).join('')}
+    </select>`;
+}
+
+// Switch the active company: persist, reload company-scoped data, re-render.
+async function switchCompany(companyId) {
+  if (!companyId || companyId === state.activeCompanyId) return;
+  state.activeCompanyId = companyId;
+  try { await db.from('app_settings').upsert({ key: 'active_company_id', value: companyId }); }
+  catch (e) { console.error('Failed to persist active company:', e); }
+  // Leaving any open project (it belongs to the prior company) and go to dashboard.
+  state.activeProject = null;
+  state.activeModule = null;
+  state.view = 'dashboard';
+  // Reload the project list for the new company.
+  const { data: projects } = await withCompany(db.from('projects').select('*').is('deleted_at',null)).order('created_at');
+  state.projects = projects || [];
+  renderSidebarProjects();
+  renderCompanySwitcher();
+  render();
 }
 
 // ── AUTH GATE ───────────────────────────────────────────────────────

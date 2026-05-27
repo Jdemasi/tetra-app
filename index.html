@@ -508,6 +508,7 @@ body.inbox-split-mode #modal-purchase .modal{width:46vw;max-width:none;max-heigh
       <div class="fgroup"><label class="flbl">Amount ($) *</label><input class="finp" type="number" step="0.01" id="chk-amount" placeholder="0.00"></div>
       <div class="fgroup"><label class="flbl">&nbsp;</label><div style="font-size:11px;color:var(--gray600);padding-top:6px">Suggested # is last+1 — confirm or type the number on the stock you'll feed in.</div></div>
       <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Memo</label><input class="finp" id="chk-memo" placeholder="e.g. Account #12345"></div>
+      <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Payee Address <span style="color:var(--gray600);font-weight:normal">(optional — for window envelopes)</span></label><textarea class="finp" id="chk-payee-addr" rows="2" placeholder="123 Main St, City, State Zip"></textarea></div>
     </div>
     <div class="form-actions" style="display:flex;justify-content:flex-end;gap:8px">
       <button class="btn" onclick="closeModal('modal-check')">Cancel</button>
@@ -8221,11 +8222,22 @@ async function nextCheckNumber(companyId) {
 // printer feeds slightly differently, so the print window includes a live
 // alignment panel. Offsets are persisted per-browser in localStorage; first
 // alignment is a one-time setup, after that just print.
-function printVoucherCheck({ payee, amount, memo, date, checkNumber }) {
+function printVoucherCheck({ payee, amount, memo, date, checkNumber, payeeAddress }) {
   const amt = parseFloat(amount) || 0;
   const dateStr = date ? (() => { const [y,m,d] = date.split('-'); return `${m}/${d}/${y}`; })() : new Date().toLocaleDateString('en-US');
   const words = numberToWords(amt);
   const numStr = checkNumber ? String(checkNumber) : '';
+  // Payee address for the lower window of #10 double-window envelopes. Split
+  // on commas so "123 Main St, Greenvale, NY 11548" becomes two lines.
+  const addrLines = (payeeAddress || '').trim()
+    ? (payeeAddress.includes(',')
+        ? (() => { const parts = payeeAddress.split(',').map(s => s.trim()).filter(Boolean); return parts.length >= 2 ? [parts[0], parts.slice(1).join(', ')] : parts; })()
+        : [payeeAddress.trim()])
+    : [];
+  const addrHtml = addrLines.length ? addrLines.map(l => `<div>${esc(l)}</div>`).join('') : '';
+  // Signature image — ST120_SIG_B64 lives in assets.js. Toggle in the alignment
+  // panel lets you suppress it for void/hand-signed runs.
+  const sigSrc = (typeof ST120_SIG_B64 !== 'undefined' && ST120_SIG_B64) ? `data:image/png;base64,${ST120_SIG_B64}` : '';
   const stub = () => `
     <div class="stub">
       <table class="stub-tbl">
@@ -8246,19 +8258,21 @@ function printVoucherCheck({ payee, amount, memo, date, checkNumber }) {
 :root{
   --ox: 0px;            /* global horizontal nudge (persisted) */
   --oy: 0px;            /* global vertical nudge (persisted) */
-  --toy: 0px;           /* top-row only Y nudge — date, payee, $ box (persisted) */
-  --date-top:   1.00in;
+  --toy: 0px;           /* top-row only Y nudge — date, payee, $ box, address (persisted) */
+  --date-top:   0.85in;
   --date-right: 0.55in;
   --pay-top:    1.50in;
   --pay-left:   1.30in; /* after the printed "PAY TO THE ORDER OF" label */
-  --amt-top:    1.45in;
+  --amt-top:    1.50in;
   --amt-right:  0.55in;
+  --addr-top:   1.85in; /* payee address — drops into lower window of #10 envelopes */
+  --addr-left:  1.30in;
   --words-top:  1.60in;
   --words-left: 0.50in;
   --memo-top:   2.85in;
   --memo-left:  0.80in; /* after the printed "MEMO" label */
-  --sig-top:    2.80in;
-  --sig-right:  0.55in;
+  --sig-top:    2.65in;
+  --sig-right:  0.65in;
 }
 *{box-sizing:border-box;margin:0;padding:0;font-family:Arial,Helvetica,sans-serif}
 body{background:#fff;color:#000}
@@ -8269,9 +8283,12 @@ body{background:#fff;color:#000}
 .date{top:calc(var(--date-top) + var(--toy));right:var(--date-right);min-width:1.2in;text-align:left}
 .pay-name{top:calc(var(--pay-top) + var(--toy));left:var(--pay-left);right:1.4in;white-space:nowrap;overflow:hidden;font-weight:bold}
 .pay-amount{top:calc(var(--amt-top) + var(--toy));right:var(--amt-right);font-weight:bold;font-size:13pt;min-width:1.0in;text-align:right}
+.pay-addr{top:calc(var(--addr-top) + var(--toy));left:var(--addr-left);font-size:11pt;line-height:1.3}
+.pay-addr div{padding:1px 0}
+.sig-img{position:absolute;top:var(--sig-top);right:var(--sig-right);height:0.5in;max-width:2.4in;object-fit:contain}
+.sig-hide{display:none}
 .words{top:var(--words-top);left:var(--words-left);right:1.0in;white-space:nowrap;overflow:hidden}
 .memo{top:var(--memo-top);left:var(--memo-left);max-width:3in;font-size:10pt}
-.sig{position:absolute;top:var(--sig-top);right:var(--sig-right);width:2.2in;height:0.32in}
 /* STUBS — minimal */
 .stub{height:3.5in;padding:0.4in 0.6in;border-bottom:1px dashed #999;font-size:12px}
 .stub:last-child{border-bottom:none;height:4in}
@@ -8300,9 +8317,10 @@ body{background:#fff;color:#000}
       <div class="fld date">${dateStr}</div>
       <div class="fld pay-name">${esc(payee || '')}</div>
       <div class="fld pay-amount">${fmtD(amt)}</div>
+      ${addrHtml ? `<div class="fld pay-addr">${addrHtml}</div>` : ''}
       <div class="fld words">${esc(words)}</div>
       <div class="fld memo">${esc(memo || '')}</div>
-      <div class="sig"></div>
+      ${sigSrc ? `<img class="sig-img" id="sigImg" src="${sigSrc}" alt="signature">` : ''}
     </div>
   </div>
   ${stub()}
@@ -8325,6 +8343,10 @@ body{background:#fff;color:#000}
     <button onclick="nudgeTop(1)">↓ down</button>
   </div>
   <div class="vals">Top Y: <span id="vt">0</span>px</div>
+  <div style="border-top:1px solid #eee;margin:8px 0 6px"></div>
+  <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+    <input type="checkbox" id="sigToggle" checked> Print signature
+  </label>
   <div class="row">
     <button onclick="saveAlign()">Save</button>
     <button class="sec" onclick="window.print()">🖨️ Print</button>
@@ -8334,12 +8356,14 @@ body{background:#fff;color:#000}
 
 <script>
   const COMPANY_KEY = ${JSON.stringify('checkAlign_' + (state.activeCompanyId || 'default'))};
-  let ox = 0, oy = 0, toy = 0;
+  // Defaults tuned to Tetra/JDM check stock — saved alignment in localStorage overrides.
+  let ox = 3, oy = 10, toy = -19, sigOn = true;
   try {
     const saved = JSON.parse(localStorage.getItem(COMPANY_KEY) || '{}');
     if (typeof saved.ox === 'number') ox = saved.ox;
     if (typeof saved.oy === 'number') oy = saved.oy;
     if (typeof saved.toy === 'number') toy = saved.toy;
+    if (typeof saved.sigOn === 'boolean') sigOn = saved.sigOn;
   } catch(e) {}
   function apply() {
     document.documentElement.style.setProperty('--ox', ox + 'px');
@@ -8348,12 +8372,16 @@ body{background:#fff;color:#000}
     document.getElementById('vx').textContent = ox;
     document.getElementById('vy').textContent = oy;
     document.getElementById('vt').textContent = toy;
+    const sigEl = document.getElementById('sigImg');
+    if (sigEl) sigEl.classList.toggle('sig-hide', !sigOn);
+    const tg = document.getElementById('sigToggle');
+    if (tg) tg.checked = sigOn;
   }
   function nudge(dx, dy) { ox += dx; oy += dy; apply(); }
   function nudgeTop(dy) { toy += dy; apply(); }
   function reset() { ox = 0; oy = 0; toy = 0; apply(); }
   function saveAlign() {
-    localStorage.setItem(COMPANY_KEY, JSON.stringify({ ox, oy, toy }));
+    localStorage.setItem(COMPANY_KEY, JSON.stringify({ ox, oy, toy, sigOn }));
     const saveBtn = document.querySelector('.align-panel .row:nth-last-of-type(1) button:first-child');
     if (saveBtn) {
       const orig = saveBtn.textContent;
@@ -8361,6 +8389,14 @@ body{background:#fff;color:#000}
       setTimeout(() => { saveBtn.textContent = orig; }, 1200);
     }
   }
+  document.addEventListener('DOMContentLoaded', () => {
+    const tg = document.getElementById('sigToggle');
+    if (tg) tg.addEventListener('change', () => { sigOn = tg.checked; apply(); });
+  });
+  // DOMContentLoaded may have already fired by the time this script runs after
+  // document.write/close, so also wire it directly if the element exists now.
+  const tgNow = document.getElementById('sigToggle');
+  if (tgNow) tgNow.addEventListener('change', () => { sigOn = tgNow.checked; apply(); });
   document.addEventListener('keydown', (e) => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
     if (e.shiftKey && e.key === 'ArrowUp')   { e.preventDefault(); nudgeTop(-1); return; }
@@ -8393,6 +8429,12 @@ async function printVendorCheck(purchaseId) {
   if (entered === null) return; // user cancelled
   const checkNumber = parseInt(String(entered).trim()) || suggested;
   const memo = pu.invoice_number ? `Invoice ${pu.invoice_number}` + (pu.po_number ? ` / PO ${pu.po_number}` : '') : (pu.po_number ? `PO ${pu.po_number}` : '');
+  // Look up vendor address for the lower window of a #10 double-window envelope.
+  let payeeAddress = '';
+  if (pu.vendor) {
+    const { data: vrow } = await withCompany(db.from('vendors').select('address').eq('name', pu.vendor)).limit(1).maybeSingle();
+    payeeAddress = (vrow && vrow.address) ? vrow.address : '';
+  }
   const { error } = await db.from('checks').insert({
     company_id: companyId,
     check_number: checkNumber,
@@ -8404,7 +8446,7 @@ async function printVendorCheck(purchaseId) {
   });
   if (error) { toast('Could not save check: ' + error.message, 'error'); return; }
   toast(`Check #${checkNumber} recorded for ${pu.vendor || 'vendor'}`);
-  printVoucherCheck({ payee: pu.vendor || '', amount, memo, date: today(), checkNumber });
+  printVoucherCheck({ payee: pu.vendor || '', amount, memo, date: today(), checkNumber, payeeAddress });
 }
 
 // Manual check: open the form for any payee/amount/memo. Pre-fill the check-
@@ -8414,6 +8456,7 @@ async function openManualCheck() {
   $('chk-payee').value = '';
   $('chk-amount').value = '';
   $('chk-memo').value = '';
+  $('chk-payee-addr').value = '';
   $('chk-date').value = today();
   const suggested = await nextCheckNumber(state.activeCompanyId || null);
   $('chk-number').value = suggested;
@@ -8428,6 +8471,7 @@ async function saveAndPrintManualCheck() {
   if (amount <= 0) { toast('Enter an amount greater than zero', 'error'); return; }
   if (checkNumber <= 0) { toast('Enter the check number', 'error'); return; }
   const memo = $('chk-memo').value.trim();
+  const payeeAddress = $('chk-payee-addr').value.trim();
   const date = $('chk-date').value || today();
   const companyId = state.activeCompanyId || null;
   const { error } = await db.from('checks').insert({
@@ -8440,7 +8484,7 @@ async function saveAndPrintManualCheck() {
   if (error) { toast('Could not save check: ' + error.message, 'error'); return; }
   closeModal('modal-check');
   toast(`Check #${checkNumber} recorded for ${payee}`);
-  printVoucherCheck({ payee, amount, memo, date, checkNumber });
+  printVoucherCheck({ payee, amount, memo, date, checkNumber, payeeAddress });
 }
 
 // Checks register: list issued checks for the active company with void.
@@ -8482,7 +8526,16 @@ async function renderChecks() {
 async function reprintCheck(checkId) {
   const { data: c } = await db.from('checks').select('*').eq('id', checkId).single();
   if (!c) return;
-  printVoucherCheck({ payee: c.payee, amount: c.amount, memo: c.memo, date: c.check_date, checkNumber: c.check_number });
+  // Re-resolve payee address from vendors if this check was tied to a purchase.
+  let payeeAddress = '';
+  if (c.purchase_id) {
+    const { data: pu } = await db.from('purchases').select('vendor').eq('id', c.purchase_id).maybeSingle();
+    if (pu && pu.vendor) {
+      const { data: vrow } = await withCompany(db.from('vendors').select('address').eq('name', pu.vendor)).limit(1).maybeSingle();
+      payeeAddress = (vrow && vrow.address) ? vrow.address : '';
+    }
+  }
+  printVoucherCheck({ payee: c.payee, amount: c.amount, memo: c.memo, date: c.check_date, checkNumber: c.check_number, payeeAddress });
 }
 
 async function voidCheck(checkId) {

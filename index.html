@@ -203,6 +203,9 @@ body.inbox-split-mode #modal-purchase .modal{width:46vw;max-width:none;max-heigh
     <button class="sb-item" data-view="collections" title="Overdue invoices — draft reminder emails">
       <svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>Collections
     </button>
+    <button class="sb-item" data-view="waivers" title="Lien waivers paid but not received back">
+      <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>Waivers
+    </button>
     <button class="sb-item" data-view="wip">
       <svg viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>WIP Schedule
     </button>
@@ -516,6 +519,13 @@ body.inbox-split-mode #modal-purchase .modal{width:46vw;max-width:none;max-heigh
       <div class="fgroup"><label class="flbl">&nbsp;</label><div style="font-size:11px;color:var(--gray600);padding-top:6px">Suggested # is last+1 — confirm or type the number on the stock you'll feed in.</div></div>
       <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Memo</label><input class="finp" id="chk-memo" placeholder="e.g. Account #12345"></div>
       <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Payee Address <span style="color:var(--gray600);font-weight:normal">(optional — for window envelopes)</span></label><textarea class="finp" id="chk-payee-addr" rows="2" placeholder="123 Main St, City, State Zip"></textarea></div>
+      <div class="fgroup" style="grid-column:1/-1;border-top:1px solid var(--gray100);padding-top:8px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
+          <input type="checkbox" id="chk-needs-waiver" onchange="document.getElementById('chk-waiver-job-wrap').style.display=this.checked?'block':'none'">
+          This payment needs a lien waiver back (sub/supplier)
+        </label>
+      </div>
+      <div class="fgroup" style="grid-column:1/-1;display:none" id="chk-waiver-job-wrap"><label class="flbl">For Job</label><select class="finp" id="chk-waiver-job"></select></div>
     </div>
     <div class="form-actions" style="display:flex;justify-content:flex-end;gap:8px">
       <button class="btn" onclick="closeModal('modal-check')">Cancel</button>
@@ -788,6 +798,7 @@ body.inbox-split-mode #modal-purchase .modal{width:46vw;max-width:none;max-heigh
     <div class="modal-hd"><div class="modal-title">Log Lien Waiver</div><button class="modal-close" onclick="closeModal('modal-lien')">×</button></div>
     <div class="form-grid">
       <div class="fgroup"><label class="flbl">Waiver Type</label><select class="finp" id="lien-type"><option>Conditional</option><option>Unconditional</option></select></div>
+      <div class="fgroup"><label class="flbl">Stage</label><select class="finp" id="lien-subtype"><option>Progress</option><option>Final</option></select></div>
       <div class="fgroup"><label class="flbl">Party Type</label><select class="finp" id="lien-party-type"><option>Subcontractor</option><option>Vendor</option><option>Self</option></select></div>
       <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Company / Party Name</label><input class="finp" id="lien-name" placeholder="e.g. ABC Plumbing or Ferguson"></div>
       <div class="fgroup"><label class="flbl">Amount ($)</label><input class="finp" type="number" id="lien-amount" placeholder="0.00"></div>
@@ -1449,6 +1460,7 @@ async function render() {
   if (state.view === 'dashboard') await renderDashboard();
   else if (state.view === 'portfolio') await renderPortfolio();
   else if (state.view === 'collections') await renderCollections();
+  else if (state.view === 'waivers') await renderWaiversOutstanding();
   else if (state.view === 'wip') await renderWIP();
   else if (state.view === 'ar-aging') await renderARaging();
   else if (state.view === 'employees') await renderEmployees();
@@ -1483,6 +1495,7 @@ function updateBreadcrumb() {
   if (state.view === 'dashboard') html = '<span class="cur">Company Dashboard</span>';
   else if (state.view === 'portfolio') html = '<span class="cur">Portfolio — All Companies</span>';
   else if (state.view === 'collections') html = '<span class="cur">Collections</span>';
+  else if (state.view === 'waivers') html = '<span class="cur">Waivers Outstanding</span>';
   else if (state.view === 'wip') html = '<span>Dashboard</span><span class="sep">/</span><span class="cur">WIP Schedule</span>';
   else if (state.view === 'ar-aging') html = '<span>Dashboard</span><span class="sep">/</span><span class="cur">AR Aging</span>';
   else if (state.view === 'ap-aging') html = '<span>Dashboard</span><span class="sep">/</span><span class="cur">AP Aging</span>';
@@ -7595,9 +7608,10 @@ async function renderLiens() {
       <button class="btn btn-sm btn-red" onclick="openNewLien('${p.id}')">+ New Waiver</button>
     </div>
     ${(liens||[]).length===0?'<div class="tbl-empty">No lien waivers logged yet.</div>':
-    `<table><thead><tr><th>Type</th><th>Party</th><th>Name</th><th class="text-right">Amount</th><th>Through Date</th><th>Received</th><th>Payment Ref</th><th>Status</th></tr></thead><tbody>
+    `<table><thead><tr><th>Type</th><th>Stage</th><th>Party</th><th>Name</th><th class="text-right">Amount</th><th>Through Date</th><th>Received</th><th>Payment Ref</th><th>Status</th><th style="width:180px"></th></tr></thead><tbody>
     ${(liens||[]).map((l,i)=>`<tr style="background:${i%2===0?'#FFF':'var(--gray50)'}">
       <td><span class="badge ${l.waiver_type==='Conditional'?'b-partial':'b-paid'}">${l.waiver_type||'—'}</span></td>
+      <td style="font-size:11px">${l.subtype||'Progress'}</td>
       <td style="font-size:11px;color:var(--gray600)">${l.party_type||'—'}</td>
       <td class="font-600">${l.party_name||'—'}</td>
       <td class="text-right">${fmt(l.amount)}</td>
@@ -7605,6 +7619,11 @@ async function renderLiens() {
       <td>${l.received_date||'—'}</td>
       <td class="mono" style="font-size:11px">${l.payment_ref||'—'}</td>
       <td><span class="badge b-${(l.status||'pending').toLowerCase()}">${l.status}</span></td>
+      <td><div style="display:flex;gap:4px">
+        <button class="btn btn-sm" title="Generate waiver PDF for the sub/vendor to sign" onclick="generateInboundWaiver('${l.id}')">📄 Waiver</button>
+        <button class="btn btn-sm" onclick="openEditLien('${l.id}','${p.id}')">Edit</button>
+        <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deleteLien('${l.id}')">Del</button>
+      </div></td>
     </tr>`).join('')}
     </tbody></table>`}
   </div>`;
@@ -7614,18 +7633,23 @@ async function renderLiens() {
 function openNewLien(projectId) {
   clearForm(['lien-party','lien-name','lien-amount','lien-through','lien-received','lien-ref']);
   $('lien-type').value = 'Conditional';
+  if ($('lien-subtype')) $('lien-subtype').value = 'Progress';
   $('lien-party-type').value = 'Subcontractor';
   $('lien-status').value = 'Pending';
   $('modal-lien').dataset.projectId = projectId;
+  $('modal-lien').dataset.editId = '';
+  document.querySelector('#modal-lien .modal-title').textContent = 'Log Lien Waiver';
   openModal('modal-lien');
 }
 
 async function saveLien() {
   const projectId = $('modal-lien').dataset.projectId;
-  const { error } = await db.from('lien_waivers').insert({
+  const editId = $('modal-lien').dataset.editId;
+  const payload = {
     project_id: projectId,
     company_id: state.activeCompanyId || null,
     waiver_type: $('lien-type').value,
+    subtype: $('lien-subtype') ? $('lien-subtype').value : 'Progress',
     party_type: $('lien-party-type').value,
     party_name: $('lien-name').value,
     amount: parseFloat($('lien-amount').value)||0,
@@ -7633,11 +7657,185 @@ async function saveLien() {
     received_date: $('lien-received').value||null,
     payment_ref: $('lien-ref').value,
     status: $('lien-status').value,
-  });
+  };
+  let error;
+  if (editId) {
+    ({ error } = await db.from('lien_waivers').update(payload).eq('id', editId));
+  } else {
+    ({ error } = await db.from('lien_waivers').insert(payload));
+  }
   if (error) { toast('Error: '+error.message,'error'); return; }
   closeModal('modal-lien');
-  toast('Lien waiver saved');
+  toast(editId ? 'Lien waiver updated' : 'Lien waiver saved');
   render();
+}
+
+async function openEditLien(lienId, projectId) {
+  const { data: l } = await db.from('lien_waivers').select('*').eq('id', lienId).single();
+  if (!l) { toast('Could not load waiver','error'); return; }
+  $('lien-type').value = l.waiver_type || 'Conditional';
+  if ($('lien-subtype')) $('lien-subtype').value = l.subtype || 'Progress';
+  $('lien-party-type').value = l.party_type || 'Subcontractor';
+  $('lien-name').value = l.party_name || '';
+  $('lien-amount').value = l.amount || '';
+  $('lien-through').value = l.through_date || '';
+  $('lien-received').value = l.received_date || '';
+  $('lien-ref').value = l.payment_ref || '';
+  $('lien-status').value = l.status || 'Pending';
+  $('modal-lien').dataset.projectId = projectId;
+  $('modal-lien').dataset.editId = lienId;
+  document.querySelector('#modal-lien .modal-title').textContent = 'Edit Lien Waiver';
+  openModal('modal-lien');
+}
+
+async function deleteLien(lienId) {
+  if (!confirm('Delete this lien waiver record? This cannot be undone.')) return;
+  const { error } = await db.from('lien_waivers').delete().eq('id', lienId);
+  if (error) { toast('Could not delete: '+error.message,'error'); return; }
+  toast('Waiver deleted');
+  render();
+}
+
+// Generate an INBOUND lien waiver for a sub/vendor to sign — they (the claimant)
+// waive their lien rights against our project in exchange for our payment.
+// Mirrors the language/layout of the outbound pay-app waiver, parties flipped:
+// the sub is the claimant who signs; our company is released. Blank signature
+// line (they sign, not us). Conditional Progress or Conditional Final.
+async function generateInboundWaiver(lienId) {
+  const { data: l } = await db.from('lien_waivers').select('*').eq('id', lienId).single();
+  if (!l) { toast('Could not load waiver','error'); return; }
+  const { data: proj } = await db.from('projects').select('*').eq('id', l.project_id).single();
+  const p = proj || {};
+  const ident = companyDocIdentity();
+  const isFinal = (l.subtype === 'Final');
+  const claimant = l.party_name || '________________________';
+  const throughStr = l.through_date ? new Date(l.through_date+'T00:00:00').toLocaleDateString('en-US') : '________________';
+  const amtStr = fmt(l.amount || 0);
+
+  const title = isFinal
+    ? 'CONDITIONAL FINAL WAIVER AND RELEASE OF LIEN<br>UPON FINAL PAYMENT'
+    : 'CONDITIONAL PARTIAL WAIVER AND RELEASE OF LIEN<br>UPON PROGRESS PAYMENT';
+  const bodyText = isFinal
+    ? `The undersigned (the "Claimant") hereby waives and releases all lien, stop payment notice, and bond rights the Claimant has for labor, services, equipment, or materials furnished to <strong>${esc(ident.name)}</strong> on the above project. This waiver and release is <strong>conditional upon actual receipt of final payment</strong> in the amount of:<br><br>
+    <div style="text-align:center;font-size:16px;font-weight:bold;margin:16px 0">${amtStr}</div>
+    Upon receipt of this payment, the Claimant acknowledges it has been <strong>paid in full</strong> for all labor, services, equipment, and materials furnished to the project, and that all claims, extras, and retainage are satisfied.`
+    : `The undersigned (the "Claimant") hereby waives and releases lien, stop payment notice, and bond rights the Claimant has for labor, services, equipment, or materials furnished to <strong>${esc(ident.name)}</strong> on the above project <strong>through the Through Date listed above</strong>, but <strong>only to the extent of payment received</strong> in the amount of:<br><br>
+    <div style="text-align:center;font-size:16px;font-weight:bold;margin:16px 0">${amtStr}</div>
+    This waiver and release is <strong>conditional upon actual receipt of payment</strong> of the above amount. This waiver does not cover retention, pending change orders, or amounts not yet paid.`;
+
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Lien Waiver — ${esc(claimant)}</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;font-family:Arial,Helvetica,sans-serif}
+body{background:#fff;color:#000;padding:48px}
+.wrap{max-width:720px;margin:0 auto}
+.head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #1B2A5E;padding-bottom:14px;margin-bottom:20px}
+.head .nm{font-size:16px;font-weight:bold;color:#1B2A5E}
+.head .co{font-size:11px;line-height:1.5;color:#333}
+.head img{height:48px;max-width:240px;object-fit:contain;margin-bottom:6px}
+.lien-title{text-align:center;font-size:15px;font-weight:bold;letter-spacing:.5px;margin:10px 0 22px;line-height:1.5}
+.lien-field{font-size:12px;margin-bottom:5px}
+.body{margin:18px 0;font-size:12px;line-height:1.9}
+.sig-block{margin-top:42px;font-size:12px}
+.sig-line{margin:26px 0 6px}
+.note{margin-top:30px;font-size:10px;color:#777;border-top:1px solid #eee;padding-top:10px;line-height:1.5}
+@media print{.no-print{display:none}body{padding:0.6in}@page{size:letter;margin:0}}
+</style></head><body>
+<div class="wrap">
+  <div class="head">
+    <div class="co">
+      ${ident.logo ? `<img src="${ident.logo}" alt="${esc(ident.name)}"><br>` : ''}
+      <span class="nm">${esc(ident.name)}</span><br>
+      ${esc(ident.addr1)}<br>${esc(ident.cityStateZip)}<br>${esc(ident.phone)}
+    </div>
+  </div>
+  <div class="lien-title">${title}</div>
+  <div>
+    <div class="lien-field">Project: <strong>${esc([p.job_number, p.job_name].filter(Boolean).join(' — ')||'—')}</strong></div>
+    <div class="lien-field">Project Location: <strong>${esc(p.project_address||'—')}</strong></div>
+    <div class="lien-field">Owner: <strong>${esc(p.owner_name||'—')}</strong></div>
+    <div class="lien-field">General Contractor: <strong>${esc(p.general_contractor || p.gc_name || '—')}</strong></div>
+    <div class="lien-field">Paid By: <strong>${esc(ident.name)}</strong></div>
+    <div class="lien-field">Claimant (Sub/Supplier): <strong>${esc(claimant)}</strong></div>
+    <div class="lien-field">Through Date: <strong>${throughStr}</strong></div>
+    ${l.payment_ref ? `<div class="lien-field">Payment Reference: <strong>${esc(l.payment_ref)}</strong></div>` : ''}
+  </div>
+  <div class="body">${bodyText}</div>
+  <div class="sig-block">
+    <div style="margin-bottom:4px">Claimant: <strong>${esc(claimant)}</strong></div>
+    <div class="sig-line">Signature: _____________________________________&nbsp;&nbsp;&nbsp;Date: ______________</div>
+    <div class="sig-line">Print Name: ____________________________________</div>
+    <div class="sig-line">Title: _________________________________________</div>
+  </div>
+  <div class="note">
+    This is a conditional waiver and becomes effective only upon the Claimant's actual receipt and clearance of the payment stated above. New York does not prescribe a statutory lien waiver form; this document is provided for convenience.
+  </div>
+</div>
+<div class="no-print" style="text-align:center;margin:20px;display:flex;gap:12px;justify-content:center">
+  <button onclick="window.print()" style="padding:10px 30px;background:#1B2A5E;color:#fff;border:none;border-radius:6px;font-size:14px;cursor:pointer">🖨️ Print / Save as PDF</button>
+</div>
+</body></html>`;
+  const win = window.open('', '_blank');
+  win.document.write(html);
+  win.document.close();
+  setTimeout(() => win.focus(), 300);
+}
+
+// Global chase view: lien waivers we're owed (paid sub/supplier, waiver not yet
+// received). Active-company scoped. Pending waivers across all jobs in one list,
+// with quick actions to generate the waiver doc or mark it received.
+async function renderWaiversOutstanding() {
+  const [{ data: liens }, { data: projects }] = await Promise.all([
+    withCompany(db.from('lien_waivers').select('*').order('created_at', { ascending: false })),
+    withCompany(db.from('projects').select('*').is('deleted_at', null)),
+  ]);
+  const projById = {};
+  (projects || []).forEach(p => { projById[p.id] = p; });
+  const pending = (liens || []).filter(l => (l.status || 'Pending') === 'Pending');
+  const ident = companyDocIdentity();
+  const totalPending = pending.reduce((s, l) => s + parseFloat(l.amount || 0), 0);
+
+  const rows = pending.length === 0
+    ? '<tr><td colspan="7" style="text-align:center;color:var(--gray500);padding:24px">No waivers outstanding — all collected. 🎉</td></tr>'
+    : pending.map(l => {
+        const p = projById[l.project_id] || {};
+        const job = [p.job_number, p.job_name].filter(Boolean).join(' — ') || '—';
+        return `<tr>
+          <td class="font-600">${esc(l.party_name || '—')}</td>
+          <td style="font-size:11px;color:var(--gray600)">${esc(l.party_type || '—')}</td>
+          <td>${esc(job)}</td>
+          <td class="text-right">${fmt(l.amount)}</td>
+          <td class="mono" style="font-size:11px">${esc(l.payment_ref || '—')}</td>
+          <td style="font-size:11px">${l.subtype || 'Progress'} · ${l.waiver_type || 'Conditional'}</td>
+          <td><div style="display:flex;gap:4px">
+            <button class="btn btn-sm" title="Generate the waiver PDF to send" onclick="generateInboundWaiver('${l.id}')">📄 Waiver</button>
+            <button class="btn btn-sm" style="color:var(--green);border-color:var(--green)" title="Mark as received" onclick="markWaiverReceived('${l.id}')">✓ Received</button>
+          </div></td>
+        </tr>`;
+      }).join('');
+
+  $('content').innerHTML = `
+  <div class="kgrid" style="grid-template-columns:repeat(2,1fr)">
+    <div class="kcard amb"><div class="klbl">Waivers Outstanding</div><div class="kval">${pending.length}</div><div class="ksub a">${ident.name}</div></div>
+    <div class="kcard red"><div class="klbl">Value Awaiting Waiver</div><div class="kval">${fmt(totalPending)}</div><div class="ksub m">paid, not yet released</div></div>
+  </div>
+  <div class="card">
+    <div class="card-hd"><div class="card-title">Lien Waivers Outstanding — Paid, Not Yet Received Back</div></div>
+    <p class="section-sub">Subs and suppliers you've paid who still owe you a signed waiver. Generate the document to send, or mark received when it comes back.</p>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Party</th><th>Type</th><th>Job</th><th class="text-right">Amount</th><th>Payment Ref</th><th>Waiver</th><th style="width:200px"></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  </div>`;
+  $('topbar-actions').innerHTML = '';
+}
+
+async function markWaiverReceived(lienId) {
+  const { error } = await db.from('lien_waivers').update({ status: 'Received', received_date: today() }).eq('id', lienId);
+  if (error) { toast('Could not update: ' + error.message, 'error'); return; }
+  toast('Waiver marked received');
+  renderWaiversOutstanding();
 }
 
 // ── AP AGING ─────────────────────────────────────────────────────────
@@ -9100,7 +9298,7 @@ async function printVendorCheck(purchaseId) {
     const { data: vrow } = await withCompany(db.from('vendors').select('address').eq('name', pu.vendor)).limit(1).maybeSingle();
     payeeAddress = (vrow && vrow.address) ? vrow.address : '';
   }
-  const { error } = await db.from('checks').insert({
+  const { data: chk, error } = await db.from('checks').insert({
     company_id: companyId,
     check_number: checkNumber,
     payee: pu.vendor || '',
@@ -9108,8 +9306,23 @@ async function printVendorCheck(purchaseId) {
     memo,
     check_date: today(),
     purchase_id: pu.id,
-  });
+  }).select().single();
   if (error) { toast('Could not save check: ' + error.message, 'error'); return; }
+  // Offer to track a lien waiver back for this payment (vendor checks have a project).
+  if (pu.project_id && confirm(`Track a lien waiver from ${pu.vendor || 'this vendor'} for this payment?\n\n(Creates a pending waiver you can generate + chase.)`)) {
+    await db.from('lien_waivers').insert({
+      project_id: pu.project_id,
+      company_id: companyId,
+      waiver_type: 'Conditional',
+      subtype: 'Progress',
+      party_type: 'Subcontractor',
+      party_name: pu.vendor || '',
+      amount,
+      payment_ref: `Check #${checkNumber}`,
+      check_id: chk ? chk.id : null,
+      status: 'Pending',
+    });
+  }
   toast(`Check #${checkNumber} recorded for ${pu.vendor || 'vendor'}`);
   printVoucherCheck({ payee: pu.vendor || '', amount, memo, date: today(), checkNumber, payeeAddress });
 }
@@ -9125,6 +9338,13 @@ async function openManualCheck() {
   $('chk-date').value = today();
   const suggested = await nextCheckNumber(state.activeCompanyId || null);
   $('chk-number').value = suggested;
+  // Reset waiver toggle + populate active jobs for the optional waiver link.
+  if ($('chk-needs-waiver')) {
+    $('chk-needs-waiver').checked = false;
+    $('chk-waiver-job-wrap').style.display = 'none';
+    const { data: jobs } = await withCompany(db.from('projects').select('id,job_number,job_name').is('deleted_at',null).eq('status','Active')).order('job_number');
+    $('chk-waiver-job').innerHTML = (jobs||[]).map(j => `<option value="${j.id}">${esc((j.job_number||'')+' — '+(j.job_name||''))}</option>`).join('') || '<option value="">No active jobs</option>';
+  }
   openModal('modal-check');
 }
 
@@ -9139,16 +9359,35 @@ async function saveAndPrintManualCheck() {
   const payeeAddress = $('chk-payee-addr').value.trim();
   const date = $('chk-date').value || today();
   const companyId = state.activeCompanyId || null;
-  const { error } = await db.from('checks').insert({
+  const needsWaiver = $('chk-needs-waiver') && $('chk-needs-waiver').checked;
+  const waiverJobId = needsWaiver ? ($('chk-waiver-job').value || null) : null;
+  const { data: chk, error } = await db.from('checks').insert({
     company_id: companyId,
     check_number: checkNumber,
     payee, amount, memo,
     check_date: date,
     purchase_id: null,
-  });
+  }).select().single();
   if (error) { toast('Could not save check: ' + error.message, 'error'); return; }
+  // Optionally create a pending lien waiver tied to this check.
+  if (needsWaiver && waiverJobId) {
+    await db.from('lien_waivers').insert({
+      project_id: waiverJobId,
+      company_id: companyId,
+      waiver_type: 'Conditional',
+      subtype: 'Progress',
+      party_type: 'Subcontractor',
+      party_name: payee,
+      amount,
+      payment_ref: `Check #${checkNumber}`,
+      check_id: chk ? chk.id : null,
+      status: 'Pending',
+    });
+    toast(`Check #${checkNumber} recorded + waiver pending for ${payee}`);
+  } else {
+    toast(`Check #${checkNumber} recorded for ${payee}`);
+  }
   closeModal('modal-check');
-  toast(`Check #${checkNumber} recorded for ${payee}`);
   printVoucherCheck({ payee, amount, memo, date, checkNumber, payeeAddress });
 }
 

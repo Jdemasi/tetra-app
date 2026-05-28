@@ -200,6 +200,9 @@ body.inbox-split-mode #modal-purchase .modal{width:46vw;max-width:none;max-heigh
     <button class="sb-item active" data-view="dashboard">
       <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>Dashboard
     </button>
+    <button class="sb-item" data-view="collections" title="Overdue invoices — draft reminder emails">
+      <svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>Collections
+    </button>
     <button class="sb-item" data-view="wip">
       <svg viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>WIP Schedule
     </button>
@@ -1445,6 +1448,7 @@ async function render() {
   $('topbar-actions').innerHTML = '';
   if (state.view === 'dashboard') await renderDashboard();
   else if (state.view === 'portfolio') await renderPortfolio();
+  else if (state.view === 'collections') await renderCollections();
   else if (state.view === 'wip') await renderWIP();
   else if (state.view === 'ar-aging') await renderARaging();
   else if (state.view === 'employees') await renderEmployees();
@@ -1478,6 +1482,7 @@ function updateBreadcrumb() {
   let html = '';
   if (state.view === 'dashboard') html = '<span class="cur">Company Dashboard</span>';
   else if (state.view === 'portfolio') html = '<span class="cur">Portfolio — All Companies</span>';
+  else if (state.view === 'collections') html = '<span class="cur">Collections</span>';
   else if (state.view === 'wip') html = '<span>Dashboard</span><span class="sep">/</span><span class="cur">WIP Schedule</span>';
   else if (state.view === 'ar-aging') html = '<span>Dashboard</span><span class="sep">/</span><span class="cur">AR Aging</span>';
   else if (state.view === 'ap-aging') html = '<span>Dashboard</span><span class="sep">/</span><span class="cur">AP Aging</span>';
@@ -1779,6 +1784,25 @@ async function renderDashboard() {
   // Most urgent first (expired before expiring; soonest first)
   insAlerts.sort((a,b) => a.days - b.days);
 
+  // Collections panel data — overdue invoices for this company (compact).
+  const _now = new Date();
+  const overdue = (invoices || []).map(i => {
+    const billed = parseFloat(i.billed_amount || 0);
+    const retPct = parseFloat(i.retainage_pct || 0);
+    const net = billed - (billed * retPct / 100);
+    const paid = parseFloat(i.paid_amount || 0);
+    const due = net - paid;
+    if (due <= 0.005 || !i.invoice_date) return null;
+    const terms = parseInt(i.terms_days || 30);
+    const dueDate = new Date(new Date(i.invoice_date + 'T00:00:00').getTime() + terms * 86400000);
+    const daysOverdue = Math.floor((_now - dueDate) / 86400000);
+    if (daysOverdue < 1) return null;
+    const proj = state.projects.find(p => p.id === i.project_id) || {};
+    const stage = daysOverdue >= 45 ? 'urgent' : daysOverdue >= 15 ? 'firm' : 'gentle';
+    return { invoice: i, project: proj, due, daysOverdue, stage, gc: proj.general_contractor || proj.owner_name || '—' };
+  }).filter(Boolean).sort((a,b) => b.daysOverdue - a.daysOverdue);
+  const overdueTotal = overdue.reduce((s,o) => s + o.due, 0);
+
   $('content').innerHTML = `
   <div class="kgrid">
     <div class="kcard db"><div class="klbl">Active Jobs</div><div class="kval">${activeJobs}</div><div class="ksub m">${fmt(totalContract)} total contract</div></div>
@@ -1786,6 +1810,30 @@ async function renderDashboard() {
     <div class="kcard amb"><div class="klbl">AR Outstanding</div><div class="kval">${fmt(totalBilled-totalPaid)}</div><div class="ksub a">${fmt(totalPaid)} collected</div></div>
     <div class="kcard grn"><div class="klbl">Estimated Profit</div><div class="kval" style="color:${estProfit>=0?'var(--green)':'var(--danger)'}">${fmt(estProfit)}</div><div class="ksub ${estProfit>=0?'g':'r'}">${totalContract>0?(estProfit/totalContract*100).toFixed(1)+'% est. margin':''}</div></div>
   </div>
+  ${overdue.length === 0 ? '' : `
+  <div class="card" style="margin-bottom:14px;border-left:4px solid ${overdue.some(o=>o.stage==='urgent')?'var(--danger)':'var(--amber,#d68a1a)'}">
+    <div class="card-hd">
+      <div class="card-title">💰 Needs Follow-Up — ${overdue.length} overdue ${overdue.length===1?'invoice':'invoices'} · ${fmt(overdueTotal)}</div>
+      <button class="btn btn-sm" onclick="navigate('collections')">View all</button>
+    </div>
+    <div>
+      ${overdue.slice(0,3).map(o => {
+        const i = o.invoice;
+        const tone = o.stage==='urgent' ? '#FCEBEB' : o.stage==='firm' ? '#FAEEDA' : '#EEF1F8';
+        return `<div class="row-item">
+          <div style="width:28px;height:28px;border-radius:6px;background:${tone};display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:13px">📨</div>
+          <div class="ri-info">
+            <div class="ri-name">${esc(o.gc)} — Invoice #${esc(i.invoice_number||'—')}</div>
+            <div class="ri-sub">${fmt(o.due)} due · ${o.daysOverdue} days overdue</div>
+          </div>
+          <div class="ri-right">
+            <button class="btn btn-sm btn-red" onclick="draftReminderEmail('${i.id}','${o.project.id}','${o.stage}',${o.daysOverdue})">📧 Draft reminder</button>
+          </div>
+        </div>`;
+      }).join('')}
+      ${overdue.length > 3 ? `<div style="padding:8px 12px;font-size:12px;color:var(--gray600)">+ ${overdue.length-3} more — <a href="#" onclick="navigate('collections');return false" style="color:var(--navy)">view all in Collections</a></div>` : ''}
+    </div>
+  </div>`}
   <div class="g2">
     <div class="card">
       <div class="card-hd"><div class="card-title"><svg viewBox="0 0 24 24" style="width:15px;height:15px;stroke:var(--navy);fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Projects</div>
@@ -4723,6 +4771,7 @@ table.items td{padding:8px 10px;border-bottom:1px solid #eee;vertical-align:top}
   const projLabel = jobLine || 'our project';
   return {
     html,
+    _due: due,
     subject: `Invoice #${invNumStr} — ${ident.name}`,
     body: `Please find attached Invoice #${invNumStr} for ${projLabel}.\n\nAmount Due: ${fmtD(due)}\nTerms: Net ${inv.terms_days || 30}\n\nPlease reference invoice #${invNumStr} on your remittance.\n\nThank you,\n${ident.name}\n${ident.phone}`,
     fileName: `Invoice ${invNumStr}.pdf`,
@@ -4783,6 +4832,174 @@ async function emailARInvoice(invoiceId, projectId) {
     }, 700);
     toast('Couldn\'t auto-create the draft (' + (e.message||'sign-in/permission issue') + '). Falling back: save the PDF, then attach to the email.', 'error');
   }
+}
+
+// ── COLLECTIONS / AR REMINDERS ───────────────────────────────────────
+// Compute overdue invoices for the active company. Returns enriched rows with
+// days-overdue, severity stage, amount due, GC name, and last-reminded info.
+// Severity: gentle (1–14d), firm (15–44d), urgent (45d+). Paid invoices and
+// anything not yet past due are excluded.
+async function computeOverdueInvoices() {
+  const [{ data: invoices }, { data: projects }, { data: reminders }] = await Promise.all([
+    withCompany(db.from('invoices').select('*').is('deleted_at', null)),
+    withCompany(db.from('projects').select('*').is('deleted_at', null)),
+    withCompany(db.from('invoice_reminders').select('*')),
+  ]);
+  const projById = {};
+  (projects || []).forEach(p => { projById[p.id] = p; });
+  // Latest reminder per invoice.
+  const lastReminder = {};
+  (reminders || []).forEach(r => {
+    const prev = lastReminder[r.invoice_id];
+    if (!prev || new Date(r.drafted_at) > new Date(prev.drafted_at)) lastReminder[r.invoice_id] = r;
+  });
+  const now = new Date();
+  const out = [];
+  (invoices || []).forEach(i => {
+    const billed = parseFloat(i.billed_amount || 0);
+    const retPct = parseFloat(i.retainage_pct || 0);
+    const net = billed - (billed * retPct / 100);
+    const paid = parseFloat(i.paid_amount || 0);
+    const due = net - paid;
+    if (due <= 0.005) return; // fully paid (or nothing owed)
+    if (!i.invoice_date) return; // can't compute a due date
+    const terms = parseInt(i.terms_days || 30);
+    const dueDate = new Date(new Date(i.invoice_date + 'T00:00:00').getTime() + terms * 86400000);
+    const daysOverdue = Math.floor((now - dueDate) / 86400000);
+    if (daysOverdue < 1) return; // not past due yet
+    const stage = daysOverdue >= 45 ? 'urgent' : daysOverdue >= 15 ? 'firm' : 'gentle';
+    const proj = projById[i.project_id] || {};
+    const lr = lastReminder[i.id] || null;
+    const daysSinceReminded = lr ? Math.floor((now - new Date(lr.drafted_at)) / 86400000) : null;
+    out.push({
+      invoice: i, project: proj, due, daysOverdue, stage,
+      gc: proj.general_contractor || proj.owner_name || '—',
+      lastReminded: lr, daysSinceReminded,
+    });
+  });
+  // Sort: urgent first, then by days overdue desc. Recently-reminded (<3 days)
+  // sink slightly so the freshest needs surface first.
+  const stageRank = { urgent: 0, firm: 1, gentle: 2 };
+  out.sort((a, b) => {
+    const aRecent = a.daysSinceReminded !== null && a.daysSinceReminded < 3 ? 1 : 0;
+    const bRecent = b.daysSinceReminded !== null && b.daysSinceReminded < 3 ? 1 : 0;
+    if (aRecent !== bRecent) return aRecent - bRecent;
+    if (stageRank[a.stage] !== stageRank[b.stage]) return stageRank[a.stage] - stageRank[b.stage];
+    return b.daysOverdue - a.daysOverdue;
+  });
+  return out;
+}
+
+// Draft a collections reminder email for an overdue invoice. Reuses the AR
+// invoice builder for the attachment + the same Graph draft path as POs.
+// Tone escalates by stage. Logs to invoice_reminders so the list shows
+// "reminded N days ago".
+async function draftReminderEmail(invoiceId, projectId, stage, daysOverdue) {
+  const built = await buildARInvoice(invoiceId, projectId);
+  if (!built) { toast('Could not load invoice', 'error'); return; }
+  const ident = companyDocIdentity();
+  const { data: inv } = await db.from('invoices').select('invoice_number, terms_days, pdf_url').eq('id', invoiceId).single();
+  const invNum = (inv && inv.invoice_number) ? inv.invoice_number : invoiceId.slice(0, 8);
+  const terms = (inv && inv.terms_days) ? inv.terms_days : 30;
+
+  // Tone by stage.
+  let subject, opening, closing;
+  if (stage === 'urgent') {
+    subject = `Past Due (${daysOverdue} days) — Invoice #${invNum} — ${ident.name}`;
+    opening = `Our records show Invoice #${invNum} is now ${daysOverdue} days past due. We'd appreciate your prompt attention to this balance, or a call to discuss payment timing.`;
+    closing = `If payment has already been sent, please disregard this notice and let us know. Otherwise, please contact us at your earliest convenience.`;
+  } else if (stage === 'firm') {
+    subject = `Reminder: Invoice #${invNum} is past due — ${ident.name}`;
+    opening = `This is a friendly reminder that Invoice #${invNum} is ${daysOverdue} days past due.`;
+    closing = `Please let us know if you have any questions or need another copy of the invoice. We appreciate your business.`;
+  } else {
+    subject = `Invoice #${invNum} — payment reminder — ${ident.name}`;
+    opening = `A quick reminder that Invoice #${invNum} recently passed its due date (Net ${terms}).`;
+    closing = `If it's already in process, thank you — no need to reply. We appreciate your business.`;
+  }
+  const body = `Hello,\n\n${opening}\n\nAmount Due: ${fmtD(built._due != null ? built._due : 0)}\n\nA copy of the invoice is attached for your reference.\n\n${closing}\n\nThank you,\n${ident.name}\n${ident.phone}\n${ident.email}`;
+
+  // Attach the invoice PDF (+ pay app if one is stored).
+  let extraAttachments = [];
+  if (inv && inv.pdf_url) {
+    const att = await fetchStoredFileBase64(inv.pdf_url);
+    if (att) extraAttachments.push({ base64: att.base64, fileName: `Pay App ${invNum}.pdf` });
+  }
+
+  toast('Preparing reminder draft… you may be asked to sign in to Microsoft');
+  try {
+    await createPODraft({ to: '', subject, body, docHTML: built.html, fileName: `Invoice ${invNum}.pdf`, extraAttachments });
+    // Log the reminder so the list de-prioritizes it.
+    try {
+      await db.from('invoice_reminders').insert({
+        invoice_id: invoiceId,
+        company_id: state.activeCompanyId || null,
+        stage, days_overdue: daysOverdue,
+      });
+    } catch (logErr) { console.error('Reminder log failed (non-fatal):', logErr); }
+    toast('Reminder draft created in Outlook — invoice attached, add the GC contact and send', 'success');
+    if (state.view === 'collections') renderCollections();
+  } catch (e) {
+    console.error('Graph draft failed for reminder, falling back to mailto:', e);
+    const w = window.open('', '_blank');
+    w.document.write(built.html); w.document.close();
+    setTimeout(() => { try { w.focus(); w.print(); } catch(err){} }, 500);
+    const mailtoUrl = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    setTimeout(() => {
+      const a = document.createElement('a');
+      a.href = mailtoUrl; a.style.display = 'none';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    }, 700);
+    toast('Couldn\'t auto-create the draft — falling back: save the PDF, then attach to the email.', 'error');
+  }
+}
+
+// Full Collections view: every overdue invoice for the active company.
+async function renderCollections() {
+  const rows = await computeOverdueInvoices();
+  const ident = companyDocIdentity();
+  const totalDue = rows.reduce((s, r) => s + r.due, 0);
+  const urgent = rows.filter(r => r.stage === 'urgent');
+  const stageBadge = s => s === 'urgent'
+    ? '<span class="badge" style="background:#FCEBEB;color:#b22">Seriously overdue</span>'
+    : s === 'firm' ? '<span class="badge" style="background:#FAEEDA;color:#8a5a0a">Overdue</span>'
+    : '<span class="badge" style="background:#EEF1F8;color:#445">Just past due</span>';
+  const body = rows.length === 0
+    ? '<tr><td colspan="7" style="text-align:center;color:var(--gray500);padding:24px">No overdue invoices. Nicely collected. 🎉</td></tr>'
+    : rows.map(r => {
+        const i = r.invoice;
+        const remindedNote = r.daysSinceReminded === null ? '<span style="color:var(--gray500)">—</span>'
+          : r.daysSinceReminded === 0 ? '<span style="color:var(--gray600)">today</span>'
+          : `<span style="color:var(--gray600)">${r.daysSinceReminded}d ago</span>`;
+        return `<tr>
+          <td>${stageBadge(r.stage)}</td>
+          <td class="mono font-600">${esc(i.invoice_number || '—')}</td>
+          <td class="font-600">${esc(r.gc)}</td>
+          <td>${esc([r.project.job_number, r.project.job_name].filter(Boolean).join(' — ') || '—')}</td>
+          <td class="text-right font-600">${fmtD(r.due)}</td>
+          <td class="text-center">${r.daysOverdue}d</td>
+          <td><div style="display:flex;gap:4px;align-items:center">
+            <button class="btn btn-sm btn-red" title="Draft reminder email to Outlook" onclick="draftReminderEmail('${i.id}','${r.project.id}','${r.stage}',${r.daysOverdue})">📧 Draft reminder</button>
+            <span style="font-size:11px">${remindedNote}</span>
+          </div></td>
+        </tr>`;
+      }).join('');
+  $('content').innerHTML = `
+  <div class="kgrid" style="grid-template-columns:repeat(3,1fr)">
+    <div class="kcard amb"><div class="klbl">Overdue Invoices</div><div class="kval">${rows.length}</div><div class="ksub a">${ident.name}</div></div>
+    <div class="kcard red"><div class="klbl">Total Past Due</div><div class="kval">${fmtD(totalDue)}</div><div class="ksub m">net of retainage</div></div>
+    <div class="kcard ${urgent.length ? 'red' : 'grn'}"><div class="klbl">Seriously Overdue (45d+)</div><div class="kval">${urgent.length}</div><div class="ksub ${urgent.length ? 'r' : 'g'}">${fmtD(urgent.reduce((s,r)=>s+r.due,0))}</div></div>
+  </div>
+  <div class="card">
+    <div class="card-hd"><div class="card-title">Collections — Overdue Invoices</div></div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Status</th><th>Invoice #</th><th>Bill To</th><th>Project</th><th class="text-right">Amount Due</th><th class="text-center">Overdue</th><th style="width:230px">Action</th></tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>
+  </div>`;
+  $('topbar-actions').innerHTML = '';
 }
 
 function calcInvPreview() {

@@ -5670,6 +5670,9 @@ async function renderARaging() {
     else if (daysLate<=60) buckets.days60+=outstanding;
     else buckets.days90+=outstanding;
     return {
+      type: 'payapp',
+      id: pa.id,
+      projectId: pa.project_id,
       jobName: proj ? proj.job_number+' — '+proj.job_name : '—',
       invoiceNum: 'Pay App #'+pa.app_number,
       description: 'Net '+terms+' from submission',
@@ -5695,6 +5698,9 @@ async function renderARaging() {
     else if (daysLate<=60) buckets.days60+=outstanding;
     else buckets.days90+=outstanding;
     return {
+      type: 'invoice',
+      id: i.id,
+      projectId: i.project_id,
       jobName: proj ? proj.job_number+' — '+proj.job_name : '—',
       invoiceNum: i.invoice_number||'—',
       description: i.description||'—',
@@ -5702,6 +5708,7 @@ async function renderARaging() {
       retainage: 0,
       outstanding,
       daysLate,
+      dueDate: dueDate.toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}),
       status: i.status,
       periodEnding: i.invoice_date||'—',
     };
@@ -5728,6 +5735,7 @@ async function renderARaging() {
         <th>Job</th><th>Invoice / Pay App</th><th>Period</th><th>Due Date</th>
         <th class="text-right">Billed</th><th class="text-right">Retainage</th>
         <th class="text-right">Outstanding</th><th>Age</th><th>Status</th>
+        <th style="width:200px"></th>
       </tr></thead><tbody>
     ${rows.map(r=>`<tr>
       <td class="font-600" style="font-size:11px">${r.jobName}</td>
@@ -5739,6 +5747,12 @@ async function renderARaging() {
       <td class="text-right font-600" style="color:${r.daysLate<=0?'var(--green)':r.daysLate<=30?'var(--amber)':'var(--danger)'}">${fmt(r.outstanding)}</td>
       <td class="${r.daysLate<=0?'text-green':r.daysLate<=30?'text-amber':'text-red'} font-600">${r.daysLate<=0?'Due in '+Math.abs(r.daysLate)+'d':r.daysLate+'d late'}</td>
       <td><span class="badge b-${(r.status||'pending').toLowerCase()}">${r.status}</span></td>
+      <td><div style="display:flex;gap:4px">
+        ${r.type === 'invoice'
+          ? `<button class="btn btn-sm" title="Print QuickBooks-style invoice" onclick="printARInvoice('${r.id}','${r.projectId}')">🧾</button>
+             <button class="btn btn-sm" title="Email invoice as PDF" onclick="emailARInvoice('${r.id}','${r.projectId}')">📧</button>`
+          : `<button class="btn btn-sm" title="Open the pay application" onclick="navigate('project','${r.projectId}','payapps')">📄 Pay App</button>`}
+      </div></td>
     </tr>`).join('')}
     </tbody></table></div>`}
   </div>`;
@@ -8032,6 +8046,7 @@ function renderAPAgingView() {
           <div style="display:flex;gap:4px">
             ${pu.pdf_url?`<button class="btn btn-sm" title="View attached invoice" onclick="event.stopPropagation();openStoredFile('${pu.pdf_url}')">📎</button>`:''}
             <button class="btn btn-sm" style="color:var(--green);border-color:var(--green)" onclick="event.stopPropagation();openPayPurchase('${pu.id}',${r.outstanding})">💰 Pay</button>
+            <button class="btn btn-sm" title="Print a check for this invoice" onclick="event.stopPropagation();printVendorCheck('${pu.id}')">🖨️ Check</button>
           </div>
         </td>
       </tr>`;

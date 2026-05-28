@@ -5511,7 +5511,9 @@ async function renderWIP() {
   const laborCost = l => (parseFloat(l.st_hours||0)*parseFloat(l.st_rate||0))+(parseFloat(l.ot15_hours||0)*parseFloat(l.st_rate||0)*1.5)+(parseFloat(l.ot2_hours||0)*parseFloat(l.st_rate||0)*2);
   $('content').innerHTML = `
   <div class="card">
-    <div class="card-hd"><div class="card-title"><svg viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>WIP Schedule — Active Jobs</div></div>
+    <div class="card-hd"><div class="card-title"><svg viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>WIP Schedule — Active Jobs</div>
+      <button class="btn btn-sm btn-red" onclick="exportBondingWIP()">📊 Export for Bonding</button>
+    </div>
     <p class="section-sub">Work in Progress report showing over/under billing position for each active job.</p>
     <div class="tbl-wrap"><table><thead><tr><th>Job</th><th class="text-right">Contract Value</th><th class="text-right">Total Budget</th><th class="text-right">Cost to Date</th><th class="text-right">% Complete</th><th class="text-right">Earned Revenue</th><th class="text-right">Billed to Date</th><th class="text-right">Over / (Under)</th></tr></thead><tbody>
     ${(projects||[]).map(p => {
@@ -5535,6 +5537,95 @@ async function renderWIP() {
     }).join('')}
     </tbody></table></div>
   </div>`;
+}
+
+// Export a surety-format Work-in-Progress schedule as an .xlsx. Columns follow
+// the standard bonding WIP layout underwriters expect: original contract,
+// approved COs (broken out), revised contract, estimated total cost, cost to
+// date, estimated cost to complete (the "backlog" number sureties watch),
+// % complete, earned revenue, billed to date, and over/(under) billings.
+async function exportBondingWIP() {
+  const ident = companyDocIdentity();
+  const [{ data: projects }, { data: purchases }, { data: labor }, { data: invoices }, { data: budgets }] = await Promise.all([
+    withCompany(db.from('projects').select('*').is('deleted_at',null).eq('status','Active')),
+    withCompany(db.from('purchases').select('*').is('deleted_at',null)),
+    withCompany(db.from('labor_entries').select('*').is('deleted_at',null)),
+    withCompany(db.from('invoices').select('*').is('deleted_at',null)),
+    withCompany(db.from('project_budgets').select('*')),
+  ]);
+  const laborCost = l => (parseFloat(l.st_hours||0)*parseFloat(l.st_rate||0))+(parseFloat(l.ot15_hours||0)*parseFloat(l.st_rate||0)*1.5)+(parseFloat(l.ot2_hours||0)*parseFloat(l.st_rate||0)*2);
+  if (!projects || projects.length === 0) { toast('No active jobs to export', 'error'); return; }
+
+  const asOf = new Date().toLocaleDateString('en-US');
+  // Header rows.
+  const aoa = [
+    [`${ident.name} — Work-in-Progress Schedule`],
+    [`As of ${asOf}`],
+    [],
+    ['Project','Owner / GC','Original Contract','Approved COs','Revised Contract',
+     'Estimated Total Cost','Cost to Date','Est. Cost to Complete','% Complete',
+     'Earned Revenue','Billed to Date','Over / (Under) Billed'],
+  ];
+
+  let tOrig=0,tCO=0,tRev=0,tEstCost=0,tCostDate=0,tETC=0,tEarned=0,tBilled=0,tOU=0;
+
+  projects.forEach(p => {
+    const orig = parseFloat(p.base_contract||0);
+    const co = parseFloat(p.approved_cos||0);
+    const revised = orig + co;
+    const estCost = (budgets||[]).filter(b=>b.project_id===p.id).reduce((s,b)=>s+parseFloat(b.budgeted_amount||0),0);
+    const costDate = (purchases||[]).filter(pu=>pu.project_id===p.id).reduce((s,pu)=>s+parseFloat(pu.po_amount||0),0)
+      + (labor||[]).filter(l=>l.project_id===p.id).reduce((s,l)=>s+laborCost(l),0);
+    const etc = Math.max(0, estCost - costDate);
+    const pct = estCost>0 ? costDate/estCost : 0;
+    const earned = revised * pct;
+    const billed = (invoices||[]).filter(i=>i.project_id===p.id).reduce((s,i)=>s+parseFloat(i.billed_amount||0),0);
+    const overUnder = billed - earned;
+
+    tOrig+=orig; tCO+=co; tRev+=revised; tEstCost+=estCost; tCostDate+=costDate;
+    tETC+=etc; tEarned+=earned; tBilled+=billed; tOU+=overUnder;
+
+    aoa.push([
+      `${p.job_number||''} — ${p.job_name||''}`.trim(),
+      p.general_contractor || p.owner_name || '',
+      orig, co, revised, estCost, costDate, etc, pct, earned, billed, overUnder,
+    ]);
+  });
+
+  // Totals row.
+  aoa.push(['TOTALS','', tOrig,tCO,tRev,tEstCost,tCostDate,tETC, (tEstCost>0?tCostDate/tEstCost:0), tEarned,tBilled,tOU]);
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+
+  // Column widths.
+  ws['!cols'] = [{wch:32},{wch:24},{wch:16},{wch:14},{wch:16},{wch:16},{wch:14},{wch:18},{wch:11},{wch:16},{wch:14},{wch:18}];
+  // Merge the two title rows across the table width.
+  ws['!merges'] = [
+    {s:{r:0,c:0},e:{r:0,c:11}},
+    {s:{r:1,c:0},e:{r:1,c:11}},
+  ];
+
+  // Number formats: currency for money columns (C–H, J–L = indices 2-7,9-11),
+  // percent for column I (index 8). Data starts at row 5 (0-indexed row 4).
+  const money = '$#,##0;($#,##0)';
+  const pctFmt = '0.0%';
+  const firstDataRow = 4; // 0-indexed; header is row 3 (Excel row 4)
+  const lastRow = aoa.length - 1; // includes totals
+  for (let r = firstDataRow; r <= lastRow; r++) {
+    [2,3,4,5,6,7,9,10,11].forEach(c => {
+      const addr = XLSX.utils.encode_cell({r, c});
+      if (ws[addr] && typeof ws[addr].v === 'number') ws[addr].z = money;
+    });
+    const pctAddr = XLSX.utils.encode_cell({r, c:8});
+    if (ws[pctAddr] && typeof ws[pctAddr].v === 'number') ws[pctAddr].z = pctFmt;
+  }
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'WIP Schedule');
+  const safeName = (ident.name || 'Company').replace(/[^a-z0-9]+/gi,'_');
+  const dateTag = new Date().toISOString().slice(0,10);
+  XLSX.writeFile(wb, `WIP_${safeName}_${dateTag}.xlsx`);
+  toast('WIP schedule exported', 'success');
 }
 
 // ── AR AGING ─────────────────────────────────────────────────────────

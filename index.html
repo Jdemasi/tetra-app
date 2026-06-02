@@ -9416,12 +9416,17 @@ async function renderChecks() {
   const ident = companyDocIdentity();
   const rows = state.checks.map(c => {
     const dateStr = c.check_date ? new Date(c.check_date + 'T00:00:00').toLocaleDateString('en-US') : '—';
-    return `<tr style="${c.voided ? 'opacity:.5;text-decoration:line-through' : ''}">
-      <td class="mono font-600">${c.check_number || '—'}</td>
-      <td>${dateStr}</td>
-      <td class="font-600">${esc(c.payee || '—')}</td>
-      <td>${esc(c.memo || '—')}</td>
-      <td class="text-right font-600">${fmtD(c.amount)}</td>
+    // Dim/strike the DATA cells only on voided rows — NOT the whole <tr>. opacity on
+    // the row creates a stacking context the buttons can't escape, which made the
+    // per-check Delete button render struck-out and look disabled. Keeping the status
+    // and actions cells fully opaque makes single-check delete clearly clickable.
+    const dim = c.voided ? 'opacity:.5;text-decoration:line-through' : '';
+    return `<tr>
+      <td class="mono font-600" style="${dim}">${c.check_number || '—'}</td>
+      <td style="${dim}">${dateStr}</td>
+      <td class="font-600" style="${dim}">${esc(c.payee || '—')}</td>
+      <td style="${dim}">${esc(c.memo || '—')}</td>
+      <td class="text-right font-600" style="${dim}">${fmtD(c.amount)}</td>
       <td>${c.voided ? '<span class="badge b-hold">Void</span>' : '<span class="badge b-active">Issued</span>'}</td>
       <td><div style="display:flex;gap:4px">
         <button class="btn btn-sm" onclick="reprintCheck('${c.id}')">🖨️ Reprint</button>

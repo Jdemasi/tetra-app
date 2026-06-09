@@ -2096,6 +2096,23 @@ async function renderJobSetup() {
   const sovTotal = (sovItems||[]).reduce((s,li)=>s+parseFloat(li.scheduled_value||0),0);
   const contractVal = parseFloat(p.base_contract||0) + parseFloat(p.approved_cos||0);
   const sovDiff = contractVal - sovTotal;
+  // A contract value of 0 means "not entered on this job yet", NOT "a $0 contract" —
+  // so don't fire the red over-budget alarm against an unset contract. Show a neutral
+  // nudge to set it instead. Real over/under validation resumes once a contract exists.
+  let sovBanner = '';
+  if (contractVal <= 0 && sovTotal > 0) {
+    sovBanner = `<div style="padding:8px 12px;background:var(--gray50);border:1px solid var(--gray200);border-radius:7px;margin-bottom:10px;font-size:12px;color:var(--gray600)">
+      ℹ️ No contract value set on this job yet — SOV totals ${fmt(sovTotal)}. <a onclick="editProject('${p.id}')" style="color:var(--navy);cursor:pointer;text-decoration:underline;font-weight:600">Set the contract value</a> to validate the SOV against it.
+    </div>`;
+  } else if (Math.abs(sovDiff) > 1) {
+    sovBanner = `<div style="padding:8px 12px;background:${sovDiff>0?'#FFF8E1':'#FFF0F0'};border:1px solid ${sovDiff>0?'var(--amber)':'var(--danger)'};border-radius:7px;margin-bottom:10px;font-size:12px">
+      ⚠️ SOV total (${fmt(sovTotal)}) ${sovDiff>0?'is short':'exceeds'} contract value (${fmt(contractVal)}) by ${fmt(Math.abs(sovDiff))}
+    </div>`;
+  } else if (sovTotal > 0) {
+    sovBanner = `<div style="padding:8px 12px;background:#F0FFF8;border:1px solid var(--green);border-radius:7px;margin-bottom:10px;font-size:12px">
+      ✅ SOV total matches contract value — ${fmt(sovTotal)}
+    </div>`;
+  }
 
   _pageHTML += `
   <div class="card" style="margin-top:12px">
@@ -2107,11 +2124,7 @@ async function renderJobSetup() {
       </div>
     </div>
     <p class="section-sub">Define your billing line items here. These are used to generate pay applications automatically.</p>
-    ${Math.abs(sovDiff) > 1 ? `<div style="padding:8px 12px;background:${sovDiff>0?'#FFF8E1':'#FFF0F0'};border:1px solid ${sovDiff>0?'var(--amber)':'var(--danger)'};border-radius:7px;margin-bottom:10px;font-size:12px">
-      ⚠️ SOV total (${fmt(sovTotal)}) ${sovDiff>0?'is short':'exceeds'} contract value (${fmt(contractVal)}) by ${fmt(Math.abs(sovDiff))}
-    </div>` : sovTotal > 0 ? `<div style="padding:8px 12px;background:#F0FFF8;border:1px solid var(--green);border-radius:7px;margin-bottom:10px;font-size:12px">
-      ✅ SOV total matches contract value — ${fmt(sovTotal)}
-    </div>` : ''}
+    ${sovBanner}
     ${(sovItems||[]).length===0?'<div class="tbl-empty">No SOV line items yet. Import from Excel or add manually.</div>':
     `<div class="tbl-wrap"><table>
       <thead><tr>

@@ -1521,7 +1521,7 @@ function updateBreadcrumb() {
 function renderSidebarProjects() {
   const c = $('sb-projects');
   if (!state.projects.length) { c.innerHTML = ''; return; }
-  c.innerHTML = state.projects.map(p => {
+  const jobHTML = p => {
     const isActive = state.activeProject && state.activeProject.id === p.id;
     const dotClass = p.status === 'Active' ? 'dg' : p.status === 'Complete' ? 'db' : 'da';
     return `<div class="sb-job ${isActive?'active-job':''}" onclick="openProject('${p.id}')">
@@ -1566,7 +1566,21 @@ function renderSidebarProjects() {
     <button class="sb-mod ${state.activeModule==='liens'?'active':''}" data-module="liens" onclick="navigate('project','${p.id}','liens')">
       <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>Lien Waivers
     </button>` : ''}`;
-  }).join('');
+  };
+  // Split into the working set and a collapsed "Completed" group pinned to the bottom,
+  // so finished jobs stay one tap away without cluttering the daily list. Auto-expand
+  // when you're currently viewing a completed job so its modules stay visible.
+  const working = state.projects.filter(p => p.status !== 'Complete');
+  const completed = state.projects.filter(p => p.status === 'Complete');
+  const showCompleted = state.showCompletedJobs || completed.some(p => p.id === state.activeProject?.id);
+  let _sbHTML = working.map(jobHTML).join('');
+  if (completed.length) {
+    _sbHTML += `<div class="sb-completed-hd" onclick="toggleCompletedJobs()" style="display:flex;align-items:center;gap:6px;padding:9px 14px;margin-top:6px;cursor:pointer;font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--gray600);border-top:1px solid var(--border)">
+      <span style="font-size:9px">${showCompleted ? '▼' : '▶'}</span> Completed (${completed.length})
+    </div>`;
+    if (showCompleted) _sbHTML += completed.map(jobHTML).join('');
+  }
+  c.innerHTML = _sbHTML;
   document.querySelectorAll('.sb-mod').forEach(b => {
     b.addEventListener('click', e => {
       e.stopPropagation();
@@ -1575,9 +1589,39 @@ function renderSidebarProjects() {
   });
 }
 
+function toggleCompletedJobs() {
+  state.showCompletedJobs = !state.showCompletedJobs;
+  renderSidebarProjects();
+}
+
 function openProject(id) {
   state.activeProject = state.projects.find(p => p.id === id);
   navigate('project', id, 'setup');
+}
+
+// Flip a job to Complete: it slides into the sidebar's Completed group and drops out
+// of the Active-filtered lists (portfolio, WIP, pay-app roll-ups). Fully reversible.
+async function markProjectComplete(id) {
+  const p = state.projects.find(x => x.id === id) || state.activeProject;
+  if (!confirm(`Mark "${p?.job_name || 'this job'}" complete?\n\nIt moves to the Completed group in the sidebar and drops out of the active project lists, WIP, and portfolio counts. You can reopen it anytime.`)) return;
+  const { error } = await db.from('projects').update({ status: 'Complete' }).eq('id', id);
+  if (error) { toast('Could not mark complete: ' + error.message, 'error'); return; }
+  const idx = state.projects.findIndex(x => x.id === id);
+  if (idx >= 0) state.projects[idx].status = 'Complete';
+  if (state.activeProject?.id === id) state.activeProject.status = 'Complete';
+  state.showCompletedJobs = true; // expand so the just-completed job is visible where it landed
+  toast('Job marked complete');
+  navigate('project', id, state.activeModule || 'setup');
+}
+
+async function reopenProject(id) {
+  const { error } = await db.from('projects').update({ status: 'Active' }).eq('id', id);
+  if (error) { toast('Could not reopen: ' + error.message, 'error'); return; }
+  const idx = state.projects.findIndex(x => x.id === id);
+  if (idx >= 0) state.projects[idx].status = 'Active';
+  if (state.activeProject?.id === id) state.activeProject.status = 'Active';
+  toast('Job reopened — back to Active');
+  navigate('project', id, state.activeModule || 'setup');
 }
 
 // ── DASHBOARD ────────────────────────────────────────────────────────
@@ -2085,10 +2129,19 @@ async function renderJobSetup() {
     </div>
   </div>`;
 
+  // Billed-to-date drives the subtle "ready to close" hint on the Mark Complete button.
+  const { data: _jobInvs } = await db.from('invoices').select('billed_amount').eq('project_id', p.id).is('deleted_at', null);
+  const _jobBilled = (_jobInvs||[]).reduce((s,i)=>s+parseFloat(i.billed_amount||0),0);
+  const _jobContract = parseFloat(p.base_contract||0)+parseFloat(p.approved_cos||0);
+  const _readyToClose = p.status==='Active' && _jobContract>0 && _jobBilled >= _jobContract - 1;
+  const _completeBtn = p.status === 'Complete'
+    ? `<button class="btn btn-sm" onclick="reopenProject('${p.id}')">↩ Reopen Job</button>`
+    : `<button class="btn btn-sm" style="color:var(--green);border-color:var(--green)${_readyToClose?';font-weight:700':''}" title="${_readyToClose?'Fully billed — ready to close out':'Mark this job complete'}" onclick="markProjectComplete('${p.id}')">✓ Mark Complete${_readyToClose?' · fully billed':''}</button>`;
   $('topbar-actions').innerHTML = `
     <button class="btn btn-sm" onclick="openImport('${p.id}')">📥 Import Estimate</button>
     ${p.tax_exempt ? `<button class="btn btn-sm" onclick="openST120Generator('${p.id}')">📄 ST-120.1</button>` : ''}
     <button class="btn btn-sm" onclick="editProject('${p.id}')">Edit Job</button>
+    ${_completeBtn}
     <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deleteProject('${p.id}','${p.job_number}','${p.job_name}')">🗑 Delete Job</button>`;
 
   // Load and render SOV section

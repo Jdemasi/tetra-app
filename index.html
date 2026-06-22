@@ -1793,7 +1793,7 @@ async function portfolioOpenProject(companyId, projectId) {
 }
 
 async function renderDashboard() {
-  const [{ data: projects }, { data: purchases }, { data: invoices }, { data: labor }, { data: subs }, { data: phases }, { data: budgets }, { data: lineItems }] = await Promise.all([
+  const [{ data: projects }, { data: purchases }, { data: invoices }, { data: labor }, { data: subs }, { data: phases }, { data: budgets }, { data: lineItems }, { data: payApps }] = await Promise.all([
     withCompany(db.from('projects').select('*').is('deleted_at',null)).order('created_at'),
     withCompany(db.from('purchases').select('*').is('deleted_at',null)),
     withCompany(db.from('invoices').select('*').is('deleted_at',null)),
@@ -1802,12 +1802,18 @@ async function renderDashboard() {
     withCompany(db.from('phases').select('*')),
     withCompany(db.from('project_budgets').select('*')),
     withCompany(db.from('cost_line_items').select('*')),
+    withCompany(db.from('pay_applications').select('*').in('status',['Submitted','Approved','Paid'])),
   ]);
   state.projects = projects || [];
   renderSidebarProjects();
 
   const totalContract = state.projects.reduce((s,p) => s + parseFloat(p.base_contract||0) + parseFloat(p.approved_cos||0), 0);
-  const totalBilled = (invoices||[]).reduce((s,i) => s + parseFloat(i.billed_amount||0), 0);
+  // Pay-app billing lives in pay_applications (Submitted/Approved/Paid). Manual
+  // invoices live in the invoices table. A PAID pay app ALSO writes a 'PAY-APP-'
+  // invoice, so exclude those here so it isn't counted twice.
+  const isManualInv = i => !((i.invoice_number||'').startsWith('PAY-APP-'));
+  const totalBilled = (invoices||[]).filter(isManualInv).reduce((s,i) => s + parseFloat(i.billed_amount||0), 0)
+    + (payApps||[]).reduce((s,a) => s + parseFloat(a.current_billed||0), 0);
   const totalPaid = (invoices||[]).reduce((s,i) => s + parseFloat(i.paid_amount||0), 0);
   const lc = l => (parseFloat(l.st_hours||0)*parseFloat(l.st_rate||0))+(parseFloat(l.ot15_hours||0)*parseFloat(l.st_rate||0)*1.5)+(parseFloat(l.ot2_hours||0)*parseFloat(l.st_rate||0)*2);
   const totalCost = (purchases||[]).reduce((s,p)=>s+parseFloat(p.po_amount||0),0) + (labor||[]).reduce((s,l)=>s+lc(l),0);
@@ -1898,8 +1904,9 @@ async function renderDashboard() {
       </div>
       ${state.projects.length === 0 ? '<div class="tbl-empty">No projects yet. Create your first one.</div>' :
         state.projects.map(p => {
-          const pInv = (invoices||[]).filter(i=>i.project_id===p.id);
-          const pBilled = pInv.reduce((s,i)=>s+parseFloat(i.billed_amount||0),0);
+          const pInv = (invoices||[]).filter(i=>i.project_id===p.id && isManualInv(i));
+          const pBilled = pInv.reduce((s,i)=>s+parseFloat(i.billed_amount||0),0)
+            + (payApps||[]).filter(a=>a.project_id===p.id).reduce((s,a)=>s+parseFloat(a.current_billed||0),0);
           const pCost = (purchases||[]).filter(pu=>pu.project_id===p.id).reduce((s,pu)=>s+parseFloat(pu.po_amount||0),0)
             + (labor||[]).filter(l=>l.project_id===p.id).reduce((s,l)=>s+lc(l),0);
           const contract = parseFloat(p.base_contract||0)+parseFloat(p.approved_cos||0);

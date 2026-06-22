@@ -2004,7 +2004,7 @@ async function renderJobSetup() {
         <tr><td style="color:var(--gray600);font-size:11px">Approved COs</td><td>${fmt(p.approved_cos)}</td></tr>
         <tr><td style="color:var(--gray600);font-size:11px">Adjusted Value</td><td class="font-600">${fmt(parseFloat(p.base_contract||0)+parseFloat(p.approved_cos||0))}</td></tr>
         <tr><td style="color:var(--gray600);font-size:11px">Payment Terms</td><td>Net ${p.payment_terms||30}</td></tr>
-        <tr><td style="color:var(--gray600);font-size:11px">Retainage %</td><td>${parseFloat(p.retainage_pct||5).toFixed(1)}%</td></tr>
+        <tr><td style="color:var(--gray600);font-size:11px">Retainage %</td><td>${parseFloat(p.retainage_pct ?? 5).toFixed(1)}%</td></tr>
         <tr><td style="color:var(--gray600);font-size:11px">Burden Rate</td>
           <td><span style="display:inline-flex;align-items:center;gap:8px">
             <strong>$${parseFloat(p.burden_rate||160).toFixed(0)}/hr</strong>
@@ -4077,7 +4077,7 @@ async function openNewPayApp(projectId) {
   const appNum = lastApp ? lastApp.app_number + 1 : 1;
   const prevBilled = lastApp ? parseFloat(lastApp.total_completed||0) : 0;
   const prevRetainage = lastApp ? parseFloat(lastApp.retainage_amount||0) : 0;
-  const retPct = parseFloat(p.retainage_pct || 5);
+  const retPct = parseFloat(p.retainage_pct ?? 5);
   const contract = parseFloat(p.base_contract||0) + parseFloat(p.approved_cos||0);
 
   // Get previous line item completions
@@ -4343,7 +4343,7 @@ async function generatePayAppPDF(payAppId, finalWaiver) {
   const approvedCOs = parseFloat(p.approved_cos||0);
   const contract = baseContract;
   const revisedContract = baseContract + approvedCOs;
-  const retPct = parseFloat(pa.retainage_pct||5);
+  const retPct = parseFloat(pa.retainage_pct ?? 5);
   const totalScheduled = (sovItems||[]).reduce((s,li)=>s+parseFloat(li.scheduled_value||0),0) || contract;
   const periodStr = pa.period_ending ? new Date(pa.period_ending+'T00:00:00').toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}) : '';
   const contractDateStr = p.contract_date ? new Date(p.contract_date+'T00:00:00').toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}) : '';
@@ -6197,12 +6197,14 @@ async function saveProject() {
   const num = $('p-num').value.trim();
   const name = $('p-name').value.trim();
   if (!num || !name) { toast('Job number and name required','error'); return; }
+  // Explicit NaN check so 0% retainage is honored (||5 treats a real 0 as missing).
+  const pRetRaw = parseFloat($('p-retainage').value);
   const data = { 
     job_number:num, job_name:name, client:$('p-client').value, 
     status:$('p-status').value, date_started:$('p-date').value||null, 
     base_contract:parseFloat($('p-contract').value)||0,
     payment_terms: parseInt($('p-payment-terms').value)||30,
-    retainage_pct: parseFloat($('p-retainage').value)||5,
+    retainage_pct: isNaN(pRetRaw) ? 5 : pRetRaw,
     project_name_full: $('p-project-name').value.trim() || null,
     project_address: $('p-project-address').value.trim() || null,
     owner_name: $('p-owner').value.trim() || null,
@@ -6253,7 +6255,7 @@ function editProject(id) {
   $('p-date').value = p.date_started||'';
   $('p-contract').value = p.base_contract||0;
   $('p-payment-terms').value = p.payment_terms||30;
-  $('p-retainage').value = p.retainage_pct||5;
+  $('p-retainage').value = p.retainage_pct ?? 5;
   $('p-project-name').value = p.project_name_full||'';
   $('p-project-address').value = p.project_address||'';
   $('p-owner').value = p.owner_name||'';

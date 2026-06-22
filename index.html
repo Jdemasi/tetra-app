@@ -6984,7 +6984,11 @@ async function renderProfit() {
   // Like-for-like variance: profit earned to date vs estimated profit earned to date.
   const expectedProfitToDate = jobComplete ? estProfit : estProfit * pctComplete;
   const profitVariance = actProfit - expectedProfitToDate;
-  const aheadOfEst = profitVariance >= 0;
+  // While in progress, POC profit tracks the prorated estimate almost exactly, so the
+  // variance hovers at ~$0 — treat that as "on track", not a red "behind". A real
+  // ahead/behind only emerges once the job is marked Complete.
+  const onTrack = Math.abs(profitVariance) < Math.max(1, contract * 0.0005);
+  const aheadOfEst = onTrack || profitVariance >= 0;
   // Billed = manual invoices + Submitted/Approved/Paid pay-app billing. A PAID pay app
   // also writes a 'PAY-APP-' invoice, so exclude those to avoid double-counting.
   const totalBilled = (invoices||[]).filter(i=>!((i.invoice_number||'').startsWith('PAY-APP-'))).reduce((s,i)=>s+parseFloat(i.billed_amount||0),0)
@@ -7008,7 +7012,7 @@ async function renderProfit() {
     <div class="kcard db"><div class="klbl">Contract Value</div><div class="kval">${fmt(contract)}</div><div class="ksub m">Adjusted incl. COs</div></div>
     <div class="kcard grn"><div class="klbl">Estimated Profit</div><div class="kval">${fmt(estProfit)}</div><div class="ksub ${estProfit>0?'g':'r'}">${(estMargin*100).toFixed(1)}% margin</div></div>
     <div class="kcard ${aheadOfEst?'grn':'amb'}"><div class="klbl">Actual Profit (to date)</div><div class="kval">${fmt(actProfit)}</div><div class="ksub ${actMargin>0?'g':'r'}">${(actMargin*100).toFixed(1)}% margin</div></div>
-    <div class="kcard ${aheadOfEst?'grn':'red'}"><div class="klbl">Profit Variance</div><div class="kval" style="color:${aheadOfEst?'var(--green)':'var(--danger)'}">${aheadOfEst?'+':''}${fmt(profitVariance)}</div><div class="ksub ${aheadOfEst?'g':'r'}">${aheadOfEst?'Ahead of estimate':'Behind estimate'}</div></div>
+    <div class="kcard ${aheadOfEst?'grn':'red'}"><div class="klbl">Profit Variance</div><div class="kval" style="color:${aheadOfEst?'var(--green)':'var(--danger)'}">${onTrack?fmt(0):(profitVariance>=0?'+':'')+fmt(profitVariance)}</div><div class="ksub ${aheadOfEst?'g':'r'}">${onTrack?'On track':(profitVariance>=0?'Ahead of estimate':'Behind estimate')}</div></div>
   </div>
   <div class="card">
     <div class="card-hd"><div class="card-title"><svg viewBox="0 0 24 24" style="width:15px;height:15px;stroke:var(--navy);fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/></svg>Estimated vs Actual Cost Breakdown</div></div>
@@ -7051,7 +7055,7 @@ async function renderProfit() {
           <td style="padding:8px 10px;color:#fff;font-weight:600">ESTIMATED PROFIT</td>
           <td class="text-right" style="padding:8px 10px;color:#fff;font-weight:600">${fmt(estProfit)}</td>
           <td class="text-right" style="padding:8px 10px;color:#fff;font-weight:600">${fmt(actProfit)}</td>
-          <td class="text-right" style="padding:8px 10px;font-weight:600;color:${aheadOfEst?'#6EE7B7':'#FCA5A5'}">${aheadOfEst?'+':''}${fmt(profitVariance)}</td>
+          <td class="text-right" style="padding:8px 10px;font-weight:600;color:${aheadOfEst?'#6EE7B7':'#FCA5A5'}">${onTrack?fmt(0):(profitVariance>=0?'+':'')+fmt(profitVariance)}</td>
           <td colspan="2" style="padding:8px 10px;color:#fff;font-size:11px">Est: ${(estMargin*100).toFixed(1)}% | Actual: ${(actMargin*100).toFixed(1)}%</td>
         </tr>
       </tfoot>

@@ -4216,7 +4216,7 @@ function updatePayAppRow(idx, scheduledVal, prevPct, prevAmt) {
   const totalPct = prevPct + thisPctInput;
   const totalAmt = prevAmt + thisAmt;
   const balance = scheduledVal - totalAmt;
-  const retPct = parseFloat($('pa-ret-pct').value)||5;
+  const retPct = parseFloat($('pa-ret-pct').value || '5');
   const retAmt = Math.round(thisAmt * retPct / 100 * 100) / 100;
 
   document.getElementById('pa-this-amt-'+idx).textContent = fmt(thisAmt);
@@ -4231,7 +4231,7 @@ function updatePayAppRow(idx, scheduledVal, prevPct, prevAmt) {
 
 function updatePayAppTotals() {
   const lineItems = window._paLineItems || [];
-  const retPct = parseFloat($('pa-ret-pct').value)||5;
+  const retPct = parseFloat($('pa-ret-pct').value || '5');
   const prevBilled = window._paPrevBilled || 0;
   const contract = window._paContract || 0;
 
@@ -4263,7 +4263,7 @@ function updatePayAppTotals() {
 async function saveAndGeneratePayApp(projectId, appNum, prevBilled, prevRetainage, generatePDF) {
   const p = state.activeProject;
   const lineItems = window._paLineItems || [];
-  const retPct = parseFloat($('pa-ret-pct').value)||5;
+  const retPct = parseFloat($('pa-ret-pct').value || '5');
   const periodEnding = $('pa-period').value;
   const submittedDate = $('pa-submitted').value;
   const paymentTerms = parseInt(p.payment_terms||30);

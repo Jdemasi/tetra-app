@@ -6932,13 +6932,14 @@ async function renderProfit() {
   const contract = parseFloat(p.base_contract||0) + parseFloat(p.approved_cos||0);
 
   const [{ data: budgets }, { data: lineItems }, { data: phases },
-         { data: purchases }, { data: labor }, { data: invoices }] = await Promise.all([
+         { data: purchases }, { data: labor }, { data: invoices }, { data: payApps }] = await Promise.all([
     db.from('project_budgets').select('*').eq('project_id', p.id),
     db.from('cost_line_items').select('*').eq('project_id', p.id),
     db.from('phases').select('*').eq('project_id', p.id),
     db.from('purchases').select('*').is('deleted_at',null).eq('project_id', p.id),
     db.from('labor_entries').select('*').is('deleted_at',null).eq('project_id', p.id),
     db.from('invoices').select('*').is('deleted_at',null).eq('project_id', p.id),
+    db.from('pay_applications').select('*').eq('project_id', p.id).in('status',['Submitted','Approved','Paid']),
   ]);
 
   const budMap = {};
@@ -6970,9 +6971,24 @@ async function renderProfit() {
   const actRent = (purchases||[]).filter(p=>p.category==='Rentals').reduce((s,p)=>s+parseFloat(p.po_amount||0),0);
   const actMisc = (purchases||[]).filter(p=>p.category==='Misc.').reduce((s,p)=>s+parseFloat(p.po_amount||0),0);
   const totalActCost = actLabor + actMat + actSub + actEquip + actRent + actMisc;
-  const actProfit = contract - totalActCost;
-  const actMargin = contract > 0 ? actProfit / contract : 0;
-  const totalBilled = (invoices||[]).reduce((s,i)=>s+parseFloat(i.billed_amount||0),0);
+  // Profit "to date" on a percentage-of-completion basis: earned revenue ramps with
+  // cost progress, so profit reflects only what's been earned so far. Once the job is
+  // marked Complete the full contract is recognized, collapsing to (contract − actual
+  // cost) — the two methods converge at completion. No budget → can't prorate, so fall
+  // back to the full-contract basis.
+  const jobComplete = (p.status === 'Complete');
+  const pctComplete = totalEstCost > 0 ? Math.min(1, totalActCost / totalEstCost) : 1;
+  const earnedRev = (jobComplete || totalEstCost <= 0) ? contract : contract * pctComplete;
+  const actProfit = earnedRev - totalActCost;
+  const actMargin = earnedRev > 0 ? actProfit / earnedRev : 0;
+  // Like-for-like variance: profit earned to date vs estimated profit earned to date.
+  const expectedProfitToDate = jobComplete ? estProfit : estProfit * pctComplete;
+  const profitVariance = actProfit - expectedProfitToDate;
+  const aheadOfEst = profitVariance >= 0;
+  // Billed = manual invoices + Submitted/Approved/Paid pay-app billing. A PAID pay app
+  // also writes a 'PAY-APP-' invoice, so exclude those to avoid double-counting.
+  const totalBilled = (invoices||[]).filter(i=>!((i.invoice_number||'').startsWith('PAY-APP-'))).reduce((s,i)=>s+parseFloat(i.billed_amount||0),0)
+    + (payApps||[]).reduce((s,a)=>s+parseFloat(a.current_billed||0),0);
 
   const rows = [
     {label:'Labor', bud:budLabor, act:actLabor, note:'Hours × burden rate vs actual employee rates'},
@@ -6991,8 +7007,8 @@ async function renderProfit() {
   <div class="kgrid">
     <div class="kcard db"><div class="klbl">Contract Value</div><div class="kval">${fmt(contract)}</div><div class="ksub m">Adjusted incl. COs</div></div>
     <div class="kcard grn"><div class="klbl">Estimated Profit</div><div class="kval">${fmt(estProfit)}</div><div class="ksub ${estProfit>0?'g':'r'}">${(estMargin*100).toFixed(1)}% margin</div></div>
-    <div class="kcard ${actProfit<estProfit?'amb':'grn'}"><div class="klbl">Actual Profit (to date)</div><div class="kval">${fmt(actProfit)}</div><div class="ksub ${actMargin>0?'g':'r'}">${(actMargin*100).toFixed(1)}% margin</div></div>
-    <div class="kcard ${actProfit<estProfit?'red':'grn'}"><div class="klbl">Profit Variance</div><div class="kval" style="color:${actProfit>=estProfit?'var(--green)':'var(--danger)'}">${actProfit>=estProfit?'+':''}${fmt(actProfit-estProfit)}</div><div class="ksub ${actProfit>=estProfit?'g':'r'}">${actProfit>=estProfit?'Ahead of estimate':'Behind estimate'}</div></div>
+    <div class="kcard ${aheadOfEst?'grn':'amb'}"><div class="klbl">Actual Profit (to date)</div><div class="kval">${fmt(actProfit)}</div><div class="ksub ${actMargin>0?'g':'r'}">${(actMargin*100).toFixed(1)}% margin</div></div>
+    <div class="kcard ${aheadOfEst?'grn':'red'}"><div class="klbl">Profit Variance</div><div class="kval" style="color:${aheadOfEst?'var(--green)':'var(--danger)'}">${aheadOfEst?'+':''}${fmt(profitVariance)}</div><div class="ksub ${aheadOfEst?'g':'r'}">${aheadOfEst?'Ahead of estimate':'Behind estimate'}</div></div>
   </div>
   <div class="card">
     <div class="card-hd"><div class="card-title"><svg viewBox="0 0 24 24" style="width:15px;height:15px;stroke:var(--navy);fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/></svg>Estimated vs Actual Cost Breakdown</div></div>
@@ -7035,7 +7051,7 @@ async function renderProfit() {
           <td style="padding:8px 10px;color:#fff;font-weight:600">ESTIMATED PROFIT</td>
           <td class="text-right" style="padding:8px 10px;color:#fff;font-weight:600">${fmt(estProfit)}</td>
           <td class="text-right" style="padding:8px 10px;color:#fff;font-weight:600">${fmt(actProfit)}</td>
-          <td class="text-right" style="padding:8px 10px;font-weight:600;color:${actProfit>=estProfit?'#6EE7B7':'#FCA5A5'}">${actProfit>=estProfit?'+':''}${fmt(actProfit-estProfit)}</td>
+          <td class="text-right" style="padding:8px 10px;font-weight:600;color:${aheadOfEst?'#6EE7B7':'#FCA5A5'}">${aheadOfEst?'+':''}${fmt(profitVariance)}</td>
           <td colspan="2" style="padding:8px 10px;color:#fff;font-size:11px">Est: ${(estMargin*100).toFixed(1)}% | Actual: ${(actMargin*100).toFixed(1)}%</td>
         </tr>
       </tfoot>

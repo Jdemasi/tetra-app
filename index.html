@@ -2382,7 +2382,7 @@ function editPhase(phaseId, name, status, hours, budget) {
   $('ph-hours').value = hours || '';
   $('ph-budget').value = budget || '';
   $('ph-burden').value = state.activeProject?.burden_rate || 160;
-  updatePhasePreview();
+  calcPhasebudget();
   $('modal-phase').dataset.editId = phaseId;
   $('modal-phase').dataset.projectId = state.activeProject?.id;
   if ($('ph-delete-btn')) $('ph-delete-btn').style.display = 'inline-block';

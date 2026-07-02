@@ -9155,20 +9155,28 @@ function printVoucherCheck({ payee, amount, memo, date, checkNumber, payeeAddres
   function splitAddr(s) {
     const raw = (s || '').trim();
     if (!raw) return [];
-    // Strip commas for the structured match — comma between city/state shouldn't block it.
-    const clean = raw.replace(/,/g, ' ').replace(/\s+/g, ' ');
-    // <street...> <city-word> <ST> <zip>
-    const m = clean.match(/^(.+?)\s+([A-Za-z][A-Za-z]+)\s+([A-Za-z]{2})\s+(\d{5}(?:-\d{4})?)\s*$/);
-    if (m) {
-      const city = m[2].charAt(0).toUpperCase() + m[2].slice(1).toLowerCase();
-      return [m[1].trim(), `${city}, ${m[3].toUpperCase()} ${m[4]}`];
+    // 1) If the address already has line breaks, honor them EXACTLY. The user's
+    //    own line structure (name / street / suite / "City, State Zip") beats any
+    //    heuristic — and handles multi-word cities and spelled-out states for free.
+    if (/\r?\n/.test(raw)) {
+      return raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
     }
-    // Fall back to comma splitting if the structured pattern doesn't match.
+    // 2) Single line WITH commas: trust the commas as delimiters. Keep the first
+    //    part as the street line and fold the rest ("city, ST zip") onto line 2.
+    //    Correctly handles two-word towns (Glen Cove) and full state names.
     if (raw.includes(',')) {
       const parts = raw.split(',').map(p => p.trim()).filter(Boolean);
       if (parts.length >= 3) return [parts[0], parts.slice(1).join(', ')];
       if (parts.length === 2) return parts;
       return [parts[0]];
+    }
+    // 3) Comma-less single line: best-effort structured parse (street + one-word
+    //    city + 2-letter state + zip). Ambiguous by nature — last resort only.
+    const clean = raw.replace(/\s+/g, ' ');
+    const m = clean.match(/^(.+?)\s+([A-Za-z][A-Za-z]+)\s+([A-Za-z]{2})\s+(\d{5}(?:-\d{4})?)\s*$/);
+    if (m) {
+      const city = m[2].charAt(0).toUpperCase() + m[2].slice(1).toLowerCase();
+      return [m[1].trim(), `${city}, ${m[3].toUpperCase()} ${m[4]}`];
     }
     return [raw];
   }

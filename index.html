@@ -212,6 +212,9 @@ body.inbox-split-mode #modal-purchase .modal{width:46vw;max-width:none;max-heigh
     <button class="sb-item" data-view="ar-aging">
       <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>AR Aging
     </button>
+    <button class="sb-item" data-view="customer-ar" title="Outstanding AR grouped by customer — print or email a statement">
+      <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>Customer AR
+    </button>
     <button class="sb-item" data-view="ap-aging">
       <svg viewBox="0 0 24 24"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>AP Aging
     </button>
@@ -1463,6 +1466,7 @@ async function render() {
   else if (state.view === 'waivers') await renderWaiversOutstanding();
   else if (state.view === 'wip') await renderWIP();
   else if (state.view === 'ar-aging') await renderARaging();
+  else if (state.view === 'customer-ar') await renderCustomerAR();
   else if (state.view === 'employees') await renderEmployees();
   else if (state.view === 'vendors') await renderVendors();
   else if (state.view === 'checks') await renderChecks();
@@ -1498,6 +1502,7 @@ function updateBreadcrumb() {
   else if (state.view === 'waivers') html = '<span class="cur">Waivers Outstanding</span>';
   else if (state.view === 'wip') html = '<span>Dashboard</span><span class="sep">/</span><span class="cur">WIP Schedule</span>';
   else if (state.view === 'ar-aging') html = '<span>Dashboard</span><span class="sep">/</span><span class="cur">AR Aging</span>';
+  else if (state.view === 'customer-ar') html = '<span>Dashboard</span><span class="sep">/</span><span class="cur">Customer AR</span>';
   else if (state.view === 'ap-aging') html = '<span>Dashboard</span><span class="sep">/</span><span class="cur">AP Aging</span>';
   else if (state.view === 'master-pos') html = '<span>Logs</span><span class="sep">/</span><span class="cur">PO Log</span>';
   else if (state.view === 'master-ap') html = '<span>Logs</span><span class="sep">/</span><span class="cur">AP Master — Vendor Invoices</span>';
@@ -5714,8 +5719,24 @@ async function exportBondingWIP() {
   toast('WIP schedule exported', 'success');
 }
 
-// ── AR AGING ─────────────────────────────────────────────────────────
-async function renderARaging() {
+// ── AR: SHARED DATA BUILDER ──────────────────────────────────────────
+// Single source of truth for outstanding AR (active company). Both AR Aging
+// (grouped by job) and Customer AR (grouped by customer) consume this so the
+// numbers can never drift or double-count. Pay apps are primary; manual
+// invoices are included EXCEPT PAY-APP- prefixed ones (those mirror pay apps
+// and would double-count). Paid items are excluded. Aging logic is identical
+// to the original AR Aging so totals match exactly.
+function arCustomerName(inv, proj) {
+  // Precedence mirrors buildARInvoice: invoice bill_to (first line) → GC → owner.
+  const billToRaw = ((inv && inv.bill_to) || '').trim();
+  if (billToRaw) {
+    const first = billToRaw.split(/\r?\n/).map(l => l.trim()).filter(Boolean)[0];
+    if (first) return first;
+  }
+  return (proj && (proj.general_contractor || proj.owner_name)) || '—';
+}
+
+async function computeARRows() {
   const [{ data: invoices }, { data: payApps }, { data: projects }] = await Promise.all([
     withCompany(db.from('invoices').select('*').is('deleted_at',null)),
     withCompany(db.from('pay_applications').select('*').in('status',['Submitted','Approved','Paid'])),
@@ -5725,69 +5746,78 @@ async function renderARaging() {
   (projects||[]).forEach(p=>projMap[p.id]=p);
   const now = new Date();
   const buckets = {current:0,days30:0,days60:0,days90:0};
+  const bucketFor = (daysLate, amt) => {
+    if (daysLate<=0) buckets.current+=amt;
+    else if (daysLate<=30) buckets.days30+=amt;
+    else if (daysLate<=60) buckets.days60+=amt;
+    else buckets.days90+=amt;
+  };
 
-  // Build AR rows from pay applications (primary source)
+  // Pay applications (primary source).
   const paRows = (payApps||[]).map(pa => {
+    if (pa.status === 'Paid') return null;
     const proj = projMap[pa.project_id];
     const outstanding = parseFloat(pa.net_payment_due||0);
-    const isPaid = pa.status === 'Paid';
-    if (isPaid) return null;
-    // Use submitted_date + payment_terms for accurate aging
-    const submittedDate = pa.submitted_date ? new Date(pa.submitted_date+'T00:00:00') : 
+    const submittedDate = pa.submitted_date ? new Date(pa.submitted_date+'T00:00:00') :
                           pa.period_ending ? new Date(pa.period_ending+'T00:00:00') : now;
     const terms = parseInt(pa.payment_terms||30);
     const dueDate = new Date(submittedDate.getTime() + terms*86400000);
     const daysLate = Math.ceil((now-dueDate)/86400000);
-    if (daysLate<=0) buckets.current+=outstanding;
-    else if (daysLate<=30) buckets.days30+=outstanding;
-    else if (daysLate<=60) buckets.days60+=outstanding;
-    else buckets.days90+=outstanding;
+    bucketFor(daysLate, outstanding);
     return {
       type: 'payapp',
       id: pa.id,
       projectId: pa.project_id,
+      project: proj || null,
       jobName: proj ? proj.job_number+' — '+proj.job_name : '—',
+      customer: arCustomerName(null, proj),
       invoiceNum: 'Pay App #'+pa.app_number,
       description: 'Net '+terms+' from submission',
       billed: parseFloat(pa.current_billed||0),
       retainage: parseFloat(pa.retainage_amount||0),
       outstanding,
       daysLate,
+      invoiceDate: pa.period_ending || pa.submitted_date || '',
       dueDate: dueDate.toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}),
       status: pa.status,
       periodEnding: pa.period_ending||'—',
     };
   }).filter(Boolean);
 
-  // Also include any manual invoices not from pay apps
+  // Manual invoices not sourced from pay apps.
   const manualRows = (invoices||[]).filter(i=>i.status!=='Paid'&&!i.invoice_number?.startsWith('PAY-APP-')).map(i => {
     const proj = projMap[i.project_id];
     const outstanding = parseFloat(i.billed_amount||0)-parseFloat(i.paid_amount||0);
     const invDate = i.invoice_date ? new Date(i.invoice_date) : now;
     const dueDate = new Date(invDate.getTime()+(i.terms_days||30)*86400000);
     const daysLate = Math.ceil((now-dueDate)/86400000);
-    if (daysLate<=0) buckets.current+=outstanding;
-    else if (daysLate<=30) buckets.days30+=outstanding;
-    else if (daysLate<=60) buckets.days60+=outstanding;
-    else buckets.days90+=outstanding;
+    bucketFor(daysLate, outstanding);
     return {
       type: 'invoice',
       id: i.id,
       projectId: i.project_id,
+      project: proj || null,
       jobName: proj ? proj.job_number+' — '+proj.job_name : '—',
+      customer: arCustomerName(i, proj),
       invoiceNum: i.invoice_number||'—',
       description: i.description||'—',
       billed: parseFloat(i.billed_amount||0),
       retainage: 0,
       outstanding,
       daysLate,
+      invoiceDate: i.invoice_date || '',
       dueDate: dueDate.toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}),
       status: i.status,
       periodEnding: i.invoice_date||'—',
     };
   });
 
-  const rows = [...paRows, ...manualRows];
+  return { rows: [...paRows, ...manualRows], buckets, projMap };
+}
+
+// ── AR AGING ─────────────────────────────────────────────────────────
+async function renderARaging() {
+  const { rows, buckets } = await computeARRows();
   const total = Object.values(buckets).reduce((s,v)=>s+v,0);
 
   $('content').innerHTML = `
@@ -5829,6 +5859,235 @@ async function renderARaging() {
     </tr>`).join('')}
     </tbody></table></div>`}
   </div>`;
+}
+
+// ── CUSTOMER AR (grouped by customer) ────────────────────────────────
+// Rolls up outstanding AR by customer (bill_to → GC → owner), with per-customer
+// aging + a Statement (print) and Statement (email) action. Shares computeARRows
+// so numbers match AR Aging exactly. Groups are stashed on window._custARList so
+// the statement builders can rebuild a doc without re-querying (index-keyed to
+// stay safe with customer names containing quotes/apostrophes).
+async function renderCustomerAR() {
+  const { rows } = await computeARRows();
+  const overall = {current:0,days30:0,days60:0,days90:0};
+
+  const groups = {};
+  rows.forEach(r => {
+    const key = (r.customer || '—').trim().toLowerCase() || '—';
+    if (!groups[key]) groups[key] = { name: r.customer || '—', rows: [], buckets:{current:0,days30:0,days60:0,days90:0}, total:0 };
+    const g = groups[key];
+    g.rows.push(r);
+    g.total += r.outstanding;
+    const b = r.daysLate<=0 ? 'current' : r.daysLate<=30 ? 'days30' : r.daysLate<=60 ? 'days60' : 'days90';
+    g.buckets[b] += r.outstanding;
+    overall[b] += r.outstanding;
+  });
+
+  const groupList = Object.values(groups).sort((a,b)=>b.total-a.total);
+  window._custARList = groupList; // index-keyed source for statement builders
+  const grandTotal = groupList.reduce((s,g)=>s+g.total,0);
+
+  const ageColor = dl => dl<=0?'var(--green)':dl<=30?'var(--amber)':'var(--danger)';
+
+  $('content').innerHTML = `
+  <div class="kgrid">
+    <div class="kcard grn"><div class="klbl">Current</div><div class="kval">${fmt(overall.current)}</div><div class="ksub g">Not yet due</div></div>
+    <div class="kcard amb"><div class="klbl">1–30 Days Late</div><div class="kval">${fmt(overall.days30)}</div></div>
+    <div class="kcard red"><div class="klbl">31–60 Days Late</div><div class="kval">${fmt(overall.days60)}</div></div>
+    <div class="kcard red"><div class="klbl">60+ Days Late</div><div class="kval">${fmt(overall.days90)}</div></div>
+  </div>
+  <div class="card">
+    <div class="card-hd">
+      <div class="card-title">Customer AR — Outstanding by Customer</div>
+      <div style="font-size:11px;color:var(--gray600)">${groupList.length} customer${groupList.length===1?'':'s'} · Total Outstanding: <strong>${fmt(grandTotal)}</strong></div>
+    </div>
+    ${groupList.length===0 ? '<div class="tbl-empty">No outstanding AR. All paid up!</div>' :
+    groupList.map((g,idx)=>`
+    <div style="border:1px solid var(--border);border-radius:8px;margin-bottom:12px;overflow:hidden">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;background:var(--gray50);border-bottom:1px solid var(--border);flex-wrap:wrap">
+        <div style="min-width:0">
+          <div class="font-600" style="font-size:13px">${esc(g.name)}</div>
+          <div style="font-size:10px;color:var(--gray600)">
+            Current ${fmt(g.buckets.current)} · 1–30 ${fmt(g.buckets.days30)} · 31–60 ${fmt(g.buckets.days60)} · 60+ ${fmt(g.buckets.days90)}
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <div style="text-align:right"><div style="font-size:10px;color:var(--gray600)">Balance Due</div><div class="font-600" style="font-size:14px;color:${g.total>0?'var(--danger)':'var(--gray800)'}">${fmt(g.total)}</div></div>
+          <button class="btn btn-sm" title="Print / Save the statement as PDF" onclick="printCustomerStatement(${idx})">🧾 Statement</button>
+          <button class="btn btn-sm" title="Create an Outlook draft with the statement attached" onclick="emailCustomerStatement(${idx})">📧 Email</button>
+        </div>
+      </div>
+      <div class="tbl-wrap"><table>
+        <thead><tr>
+          <th>Job</th><th>Invoice / Pay App</th><th>Due Date</th>
+          <th class="text-right">Outstanding</th><th>Age</th><th>Status</th>
+        </tr></thead><tbody>
+        ${g.rows.slice().sort((a,b)=>b.daysLate-a.daysLate).map(r=>`<tr>
+          <td class="font-600" style="font-size:11px">${esc(r.jobName)}</td>
+          <td class="mono font-600">${esc(r.invoiceNum)}</td>
+          <td style="font-size:11px;color:var(--gray600)">${r.dueDate||'—'}</td>
+          <td class="text-right font-600" style="color:${ageColor(r.daysLate)}">${fmt(r.outstanding)}</td>
+          <td class="${r.daysLate<=0?'text-green':r.daysLate<=30?'text-amber':'text-red'} font-600">${r.daysLate<=0?'Due in '+Math.abs(r.daysLate)+'d':r.daysLate+'d late'}</td>
+          <td><span class="badge b-${(r.status||'pending').toLowerCase()}">${r.status}</span></td>
+        </tr>`).join('')}
+        </tbody></table></div>
+    </div>`).join('')}
+  </div>`;
+}
+
+// Build a branded statement of account for one customer group (by index into
+// window._custARList). Reuses the AR invoice document shell/CSS + companyDocIdentity.
+// Returns {html, subject, body, fileName, to} like buildARInvoice.
+function buildCustomerStatement(idx) {
+  const g = (window._custARList || [])[idx];
+  if (!g) return null;
+  const ident = companyDocIdentity();
+  const asOf = new Date().toLocaleDateString('en-US');
+  const items = g.rows.slice().sort((a,b)=>{
+    const da = a.invoiceDate ? new Date(a.invoiceDate.slice(0,10)+'T00:00:00').getTime() : 0;
+    const db2 = b.invoiceDate ? new Date(b.invoiceDate.slice(0,10)+'T00:00:00').getTime() : 0;
+    return da - db2;
+  });
+  const rowsHtml = items.map(r => {
+    const dateStr = r.invoiceDate ? new Date(r.invoiceDate.slice(0,10)+'T00:00:00').toLocaleDateString('en-US') : '—';
+    const ageStr = r.daysLate<=0 ? 'Current' : r.daysLate+'d late';
+    return `<tr>
+      <td>${dateStr}</td>
+      <td>${esc(r.invoiceNum)}</td>
+      <td>${esc(r.jobName)}</td>
+      <td>${r.dueDate||'—'}</td>
+      <td>${ageStr}</td>
+      <td class="r">${fmtD(r.outstanding)}</td>
+    </tr>`;
+  }).join('');
+
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Statement — ${esc(g.name)}</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;font-family:Arial,Helvetica,sans-serif}
+body{background:#fff;color:#000;padding:24px}
+.page{max-width:760px;margin:0 auto}
+.hdr{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:24px}
+.hdr .logo{height:56px;max-width:280px;object-fit:contain;margin-bottom:8px}
+.co{font-size:12px;line-height:1.5}
+.co .nm{font-size:15px;font-weight:bold}
+.title{text-align:right}
+.title h1{font-size:30px;letter-spacing:3px;color:#1B2A5E;margin-bottom:6px}
+.meta{font-size:12px;line-height:1.7}
+.meta .lbl{color:#666;display:inline-block;min-width:64px}
+.parties{display:flex;gap:24px;margin-bottom:20px}
+.party{flex:1;border:1px solid #ddd;border-radius:6px;padding:10px 12px;font-size:12px;line-height:1.5}
+.party .ph{font-size:10px;letter-spacing:1px;color:#888;text-transform:uppercase;margin-bottom:4px}
+.party .nm{font-weight:bold}
+table.items{width:100%;border-collapse:collapse;margin-bottom:18px;font-size:12px}
+table.items th{background:#1B2A5E;color:#fff;text-align:left;padding:8px 10px;font-size:11px;letter-spacing:.5px}
+table.items th.r,table.items td.r{text-align:right}
+table.items td{padding:8px 10px;border-bottom:1px solid #eee;vertical-align:top}
+.aging{display:flex;gap:10px;margin:0 0 8px auto;width:100%;max-width:520px;margin-left:auto}
+.aging .ab{flex:1;border:1px solid #ddd;border-radius:6px;padding:6px 8px;font-size:11px;text-align:center}
+.aging .ab .l{color:#888;font-size:9px;letter-spacing:.5px;text-transform:uppercase}
+.aging .ab .v{font-weight:bold;font-size:13px;margin-top:2px}
+.totals{margin-left:auto;width:280px;font-size:13px}
+.totals .row{display:flex;justify-content:space-between;padding:5px 0}
+.totals .row.due{border-top:2px solid #1B2A5E;margin-top:4px;padding-top:8px;font-size:16px;font-weight:bold;color:#1B2A5E}
+.terms{margin-top:28px;font-size:11px;color:#555;line-height:1.6;border-top:1px solid #eee;padding-top:12px}
+@media print{.no-print{display:none}body{padding:0}@page{size:letter;margin:0.5in}}
+</style></head><body>
+<div class="page">
+  <div class="hdr">
+    <div class="co">
+      ${ident.logo ? `<img class="logo" src="${ident.logo}" alt="${esc(ident.name)}"><br>` : ''}
+      <span class="nm">${esc(ident.name)}</span><br>
+      ${esc(ident.addr1)}<br>
+      ${esc(ident.cityStateZip)}<br>
+      ${esc(ident.phone)}<br>
+      ${esc(ident.email)}
+    </div>
+    <div class="title">
+      <h1>STATEMENT</h1>
+      <div class="meta">
+        <div><span class="lbl">Statement</span>${asOf}</div>
+        <div><span class="lbl">As of</span>${asOf}</div>
+        <div><span class="lbl">Open items</span>${items.length}</div>
+      </div>
+    </div>
+  </div>
+  <div class="parties">
+    <div class="party">
+      <div class="ph">Statement For</div>
+      <div class="nm">${esc(g.name || '—')}</div>
+    </div>
+    <div class="party">
+      <div class="ph">Total Balance Due</div>
+      <div class="nm" style="color:#1B2A5E;font-size:16px">${fmtD(g.total)}</div>
+    </div>
+  </div>
+  <table class="items">
+    <thead><tr><th>Date</th><th>Invoice / Pay App</th><th>Job</th><th>Due Date</th><th>Age</th><th class="r">Amount Due</th></tr></thead>
+    <tbody>
+      ${rowsHtml || '<tr><td colspan="6" style="text-align:center;color:#888">No open items.</td></tr>'}
+    </tbody>
+  </table>
+  <div class="aging">
+    <div class="ab"><div class="l">Current</div><div class="v">${fmtD(g.buckets.current)}</div></div>
+    <div class="ab"><div class="l">1–30</div><div class="v">${fmtD(g.buckets.days30)}</div></div>
+    <div class="ab"><div class="l">31–60</div><div class="v">${fmtD(g.buckets.days60)}</div></div>
+    <div class="ab"><div class="l">60+</div><div class="v">${fmtD(g.buckets.days90)}</div></div>
+  </div>
+  <div class="totals">
+    <div class="row due"><span>Total Due</span><span>${fmtD(g.total)}</span></div>
+  </div>
+  <div class="terms">
+    Please make checks payable to ${esc(ident.name)}. Amounts shown are outstanding balances on the referenced invoices and pay applications. Please reference the invoice / pay-app numbers above on your remittance. Contact us if any item has already been paid so we can update our records.
+  </div>
+</div>
+<div class="no-print" style="text-align:center;margin:20px;display:flex;gap:12px;justify-content:center">
+  <button onclick="window.print()" style="padding:10px 30px;background:#1B2A5E;color:#fff;border:none;border-radius:6px;font-size:14px;cursor:pointer">🖨️ Print / Save as PDF</button>
+</div>
+</body></html>`;
+
+  const safeName = (g.name || 'Customer').replace(/[^a-z0-9]+/gi,'_').replace(/^_+|_+$/g,'') || 'Customer';
+  return {
+    html,
+    subject: `Statement of Account — ${ident.name}`,
+    body: `Attached is your current statement of account with ${ident.name} as of ${asOf}, showing a total balance due of ${fmtD(g.total)} across ${items.length} open item${items.length===1?'':'s'}.\n\nPlease reference the invoice / pay-app numbers on your remittance, and let us know if any item has already been paid.\n\nThank you,\n${ident.name}\n${ident.phone}`,
+    fileName: `Statement ${safeName}.pdf`,
+    to: '', // no billing-email column on projects yet — user fills in Outlook
+  };
+}
+
+function printCustomerStatement(idx) {
+  const built = buildCustomerStatement(idx);
+  if (!built) { toast('Could not build statement', 'error'); return; }
+  const win = window.open('', '_blank');
+  win.document.write(built.html);
+  win.document.close();
+  setTimeout(() => win.focus(), 300);
+}
+
+// Email a customer statement: Outlook draft via the same Graph path as POs/AR
+// invoices. Falls back to print + mailto if Graph fails. Recipient is left blank
+// (no billing-email column yet) for the user to fill in Outlook.
+async function emailCustomerStatement(idx) {
+  const built = buildCustomerStatement(idx);
+  if (!built) { toast('Could not build statement', 'error'); return; }
+  toast('Preparing statement draft… you may be asked to sign in to Microsoft');
+  try {
+    await createPODraft({ to: built.to, subject: built.subject, body: built.body, docHTML: built.html, fileName: built.fileName });
+    toast('Statement draft created in Outlook (Drafts folder) — PDF attached, ready to review & send', 'success');
+  } catch (e) {
+    console.error('Graph draft failed for statement, falling back to print + mailto:', e);
+    const w = window.open('', '_blank');
+    w.document.write(built.html);
+    w.document.close();
+    setTimeout(() => { try { w.focus(); w.print(); } catch(err){} }, 500);
+    const mailtoUrl = `mailto:?subject=${encodeURIComponent(built.subject)}&body=${encodeURIComponent(built.body)}`;
+    setTimeout(() => {
+      const a = document.createElement('a');
+      a.href = mailtoUrl; a.style.display = 'none';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    }, 700);
+    toast('Couldn\'t auto-create the draft (' + (e.message||'sign-in/permission issue') + '). Falling back: save the PDF, then attach to the email.', 'error');
+  }
 }
 
 // ── EMPLOYEES ────────────────────────────────────────────────────────
@@ -9155,28 +9414,20 @@ function printVoucherCheck({ payee, amount, memo, date, checkNumber, payeeAddres
   function splitAddr(s) {
     const raw = (s || '').trim();
     if (!raw) return [];
-    // 1) If the address already has line breaks, honor them EXACTLY. The user's
-    //    own line structure (name / street / suite / "City, State Zip") beats any
-    //    heuristic — and handles multi-word cities and spelled-out states for free.
-    if (/\r?\n/.test(raw)) {
-      return raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    // Strip commas for the structured match — comma between city/state shouldn't block it.
+    const clean = raw.replace(/,/g, ' ').replace(/\s+/g, ' ');
+    // <street...> <city-word> <ST> <zip>
+    const m = clean.match(/^(.+?)\s+([A-Za-z][A-Za-z]+)\s+([A-Za-z]{2})\s+(\d{5}(?:-\d{4})?)\s*$/);
+    if (m) {
+      const city = m[2].charAt(0).toUpperCase() + m[2].slice(1).toLowerCase();
+      return [m[1].trim(), `${city}, ${m[3].toUpperCase()} ${m[4]}`];
     }
-    // 2) Single line WITH commas: trust the commas as delimiters. Keep the first
-    //    part as the street line and fold the rest ("city, ST zip") onto line 2.
-    //    Correctly handles two-word towns (Glen Cove) and full state names.
+    // Fall back to comma splitting if the structured pattern doesn't match.
     if (raw.includes(',')) {
       const parts = raw.split(',').map(p => p.trim()).filter(Boolean);
       if (parts.length >= 3) return [parts[0], parts.slice(1).join(', ')];
       if (parts.length === 2) return parts;
       return [parts[0]];
-    }
-    // 3) Comma-less single line: best-effort structured parse (street + one-word
-    //    city + 2-letter state + zip). Ambiguous by nature — last resort only.
-    const clean = raw.replace(/\s+/g, ' ');
-    const m = clean.match(/^(.+?)\s+([A-Za-z][A-Za-z]+)\s+([A-Za-z]{2})\s+(\d{5}(?:-\d{4})?)\s*$/);
-    if (m) {
-      const city = m[2].charAt(0).toUpperCase() + m[2].slice(1).toLowerCase();
-      return [m[1].trim(), `${city}, ${m[3].toUpperCase()} ${m[4]}`];
     }
     return [raw];
   }

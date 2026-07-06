@@ -5915,6 +5915,7 @@ async function renderCustomerAR() {
           <div style="text-align:right"><div style="font-size:10px;color:var(--gray600)">Balance Due</div><div class="font-600" style="font-size:14px;color:${g.total>0?'var(--danger)':'var(--gray800)'}">${fmt(g.total)}</div></div>
           <button class="btn btn-sm" title="Print / Save the statement as PDF" onclick="printCustomerStatement(${idx})">🧾 Statement</button>
           <button class="btn btn-sm" title="Create an Outlook draft with the statement attached" onclick="emailCustomerStatement(${idx})">📧 Email</button>
+          <button class="btn btn-sm" title="One Outlook draft: the statement PLUS a PDF for each open invoice from this customer" onclick="emailCustomerPackage(${idx})">📧 + Invoices</button>
         </div>
       </div>
       <div class="tbl-wrap"><table>
@@ -6087,6 +6088,72 @@ async function emailCustomerStatement(idx) {
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
     }, 700);
     toast('Couldn\'t auto-create the draft (' + (e.message||'sign-in/permission issue') + '). Falling back: save the PDF, then attach to the email.', 'error');
+  }
+}
+
+// Email a customer their whole AR package in ONE Outlook draft: the statement as
+// the cover PDF, plus a separate itemized-invoice PDF for each open manual invoice
+// in the group. Pay-app rows are shown on the statement only (their AIA packet
+// lives in the Pay Apps module, not regenerated here). Reuses buildCustomerStatement,
+// buildARInvoice, poHtmlToPdfBase64, and createPODraft. Falls back to print if Graph
+// fails. Index-keyed via window._custARList (safe with quotes in customer names).
+async function emailCustomerPackage(idx) {
+  const g = (window._custARList || [])[idx];
+  const stmt = buildCustomerStatement(idx);
+  if (!g || !stmt) { toast('Could not build package', 'error'); return; }
+  const ident = companyDocIdentity();
+
+  const invoiceRows = g.rows.filter(r => r.type === 'invoice');
+  const payAppCount = g.rows.length - invoiceRows.length;
+  toast(invoiceRows.length
+    ? `Preparing draft… statement + ${invoiceRows.length} invoice${invoiceRows.length===1?'':'s'}. You may be asked to sign in to Microsoft.`
+    : 'Preparing statement draft… you may be asked to sign in to Microsoft');
+
+  // One itemized-invoice PDF per open manual invoice.
+  const extraAttachments = [];
+  let failedInv = 0;
+  for (const r of invoiceRows) {
+    try {
+      const built = await buildARInvoice(r.id, r.projectId);
+      if (built && built.html) {
+        const b64 = await poHtmlToPdfBase64(built.html);
+        const numStr = (r.invoiceNum && r.invoiceNum !== '—') ? r.invoiceNum : String(r.id).slice(0, 8);
+        extraAttachments.push({ base64: b64, fileName: `Invoice ${numStr}.pdf` });
+      } else { failedInv++; }
+    } catch (e) {
+      console.error('Package: failed to build invoice PDF for', r.id, e);
+      failedInv++;
+    }
+  }
+
+  const invCount = extraAttachments.length;
+  const body =
+    `Attached is your current statement of account with ${ident.name}, showing a total balance due of ${fmtD(g.total)}` +
+    (invCount ? `, along with ${invCount} itemized invoice${invCount===1?'':'s'}` : '') +
+    (payAppCount ? ` (pay applications are itemized on the statement)` : '') +
+    `.\n\nPlease reference the invoice / pay-app numbers on your remittance, and let us know if any item has already been paid.\n\nThank you,\n${ident.name}\n${ident.phone}`;
+
+  try {
+    await createPODraft({
+      to: stmt.to,
+      subject: `Statement${invCount ? ' & Invoices' : ''} — ${ident.name}`,
+      body,
+      docHTML: stmt.html,
+      fileName: stmt.fileName,
+      extraAttachments,
+    });
+    toast(
+      `Draft created in Outlook (Drafts) — statement${invCount ? ` + ${invCount} invoice${invCount===1?'':'s'}` : ''} attached, ready to review & send`
+      + (failedInv ? ` (${failedInv} invoice PDF${failedInv===1?'':'s'} couldn't be built — check those manually)` : ''),
+      failedInv ? 'error' : 'success'
+    );
+  } catch (e) {
+    console.error('Graph draft failed for customer package, falling back to print:', e);
+    const w = window.open('', '_blank');
+    w.document.write(stmt.html);
+    w.document.close();
+    setTimeout(() => { try { w.focus(); w.print(); } catch(err){} }, 500);
+    toast('Couldn\'t auto-create the draft (' + (e.message||'sign-in/permission issue') + '). Falling back: save the statement PDF, then attach the invoices in Outlook.', 'error');
   }
 }
 

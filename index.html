@@ -513,16 +513,16 @@ body.inbox-split-mode #modal-purchase .modal{width:46vw;max-width:none;max-heigh
 
 <div class="modal-bg" id="modal-check">
   <div class="modal" style="max-width:500px">
-    <div class="modal-hd"><div class="modal-title">Write a Check</div><button class="modal-close" onclick="closeModal('modal-check')">×</button></div>
+    <div class="modal-hd"><div class="modal-title" id="chk-modal-title">Write a Check</div><button class="modal-close" onclick="closeModal('modal-check')">×</button></div>
     <div class="form-grid">
       <div class="fgroup"><label class="flbl">Check # *</label><input class="finp" type="number" id="chk-number" placeholder="1001"></div>
       <div class="fgroup"><label class="flbl">Date</label><input class="finp" type="date" id="chk-date"></div>
       <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Pay to the Order of *</label><input class="finp" id="chk-payee" placeholder="e.g. National Grid"></div>
       <div class="fgroup"><label class="flbl">Amount ($) *</label><input class="finp" type="number" step="0.01" id="chk-amount" placeholder="0.00"></div>
-      <div class="fgroup"><label class="flbl">&nbsp;</label><div style="font-size:11px;color:var(--gray600);padding-top:6px">Suggested # is last+1 — confirm or type the number on the stock you'll feed in.</div></div>
+      <div class="fgroup" id="chk-suggest-hint"><label class="flbl">&nbsp;</label><div style="font-size:11px;color:var(--gray600);padding-top:6px">Suggested # is last+1 — confirm or type the number on the stock you'll feed in.</div></div>
       <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Memo</label><input class="finp" id="chk-memo" placeholder="e.g. Account #12345"></div>
-      <div class="fgroup" style="grid-column:1/-1"><label class="flbl">Payee Address <span style="color:var(--gray600);font-weight:normal">(optional — for window envelopes)</span></label><textarea class="finp" id="chk-payee-addr" rows="2" placeholder="123 Main St, City, State Zip"></textarea></div>
-      <div class="fgroup" style="grid-column:1/-1;border-top:1px solid var(--gray100);padding-top:8px">
+      <div class="fgroup" id="chk-addr-group" style="grid-column:1/-1"><label class="flbl">Payee Address <span style="color:var(--gray600);font-weight:normal">(optional — for window envelopes)</span></label><textarea class="finp" id="chk-payee-addr" rows="2" placeholder="123 Main St, City, State Zip"></textarea></div>
+      <div class="fgroup" id="chk-waiver-toggle" style="grid-column:1/-1;border-top:1px solid var(--gray100);padding-top:8px">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
           <input type="checkbox" id="chk-needs-waiver" onchange="document.getElementById('chk-waiver-job-wrap').style.display=this.checked?'block':'none'">
           This payment needs a lien waiver back (sub/supplier)
@@ -532,7 +532,7 @@ body.inbox-split-mode #modal-purchase .modal{width:46vw;max-width:none;max-heigh
     </div>
     <div class="form-actions" style="display:flex;justify-content:flex-end;gap:8px">
       <button class="btn" onclick="closeModal('modal-check')">Cancel</button>
-      <button class="btn btn-red" onclick="saveAndPrintManualCheck()">Save &amp; Print</button>
+      <button class="btn btn-red" id="chk-save-btn" onclick="onCheckModalSave()">Save &amp; Print</button>
     </div>
   </div>
 </div>
@@ -9481,6 +9481,13 @@ function printVoucherCheck({ payee, amount, memo, date, checkNumber, payeeAddres
   function splitAddr(s) {
     const raw = (s || '').trim();
     if (!raw) return [];
+    // If the address was typed with explicit line breaks, honor them verbatim and
+    // skip the heuristic entirely — the parser below is only for single-line stored
+    // addresses. Re-parsing an already-formatted address is pure downside: it flattened
+    // newlines and single-word-matched the city, splitting "Jersey City" across lines.
+    if (/[\r\n]/.test(raw)) {
+      return raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    }
     // Strip commas for the structured match — comma between city/state shouldn't block it.
     const clean = raw.replace(/,/g, ' ').replace(/\s+/g, ' ');
     // <street...> <city-word> <ST> <zip>
@@ -9766,7 +9773,71 @@ async function printVendorCheck(purchaseId) {
 // Manual check: open the form for any payee/amount/memo. Pre-fill the check-
 // number field with last+1 as a convenience; the user types/confirms the
 // number actually on the check stock about to be printed.
+// Tracks which existing check (if any) the modal is editing. null = writing a new check.
+let _editingCheckId = null;
+
+// Flip the shared check modal between "write new" and "edit existing" chrome.
+// Edit mode hides the suggested-# hint, the payee-address block (not persisted on
+// the check row yet), and the lien-waiver toggle (a write-time concern only).
+function _setCheckModalMode(mode) {
+  const editing = mode === 'edit';
+  const t = $('chk-modal-title'); if (t) t.textContent = editing ? 'Edit Check' : 'Write a Check';
+  const b = $('chk-save-btn'); if (b) b.textContent = editing ? 'Save Changes' : 'Save & Print';
+  const hint = $('chk-suggest-hint'); if (hint) hint.style.display = editing ? 'none' : '';
+  const addr = $('chk-addr-group'); if (addr) addr.style.display = editing ? 'none' : '';
+  const wv = $('chk-waiver-toggle'); if (wv) wv.style.display = editing ? 'none' : '';
+  if (editing) { const wj = $('chk-waiver-job-wrap'); if (wj) wj.style.display = 'none'; }
+}
+
+// Dispatcher for the modal's primary button — one button serves both flows.
+function onCheckModalSave() {
+  return _editingCheckId ? saveCheckEdit() : saveAndPrintManualCheck();
+}
+
+// Open the check modal populated from an existing row to fix a mistake
+// (payee / amount / memo / date / check #) without voiding and re-issuing.
+async function openEditCheck(checkId) {
+  const c = (state.checks || []).find(x => x.id === checkId)
+    || (await db.from('checks').select('*').eq('id', checkId).single()).data;
+  if (!c) { toast('Could not load that check', 'error'); return; }
+  _editingCheckId = c.id;
+  $('chk-number').value = c.check_number != null ? c.check_number : '';
+  $('chk-date').value = c.check_date || today();
+  $('chk-payee').value = c.payee || '';
+  $('chk-amount').value = c.amount != null ? c.amount : '';
+  $('chk-memo').value = c.memo || '';
+  $('chk-payee-addr').value = '';
+  if ($('chk-needs-waiver')) $('chk-needs-waiver').checked = false;
+  _setCheckModalMode('edit');
+  openModal('modal-check');
+}
+
+// Persist edits to an existing check. No printing here — use Reprint from the
+// register if a fresh copy is needed. Updates the core recorded fields only.
+async function saveCheckEdit() {
+  const payee = $('chk-payee').value.trim();
+  const amount = parseFloat($('chk-amount').value) || 0;
+  const checkNumber = parseInt($('chk-number').value) || 0;
+  if (!payee) { toast('Enter a payee', 'error'); return; }
+  if (amount <= 0) { toast('Enter an amount greater than zero', 'error'); return; }
+  if (checkNumber <= 0) { toast('Enter the check number', 'error'); return; }
+  const { error } = await db.from('checks').update({
+    payee,
+    amount,
+    memo: $('chk-memo').value.trim(),
+    check_date: $('chk-date').value || today(),
+    check_number: checkNumber,
+  }).eq('id', _editingCheckId);
+  if (error) { toast('Could not save changes: ' + error.message, 'error'); return; }
+  toast(`Check #${checkNumber} updated`);
+  _editingCheckId = null;
+  closeModal('modal-check');
+  renderChecks();
+}
+
 async function openManualCheck() {
+  _editingCheckId = null;
+  _setCheckModalMode('new');
   $('chk-payee').value = '';
   $('chk-amount').value = '';
   $('chk-memo').value = '';
@@ -9850,6 +9921,7 @@ async function renderChecks() {
       <td class="text-right font-600" style="${dim}">${fmtD(c.amount)}</td>
       <td>${c.voided ? '<span class="badge b-hold">Void</span>' : '<span class="badge b-active">Issued</span>'}</td>
       <td><div style="display:flex;gap:4px">
+        ${c.voided ? '' : `<button class="btn btn-sm" onclick="openEditCheck('${c.id}')">✏️ Edit</button>`}
         <button class="btn btn-sm" onclick="reprintCheck('${c.id}')">🖨️ Reprint</button>
         ${c.voided
           ? `<button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deleteCheck('${c.id}')">Delete</button>`
@@ -9868,7 +9940,7 @@ async function renderChecks() {
     </div>
     <div class="tbl-wrap">
     ${state.checks.length === 0 ? '<div class="tbl-empty">No checks yet. Click "Write a Check" to print one.</div>' :
-    `<table><thead><tr><th>Check #</th><th>Date</th><th>Payee</th><th>Memo</th><th class="text-right">Amount</th><th>Status</th><th style="width:160px"></th></tr></thead><tbody>${rows}</tbody></table>`}
+    `<table><thead><tr><th>Check #</th><th>Date</th><th>Payee</th><th>Memo</th><th class="text-right">Amount</th><th>Status</th><th style="width:220px"></th></tr></thead><tbody>${rows}</tbody></table>`}
     </div>
   </div>`;
   $('topbar-actions').innerHTML = `<button class="btn btn-sm btn-red" onclick="openManualCheck()">+ Write a Check</button>`;

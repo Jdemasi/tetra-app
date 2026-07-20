@@ -4695,9 +4695,8 @@ async function markPayAppPaid(payAppId, projectId, netDue) {
       invoice_number: 'PAY-APP-' + pa.app_number,
       billed_amount: parseFloat(pa.current_billed||0),
       paid_amount: amount,
-      payment_date: payDate,
       status: 'Paid',
-      notes: 'Pay Application #' + pa.app_number,
+      notes: 'Pay Application #' + pa.app_number + ' [Received ' + amount.toFixed(2) + ' on ' + payDate + ']',
     });
   }
   toast('✅ Pay App marked as paid — $'+amount.toFixed(2)+' received');
@@ -8693,7 +8692,6 @@ async function saveARPayment() {
     const newNotes = i.notes ? i.notes + ' ' + noteLine : noteLine;
     const { error } = await db.from('invoices').update({
       paid_amount: newPaid,
-      payment_date: payDate,
       status: fullyPaid ? 'Paid' : 'Partial',
       notes: newNotes,
     }).eq('id', id);
@@ -8723,7 +8721,6 @@ async function saveARPayment() {
           invoice_number: payAppInvNum,
           billed_amount: parseFloat(pa.current_billed||0),
           paid_amount: newPaid,
-          payment_date: payDate,
           status: 'Paid',
           notes: 'Pay Application #' + pa.app_number + ' ' + noteLine,
         });

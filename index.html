@@ -897,6 +897,40 @@ body.inbox-split-mode #modal-purchase .modal{width:46vw;max-width:none;max-heigh
   </div>
 </div>
 
+<div class="modal-bg" id="modal-ar-pay">
+  <div class="modal" style="max-width:480px">
+    <div class="modal-hd"><div class="modal-title">💰 Record Payment Received</div><button class="modal-close" onclick="closeModal('modal-ar-pay')">×</button></div>
+    <input type="hidden" id="arpay-type">
+    <input type="hidden" id="arpay-id">
+    <div style="background:var(--gray50);border-radius:8px;padding:12px;margin-bottom:14px;font-size:12px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+        <div><span style="color:var(--gray600)">Customer:</span> <strong id="arpay-customer">—</strong></div>
+        <div><span style="color:var(--gray600)">Invoice / Pay App:</span> <strong id="arpay-invnum">—</strong></div>
+        <div><span style="color:var(--gray600)">Net billed:</span> <strong id="arpay-net">—</strong></div>
+        <div><span style="color:var(--gray600)">Already received:</span> <strong id="arpay-prevpaid">—</strong></div>
+        <div style="grid-column:1/-1;border-top:1px solid var(--border);padding-top:6px;margin-top:2px">
+          <span style="color:var(--gray600)">Balance due:</span> <strong id="arpay-balance" style="color:var(--amber);font-size:14px">—</strong>
+        </div>
+      </div>
+    </div>
+    <div class="form-grid">
+      <div class="fgroup"><label class="flbl">Payment Date</label><input class="finp" type="date" id="arpay-date"></div>
+      <div class="fgroup"><label class="flbl">Amount ($)</label><input class="finp" type="number" id="arpay-amount" step="0.01" placeholder="0.00"></div>
+      <div class="fgroup"><label class="flbl">Method</label>
+        <select class="finp" id="arpay-method">
+          <option>Check</option><option>ACH</option><option>Wire</option><option>Zelle</option><option>Credit Card</option><option>Cash</option><option>Other</option>
+        </select>
+      </div>
+      <div class="fgroup"><label class="flbl">Reference (Check# / Confirmation)</label><input class="finp" id="arpay-ref" placeholder="e.g. 1042 or ACH-XXXX"></div>
+    </div>
+    <div style="font-size:11px;color:var(--gray600);margin-bottom:10px">💡 Partial payments are allowed — adjust the Amount field. Aging continues on the remaining balance.</div>
+    <div class="form-actions">
+      <button class="btn" onclick="closeModal('modal-ar-pay')">Cancel</button>
+      <button class="btn btn-red" onclick="saveARPayment()">Save Payment</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-bg" id="modal-import-pos">
   <div class="modal" style="max-width:780px;width:95%">
     <div class="modal-hd"><div class="modal-title">📥 Bulk Import POs</div><button class="modal-close" onclick="closeModal('modal-import-pos')">×</button></div>
@@ -4719,6 +4753,7 @@ async function renderInvoices() {
         <td>${dueStr}${daysStr}</td>
         <td><span class="badge b-${(i.status||'pending').toLowerCase()}">${i.status}</span></td>
         <td><div style="display:flex;gap:4px">
+          ${(net - parseFloat(i.paid_amount||0)) > 0.01 ? `<button class="btn btn-sm" title="Record a payment received" style="color:var(--green);border-color:var(--green)" onclick="openARPayment('invoice','${i.id}')">💰 Pay</button>`:''}
           ${i.pdf_url?`<button class="btn btn-sm" title="View attached pay app" onclick="openStoredFile('${i.pdf_url}')">📎</button>`:''}
           <button class="btn btn-sm" title="Print QuickBooks-style invoice" onclick="printARInvoice('${i.id}','${p.id}')">🧾 Invoice</button>
           <button class="btn btn-sm" title="Email invoice as PDF (Outlook draft)" onclick="emailARInvoice('${i.id}','${p.id}')">📧 Email</button>
@@ -5757,7 +5792,9 @@ async function computeARRows() {
   const paRows = (payApps||[]).map(pa => {
     if (pa.status === 'Paid') return null;
     const proj = projMap[pa.project_id];
-    const outstanding = parseFloat(pa.net_payment_due||0);
+    // Outstanding nets out any partial receipts (pay_applications.paid_amount).
+    const outstanding = parseFloat(pa.net_payment_due||0) - parseFloat(pa.paid_amount||0);
+    if (outstanding <= 0.01) return null;
     const submittedDate = pa.submitted_date ? new Date(pa.submitted_date+'T00:00:00') :
                           pa.period_ending ? new Date(pa.period_ending+'T00:00:00') : now;
     const terms = parseInt(pa.payment_terms||30);
@@ -5851,6 +5888,7 @@ async function renderARaging() {
       <td class="${r.daysLate<=0?'text-green':r.daysLate<=30?'text-amber':'text-red'} font-600">${r.daysLate<=0?'Due in '+Math.abs(r.daysLate)+'d':r.daysLate+'d late'}</td>
       <td><span class="badge b-${(r.status||'pending').toLowerCase()}">${r.status}</span></td>
       <td><div style="display:flex;gap:4px">
+        <button class="btn btn-sm" title="Record a payment received" style="color:var(--green);border-color:var(--green)" onclick="openARPayment('${r.type}','${r.id}')">💰 Pay</button>
         ${r.type === 'invoice'
           ? `<button class="btn btn-sm" title="Print QuickBooks-style invoice" onclick="printARInvoice('${r.id}','${r.projectId}')">🧾</button>
              <button class="btn btn-sm" title="Email invoice as PDF" onclick="emailARInvoice('${r.id}','${r.projectId}')">📧</button>`
@@ -8587,6 +8625,112 @@ async function savePayPurchase() {
   }
 
   closeModal('modal-pay');
+  toast(`Payment of ${fmt(payAmount)} recorded`);
+  render();
+}
+
+// ── AR PAYMENT (money received) ──────────────────────────────────────
+// Records a customer payment against a manual invoice OR a pay application.
+// Mirrors the AP "Record Payment" modal but writes to the AR side and always
+// keeps status + paid_amount in sync — the root of the "marked Paid but still
+// shows Outstanding" bug (status was set without ever recording the dollars).
+// Partial receipts are supported on both invoices and pay apps.
+async function openARPayment(type, id) {
+  let customer = '—', invnum = '—', net = 0, prevPaid = 0;
+  if (type === 'invoice') {
+    const { data: i } = await db.from('invoices').select('*').eq('id', id).single();
+    if (!i) { toast('Could not load invoice','error'); return; }
+    const billed = parseFloat(i.billed_amount||0);
+    net = billed - billed*(parseFloat(i.retainage_pct||0)/100);
+    prevPaid = parseFloat(i.paid_amount||0);
+    invnum = i.invoice_number || '—';
+    let proj = null;
+    if (i.project_id) { const { data: p } = await db.from('projects').select('*').eq('id', i.project_id).single(); proj = p; }
+    customer = arCustomerName(i, proj);
+  } else {
+    const { data: pa } = await db.from('pay_applications').select('*').eq('id', id).single();
+    if (!pa) { toast('Could not load pay application','error'); return; }
+    net = parseFloat(pa.net_payment_due||0);
+    prevPaid = parseFloat(pa.paid_amount||0);
+    invnum = 'Pay App #'+pa.app_number;
+    let proj = null;
+    if (pa.project_id) { const { data: p } = await db.from('projects').select('*').eq('id', pa.project_id).single(); proj = p; }
+    customer = arCustomerName(null, proj);
+  }
+  const balance = Math.max(net - prevPaid, 0);
+  $('arpay-type').value = type;
+  $('arpay-id').value = id;
+  $('arpay-customer').textContent = customer;
+  $('arpay-invnum').textContent = invnum;
+  $('arpay-net').textContent = fmt(net);
+  $('arpay-prevpaid').textContent = fmt(prevPaid);
+  $('arpay-balance').textContent = fmt(balance);
+  $('arpay-date').value = today();
+  $('arpay-amount').value = balance.toFixed(2);
+  $('arpay-method').value = 'Check';
+  $('arpay-ref').value = '';
+  openModal('modal-ar-pay');
+}
+
+async function saveARPayment() {
+  const type = $('arpay-type').value;
+  const id = $('arpay-id').value;
+  const payDate = $('arpay-date').value;
+  const payAmount = parseFloat($('arpay-amount').value) || 0;
+  const ref = $('arpay-ref').value.trim();
+  const method = $('arpay-method').value;
+  if (!payDate) { toast('Enter a payment date','error'); return; }
+  if (payAmount <= 0) { toast('Enter a payment amount','error'); return; }
+  const noteLine = `[Received ${payAmount.toFixed(2)} on ${payDate} via ${method}${ref?' ref '+ref:''}]`;
+
+  if (type === 'invoice') {
+    const { data: i } = await db.from('invoices').select('*').eq('id', id).single();
+    if (!i) { toast('Could not load invoice','error'); return; }
+    const billed = parseFloat(i.billed_amount||0);
+    const net = billed - billed*(parseFloat(i.retainage_pct||0)/100);
+    const newPaid = parseFloat(i.paid_amount||0) + payAmount;
+    const fullyPaid = newPaid >= net - 0.01;
+    const newNotes = i.notes ? i.notes + ' ' + noteLine : noteLine;
+    const { error } = await db.from('invoices').update({
+      paid_amount: newPaid,
+      payment_date: payDate,
+      status: fullyPaid ? 'Paid' : 'Partial',
+      notes: newNotes,
+    }).eq('id', id);
+    if (error) { toast('Error: '+error.message,'error'); return; }
+  } else {
+    const { data: pa } = await db.from('pay_applications').select('*').eq('id', id).single();
+    if (!pa) { toast('Could not load pay application','error'); return; }
+    const net = parseFloat(pa.net_payment_due||0);
+    const newPaid = parseFloat(pa.paid_amount||0) + payAmount;
+    const fullyPaid = newPaid >= net - 0.01;
+    const newNotes = pa.notes ? pa.notes + ' ' + noteLine : noteLine;
+    const { error } = await db.from('pay_applications').update({
+      paid_amount: newPaid,
+      status: fullyPaid ? 'Paid' : pa.status,
+      notes: newNotes,
+    }).eq('id', id);
+    if (error) { toast('Error: '+error.message,'error'); return; }
+    // On full payment, mirror markPayAppPaid: drop a PAY-APP invoice row for AR
+    // tracking, but only if one doesn't already exist (avoid double-counting).
+    if (fullyPaid) {
+      const payAppInvNum = 'PAY-APP-' + pa.app_number;
+      const { data: existing } = await db.from('invoices').select('id').eq('project_id', pa.project_id).eq('invoice_number', payAppInvNum).is('deleted_at', null);
+      if (!existing || existing.length === 0) {
+        await db.from('invoices').insert({
+          project_id: pa.project_id,
+          company_id: state.activeCompanyId || null,
+          invoice_number: payAppInvNum,
+          billed_amount: parseFloat(pa.current_billed||0),
+          paid_amount: newPaid,
+          payment_date: payDate,
+          status: 'Paid',
+          notes: 'Pay Application #' + pa.app_number + ' ' + noteLine,
+        });
+      }
+    }
+  }
+  closeModal('modal-ar-pay');
   toast(`Payment of ${fmt(payAmount)} recorded`);
   render();
 }

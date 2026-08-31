@@ -9877,9 +9877,13 @@ async function printVendorCheck(purchaseId) {
   const checkNumber = parseInt(String(entered).trim()) || suggested;
   const memo = pu.invoice_number ? `Invoice ${pu.invoice_number}` + (pu.po_number ? ` / PO ${pu.po_number}` : '') : (pu.po_number ? `PO ${pu.po_number}` : '');
   // Look up vendor address for the lower window of a #10 double-window envelope.
+  // NOTE: vendors is a GLOBAL roster with no company_id — do NOT wrap this in
+  // withCompany(), or it matches nothing and the check prints a blank address.
+  // ilike (not eq) so a casing difference between purchases.vendor and
+  // vendors.name doesn't silently drop the address either.
   let payeeAddress = '';
   if (pu.vendor) {
-    const { data: vrow } = await withCompany(db.from('vendors').select('address').eq('name', pu.vendor)).limit(1).maybeSingle();
+    const { data: vrow } = await db.from('vendors').select('address').ilike('name', pu.vendor).limit(1).maybeSingle();
     payeeAddress = (vrow && vrow.address) ? vrow.address : '';
   }
   const { data: chk, error } = await db.from('checks').insert({
@@ -10091,11 +10095,12 @@ async function reprintCheck(checkId) {
   const { data: c } = await db.from('checks').select('*').eq('id', checkId).single();
   if (!c) return;
   // Re-resolve payee address from vendors if this check was tied to a purchase.
+  // Same rule as printVendorCheck: no withCompany() — vendors is a global roster.
   let payeeAddress = '';
   if (c.purchase_id) {
     const { data: pu } = await db.from('purchases').select('vendor').eq('id', c.purchase_id).maybeSingle();
     if (pu && pu.vendor) {
-      const { data: vrow } = await withCompany(db.from('vendors').select('address').eq('name', pu.vendor)).limit(1).maybeSingle();
+      const { data: vrow } = await db.from('vendors').select('address').ilike('name', pu.vendor).limit(1).maybeSingle();
       payeeAddress = (vrow && vrow.address) ? vrow.address : '';
     }
   }

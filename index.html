@@ -9980,6 +9980,44 @@ async function saveCheckEdit() {
   renderChecks();
 }
 
+// Persist a manually-typed payee address back to the vendor roster.
+// The check modal's address box used to be print-only — typed once, used for that
+// one printout, then thrown away — which is why addresses never appeared to "save".
+// Vendors is the app's address book, so that's where it belongs: an existing vendor
+// gets updated (with a confirm before overwriting a different address on file), and
+// an unknown payee is added to the roster, matching how savePurchase auto-adds
+// vendors off an invoice. Non-fatal throughout: a failure here never blocks a check.
+async function persistPayeeAddress(payee, address) {
+  const name = (payee || '').trim();
+  const addr = (address || '').trim();
+  if (!name || !addr) return;
+  try {
+    const { data: rows } = await db.from('vendors').select('id, name, address').ilike('name', name).limit(1);
+    const v = rows && rows[0];
+    if (!v) {
+      const { error } = await db.from('vendors').insert({
+        name, address: addr, approved: true, active: true, payment_terms: 30,
+      });
+      if (error) { console.error('persistPayeeAddress insert failed:', error); return; }
+      toast(`Added "${name}" to your vendor list with this address`);
+    } else {
+      const existing = (v.address || '').trim();
+      if (existing === addr) return;  // already on file, nothing to do
+      if (existing && !confirm(
+        `${v.name} already has an address on file:\n\n${existing}\n\nReplace it with what you just typed?\n\n${addr}`
+      )) return;
+      const { error } = await db.from('vendors').update({ address: addr }).eq('id', v.id);
+      if (error) { console.error('persistPayeeAddress update failed:', error); return; }
+      toast(`Address saved to ${v.name} — next check to them fills in automatically`);
+    }
+    // Refresh the in-memory vendor cache so PO/invoice dropdowns see it right away.
+    const { data: refreshed } = await db.from('vendors').select('*').eq('approved', true).order('name');
+    if (refreshed) state.vendors = refreshed;
+  } catch (e) {
+    console.error('persistPayeeAddress failed (non-fatal):', e);
+  }
+}
+
 async function openManualCheck() {
   _editingCheckId = null;
   _setCheckModalMode('new');
@@ -9988,6 +10026,14 @@ async function openManualCheck() {
   $('chk-memo').value = '';
   $('chk-payee-addr').value = '';
   $('chk-date').value = today();
+  // Pull a known payee's address from the vendor roster so you don't retype it.
+  // Only fills a blank box — never overwrites something you've typed.
+  $('chk-payee').onblur = async () => {
+    const name = $('chk-payee').value.trim();
+    if (!name || $('chk-payee-addr').value.trim()) return;
+    const { data: rows } = await db.from('vendors').select('address').ilike('name', name).limit(1);
+    if (rows && rows[0] && rows[0].address) $('chk-payee-addr').value = rows[0].address;
+  };
   const suggested = await nextCheckNumber(state.activeCompanyId || null);
   $('chk-number').value = suggested;
   // Reset waiver toggle + populate active jobs for the optional waiver link.
@@ -10040,6 +10086,8 @@ async function saveAndPrintManualCheck() {
     toast(`Check #${checkNumber} recorded for ${payee}`);
   }
   closeModal('modal-check');
+  // Keep the address: without this it prints once and is lost.
+  await persistPayeeAddress(payee, payeeAddress);
   printVoucherCheck({ payee, amount, memo, date, checkNumber, payeeAddress });
 }
 

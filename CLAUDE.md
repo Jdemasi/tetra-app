@@ -399,11 +399,14 @@ on already-voided checks and frees the number. Alignment nudges persist to **`lo
 
 ## 10. Gotchas & known rough edges
 
-1. **`vendors` has no `company_id`, but two queries filter it by one.** `printVendorCheck` and
-   `reprintCheck` both do `withCompany(db.from('vendors').select('address')…)`. Since vendor rows
-   are never inserted with a `company_id`, this returns nothing whenever a company is active →
-   **the payee address is silently blank on printed checks**. Either drop `withCompany` there or
-   add `company_id` to vendors.
+1. ~~**`vendors` has no `company_id`, but two queries filter it by one.**~~ **FIXED 2026-08-31.**
+   `printVendorCheck` and `reprintCheck` wrapped their address lookup in `withCompany(...)`;
+   since vendor rows are never inserted with a `company_id`, that matched nothing whenever a
+   company was active and **the payee address printed blank on every check**. Both now query
+   `vendors` unfiltered and match with `ilike` instead of `eq` (a casing difference between
+   `purchases.vendor` and `vendors.name` caused the same blank-address symptom). Comments at
+   both sites warn against re-adding `withCompany`. **The rule: never company-filter `vendors`,
+   `subcontractors`, `employees`, or `cost_codes` — they are global rosters (§2).**
 2. **`companyDocIdentity()` falls back to Tetra Mechanical for every field.** An incomplete
    Tetra Fire or JDM company row renders Tetra Mechanical letterhead with no warning.
 3. **Pay-app prior-period linkage is by `description` text match**, not by ID
@@ -446,6 +449,16 @@ Parked pending a real first user/hire:
 ## 12. Changelog
 
 <!-- newest first; one block per code-changing session -->
+
+### 2026-08-31 — Fix blank payee address on printed checks
+`printVendorCheck` (~9886) and `reprintCheck` (~10103) looked up the vendor address with
+`withCompany(db.from('vendors').select('address').eq('name', pu.vendor))`. `vendors` is a
+global roster with no `company_id`, so that filter matched nothing and every check printed
+with an empty address block — the #10 double-window envelope showed blank. Dropped
+`withCompany` at both sites and switched `eq` → `ilike` so a casing difference between
+`purchases.vendor` and `vendors.name` can't reproduce the same symptom. Added comments at
+both sites so the filter isn't re-added. No SQL, no schema change. 2 code lines + 5 comment
+lines; `node --check` clean. Closes §10.1.
 
 ### 2026-08-31 — CLAUDE.md regenerated; repo duplicate resolved
 No code changes. Rebuilt this map from `index.html` @ 12,381 lines after the previous CLAUDE.md

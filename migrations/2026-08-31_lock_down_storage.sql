@@ -91,7 +91,7 @@ create policy "tetra_files_auth_delete"
 -- STEP 5 -- verify the hole is closed.
 --
 -- Run this in a terminal, or paste the URL in a private browser window.
--- BEFORE THE fix it returned 200 and the file. AFTER, it must return 400/403.
+-- BEFORE the fix it returned 200 and the file. AFTER, it must return 400/403.
 --
 --   curl -s -o /dev/null -w '%{http_code}\n' \
 --     -H "apikey: <the publishable key from index.html>" \

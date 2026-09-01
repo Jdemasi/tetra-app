@@ -109,7 +109,7 @@ Table → columns the app actually reads/writes. `*` = soft-deleted via `deleted
 | `subcontractors` | `id, company_name, contact_name, contact_email, contact_phone, trade, coi_expiry, gl_expiry, wc_expiry, license_number, active` |
 | `project_subs` | `project_id, company_id, subcontractor_id, contract_amount, status` |
 | `cost_codes` | `id, code, name/description` |
-| `invoices` * | `id, company_id, project_id, invoice_number, invoice_date, description, bill_to, billed_amount, retainage_pct, paid_amount, terms_days, status, notes, pdf_url, created_at, deleted_at` — **no `payment_date` column**; see §10.11 |
+| `invoices` * | `id, company_id, project_id, invoice_number, invoice_date, description, bill_to, billed_amount, retainage_pct, paid_amount, terms_days, status, notes, pdf_url, created_at, deleted_at, payment_date` — `payment_date` added 2026-08-31 by `migrations/2026-08-31_add_payment_date.sql`; see §10.11 |
 | `change_orders` | `id, company_id, project_id, co_number, description, amount, co_type, status, submitted_date, approved_date, pdf_url, created_at` |
 | `sov_line_items` | `id, project_id, item_number, description, scheduled_value, sort_order` |
 | `pay_applications` | `id, company_id, project_id, app_number, period_ending, submitted_date, total_scheduled_value, previous_billed, current_billed, total_completed, retainage_pct, retainage_amount, net_payment_due, balance_to_finish, payment_terms, paid_amount, status, notes` |
@@ -391,7 +391,12 @@ are that fraction, not the whole number shown in the UI);
 `retPct` defaults from `project.retainage_pct` (fallback 5), editable per app.
 
 **Checks**: `nextCheckNumber` = max `check_number` ever used for that company (including voided,
-so numbers are never reused) + 1, else 1001. `voidCheck` keeps the number; `deleteCheck` only works
+so numbers are never reused) + 1, else 1001. The manual-check modal's **Payee Address** box is
+*not* stored on the `checks` row — on save, `persistPayeeAddress` writes it to the **`vendors`**
+roster instead (fills a blank address silently; confirms before replacing a different one;
+creates the vendor if the payee is unknown). `openManualCheck` wires `chk-payee`'s `onblur` to
+pull a known payee's address back out, so it round-trips. `printVendorCheck` (check written from
+an invoice) never uses that box — it reads `vendors.address` directly. `voidCheck` keeps the number; `deleteCheck` only works
 on already-voided checks and frees the number. Alignment nudges persist to **`localStorage`** under
 `checkAlign_{companyId}` — per browser, not in Supabase.
 
@@ -449,6 +454,57 @@ Parked pending a real first user/hire:
 ## 12. Changelog
 
 <!-- newest first; one block per code-changing session -->
+
+### 2026-08-31 — SECURITY: storage bucket was world-readable
+Audited the live project using only the publishable key that ships inside
+`index.html`. **Every database table correctly refused anonymous reads and inserts**
+(`42501` row-level-security violations). **Storage did not.** An anonymous request
+could list the bucket root (`2600-Patterson_Houses`, `2601-Edenwald`,
+`2602-Good_Samaritan_Hospital`, `_shop`), walk into `contracts/`,
+`purchase_orders/`, `invoices/`, and download files — a `HEAD` on one contract
+returned `200` with `content-length: 1029997`. Everything the app files away
+(signed contracts, vendor invoices, pay apps, lien waivers, ST-120.1s) was
+downloadable by anyone. Fix written as `migrations/2026-08-31_lock_down_storage.sql`:
+diagnose existing `storage.objects` policies, set the bucket private, drop the
+permissive policy, add `authenticated`-only select/insert/update/delete.
+**Making the repo private does not help** — the key is served to every visitor of
+the live site; policies are the control, not secrecy. Also found **public signup is
+enabled** (`disable_signup: false`), so anyone can create an account; whether that
+grants data access depends on whether the table policies say `authenticated`
+broadly. Turn signup off in Authentication → Providers → Email. *No app code
+changed by this entry.*
+
+### 2026-08-31 — payment_date restored as a real column
+AR payment dates lived only inside `notes` strings, so they couldn't be queried,
+sorted, or charted (the §10.11 gap). Added `payment_date` to `invoices` and
+`pay_applications` via `migrations/2026-08-31_add_payment_date.sql`, which also
+backfills from the existing `[Received … on YYYY-MM-DD …]` and `Paid: $… on …`
+note formats and reports how many rows it recovered. Code now writes it at all
+five payment sites: both branches of `saveARPayment`, the mirrored `PAY-APP-`
+invoice row in each, and `markPayAppPaid`'s pay-app stamp. The notes line is
+unchanged, so nothing that reads notes breaks. New helper
+`saveTolerantOfMissingColumn(run, row, col)` wraps each write: on `42703` /
+`PGRST204` it drops the column and retries once with a console warning, so
+**deploy order doesn't matter** — this is deliberate, because the original
+2026-07-20 incident was exactly this write failing and the field being deleted
+from the code instead of added to the schema. Any *other* database error still
+surfaces normally rather than being retried. `node --check` clean; the helper's
+five branches unit-tested in isolation.
+
+### 2026-08-31 — Payee address typed on a check now persists
+The **Payee Address** box on the Write-a-Check modal (`chk-payee-addr`) was read by
+`saveAndPrintManualCheck`, handed to `printVoucherCheck`, and then discarded — it was never
+written to any table, so a typed address vanished after one printout and the box came back
+empty every time. Added `persistPayeeAddress(payee, address)` (~just above `openManualCheck`),
+called after the `checks` row saves: matches the payee against `vendors` by `ilike`, fills a
+blank `address` silently, `confirm()`s before replacing a different one, and inserts a new
+vendor row (`approved/active`, Net 30) when the payee isn't on the roster — same auto-add
+behaviour `savePurchase` already has for invoices. Refreshes `state.vendors` after. Also wired
+`chk-payee` `onblur` in `openManualCheck` to pull a known payee's address back into the box
+(fills only when blank, never overwrites typing). Every failure path is non-fatal — a vendor
+write can never block recording or printing a check. No SQL: `vendors.address` already exists
+(verified against the live PostgREST schema). ~45 lines; `node --check` clean; the helper's six
+branches unit-tested in isolation.
 
 ### 2026-08-31 — Fix blank payee address on printed checks
 `printVendorCheck` (~9886) and `reprintCheck` (~10103) looked up the vendor address with

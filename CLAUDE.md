@@ -455,6 +455,42 @@ Parked pending a real first user/hire:
 
 <!-- newest first; one block per code-changing session -->
 
+### 2026-09-01 — Company Dashboard "Actual Profit" was not profit
+`renderDashboard` computed `actProfit = totalContract - totalCost` — the whole
+contract value minus costs incurred. That books every dollar of an unstarted job
+as profit already earned, so the figure starts near the full contract and only
+falls toward the truth as real costs arrive: it reads highest exactly when you
+know least. On live data it showed **$903,032** ($1,050,000 contract − $146,968
+cost) for a company whose one finished job made **$3,032**. It also disagreed
+with the WIP page, which already used percentage-of-completion — the same label
+meant two different things on two screens.
+
+Now percentage-of-completion, matching `renderWIP`: each job earns its contract
+in proportion to budget spent (`project_budgets` + `cost_line_items`, the same
+basis as `totalEstCost`), and profit is earned revenue minus cost incurred. Two
+rules on the percentage: a job with `status === 'Complete'` is 100% earned
+regardless of spend (cost/budget understates a job that came in under — without
+this the same data read −$18,313 instead of +$3,032), and everything else caps
+at 100% (an over-budget job cannot earn more than its contract).
+
+The **"Ahead/Behind by"** subtitle had to change too, or the fix would have
+traded one wrong number for another: it compared profit-to-date against
+*whole-job* estimated profit, which would have read "Behind by $128,392". It now
+compares against `expectedProfitToDate` — the estimate prorated to the same
+completion, **per job**, since prorating company-wide would smear an unstarted
+job's expected margin onto a finished one. Adds the `onTrack` dead-band and
+`aheadOfEst` from the job-level view so mid-job noise doesn't flash red, plus an
+"on $X earned" line so the denominator is visible.
+
+Also capped `pctComplete` at 100% in `renderWIP` (one line) so the two screens
+cannot diverge on an over-budget job.
+
+No SQL. `node --check` clean; 16 assertions across two isolated suites (unstarted,
+mid-job, complete-under-budget, over-budget, missing budget rows, empty company,
+approved COs, and Joe's real portfolio shape). Verified live after deploy:
+$3,032, Behind by $4,968, on $150,000 earned — Edenwald estimated $8,000 and
+delivered $3,032.
+
 ### 2026-08-31 — SECURITY: storage bucket was world-readable
 Audited the live project using only the publishable key that ships inside
 `index.html`. **Every database table correctly refused anonymous reads and inserts**

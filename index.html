@@ -4680,24 +4680,30 @@ async function markPayAppPaid(payAppId, projectId, netDue) {
   if (!payDate) return;
   const amount = parseFloat(prompt('Amount received ($):', netDue)||netDue);
   if (isNaN(amount)) return;
-  const { error } = await db.from('pay_applications').update({
-    status: 'Paid',
-    notes: 'Paid: $'+amount.toFixed(2)+' on '+payDate,
-  }).eq('id', payAppId);
+  const { error } = await saveTolerantOfMissingColumn(
+    row => db.from('pay_applications').update(row).eq('id', payAppId),
+    {
+      status: 'Paid',
+      payment_date: payDate,
+      notes: 'Paid: $'+amount.toFixed(2)+' on '+payDate,
+    }, 'payment_date');
   if (error) { toast('Error: '+error.message, 'error'); return; }
   // Also create an invoice record for AR tracking
   const p = state.activeProject;
   const { data: pa } = await db.from('pay_applications').select('app_number, current_billed, retainage_amount').eq('id', payAppId).single();
   if (p && pa) {
-    await db.from('invoices').insert({
-      project_id: projectId,
-      company_id: state.activeCompanyId || null,
-      invoice_number: 'PAY-APP-' + pa.app_number,
-      billed_amount: parseFloat(pa.current_billed||0),
-      paid_amount: amount,
-      status: 'Paid',
-      notes: 'Pay Application #' + pa.app_number + ' [Received ' + amount.toFixed(2) + ' on ' + payDate + ']',
-    });
+    await saveTolerantOfMissingColumn(
+      row => db.from('invoices').insert(row),
+      {
+        project_id: projectId,
+        company_id: state.activeCompanyId || null,
+        invoice_number: 'PAY-APP-' + pa.app_number,
+        billed_amount: parseFloat(pa.current_billed||0),
+        paid_amount: amount,
+        payment_date: payDate,
+        status: 'Paid',
+        notes: 'Pay Application #' + pa.app_number + ' [Received ' + amount.toFixed(2) + ' on ' + payDate + ']',
+      }, 'payment_date');
   }
   toast('✅ Pay App marked as paid — $'+amount.toFixed(2)+' received');
   navigate('project', projectId, 'payapps');
@@ -8628,6 +8634,27 @@ async function savePayPurchase() {
   render();
 }
 
+// Write a row, transparently dropping one column if the database doesn't have
+// it yet. Exists because of a real incident: on 2026-07-20 this app wrote
+// invoices.payment_date, the column didn't exist, every save failed, and the
+// field was deleted from the code rather than added to the schema — which is
+// why payment dates ended up buried in notes strings. With this wrapper the
+// deploy order stops mattering: run the migration whenever, and until you do
+// the app just saves without the date and logs a warning.
+async function saveTolerantOfMissingColumn(run, row, col) {
+  let res = await run(row);
+  const e = res && res.error;
+  const missing = e && (e.code === '42703' || e.code === 'PGRST204' ||
+    /column .*does not exist|Could not find the '.*' column/i.test(e.message || ''));
+  if (missing && Object.prototype.hasOwnProperty.call(row, col)) {
+    const { [col]: _dropped, ...without } = row;
+    console.warn(`[schema] "${col}" not found — saved without it. Run the ` +
+      `2026-08-31_add_payment_date.sql migration to capture it.`);
+    res = await run(without);
+  }
+  return res;
+}
+
 // ── AR PAYMENT (money received) ──────────────────────────────────────
 // Records a customer payment against a manual invoice OR a pay application.
 // Mirrors the AP "Record Payment" modal but writes to the AR side and always
@@ -8690,11 +8717,14 @@ async function saveARPayment() {
     const newPaid = parseFloat(i.paid_amount||0) + payAmount;
     const fullyPaid = newPaid >= net - 0.01;
     const newNotes = i.notes ? i.notes + ' ' + noteLine : noteLine;
-    const { error } = await db.from('invoices').update({
-      paid_amount: newPaid,
-      status: fullyPaid ? 'Paid' : 'Partial',
-      notes: newNotes,
-    }).eq('id', id);
+    const { error } = await saveTolerantOfMissingColumn(
+      row => db.from('invoices').update(row).eq('id', id),
+      {
+        paid_amount: newPaid,
+        payment_date: payDate,
+        status: fullyPaid ? 'Paid' : 'Partial',
+        notes: newNotes,
+      }, 'payment_date');
     if (error) { toast('Error: '+error.message,'error'); return; }
   } else {
     const { data: pa } = await db.from('pay_applications').select('*').eq('id', id).single();
@@ -8703,11 +8733,14 @@ async function saveARPayment() {
     const newPaid = parseFloat(pa.paid_amount||0) + payAmount;
     const fullyPaid = newPaid >= net - 0.01;
     const newNotes = pa.notes ? pa.notes + ' ' + noteLine : noteLine;
-    const { error } = await db.from('pay_applications').update({
-      paid_amount: newPaid,
-      status: fullyPaid ? 'Paid' : pa.status,
-      notes: newNotes,
-    }).eq('id', id);
+    const { error } = await saveTolerantOfMissingColumn(
+      row => db.from('pay_applications').update(row).eq('id', id),
+      {
+        paid_amount: newPaid,
+        payment_date: payDate,
+        status: fullyPaid ? 'Paid' : pa.status,
+        notes: newNotes,
+      }, 'payment_date');
     if (error) { toast('Error: '+error.message,'error'); return; }
     // On full payment, mirror markPayAppPaid: drop a PAY-APP invoice row for AR
     // tracking, but only if one doesn't already exist (avoid double-counting).
@@ -8715,15 +8748,18 @@ async function saveARPayment() {
       const payAppInvNum = 'PAY-APP-' + pa.app_number;
       const { data: existing } = await db.from('invoices').select('id').eq('project_id', pa.project_id).eq('invoice_number', payAppInvNum).is('deleted_at', null);
       if (!existing || existing.length === 0) {
-        await db.from('invoices').insert({
-          project_id: pa.project_id,
-          company_id: state.activeCompanyId || null,
-          invoice_number: payAppInvNum,
-          billed_amount: parseFloat(pa.current_billed||0),
-          paid_amount: newPaid,
-          status: 'Paid',
-          notes: 'Pay Application #' + pa.app_number + ' ' + noteLine,
-        });
+        await saveTolerantOfMissingColumn(
+          row => db.from('invoices').insert(row),
+          {
+            project_id: pa.project_id,
+            company_id: state.activeCompanyId || null,
+            invoice_number: payAppInvNum,
+            billed_amount: parseFloat(pa.current_billed||0),
+            paid_amount: newPaid,
+            payment_date: payDate,
+            status: 'Paid',
+            notes: 'Pay Application #' + pa.app_number + ' ' + noteLine,
+          }, 'payment_date');
       }
     }
   }

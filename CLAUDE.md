@@ -471,8 +471,10 @@ permissive policy, add `authenticated`-only select/insert/update/delete.
 the live site; policies are the control, not secrecy. Also found **public signup is
 enabled** (`disable_signup: false`), so anyone can create an account; whether that
 grants data access depends on whether the table policies say `authenticated`
-broadly. Turn signup off in Authentication → Providers → Email. *No app code
-changed by this entry.*
+broadly. **Closed 2026-09-01** — `disable_signup: true`, verified from outside the
+app against `/auth/v1/settings`. Email stays enabled as a provider (that is Joe's own
+login); what is off is self-service account creation. New users are added by hand
+under Authentication → Users. *No app code changed by this entry.*
 
 ### 2026-08-31 — payment_date restored as a real column
 AR payment dates lived only inside `notes` strings, so they couldn't be queried,
@@ -490,6 +492,12 @@ unchanged, so nothing that reads notes breaks. New helper
 from the code instead of added to the schema. Any *other* database error still
 surfaces normally rather than being retried. `node --check` clean; the helper's
 five branches unit-tested in isolation.
+
+**Migration run 2026-09-01.** Backfill recovered 1 of 4 paid invoices; the other
+three (`1001`, `657`, `649-1`) have `notes = NULL` — they were marked Paid before
+the app recorded dates at all, so nothing exists to parse. Left null pending manual
+entry from bank records. `pay_applications` had one row, unpaid, nothing to recover.
+Reporting is complete from 2026-09-01 forward.
 
 ### 2026-08-31 — Payee address typed on a check now persists
 The **Payee Address** box on the Write-a-Check modal (`chk-payee-addr`) was read by

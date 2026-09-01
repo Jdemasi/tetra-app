@@ -1864,7 +1864,54 @@ async function renderDashboard() {
   const totalEstCost = (budgets||[]).reduce((s,b)=>s+parseFloat(b.budgeted_amount||0),0)
     + (lineItems||[]).reduce((s,li)=>s+parseFloat(li.budgeted_amount||0),0);
   const estProfit = totalContract - totalEstCost;
-  const actProfit = totalContract - totalCost;
+
+  // Actual profit uses PERCENTAGE-OF-COMPLETION, the same method as the WIP
+  // schedule (renderWIP): each job earns revenue in proportion to how much of
+  // its budget it has actually spent, and profit is earned revenue minus cost
+  // incurred. Budget basis is project_budgets + cost_line_items, matching
+  // totalEstCost above.
+  //
+  // Do NOT go back to `totalContract - totalCost`. That treats every dollar of
+  // an unstarted job as profit already banked, so the figure starts near the
+  // full contract value and only falls toward the truth as real costs arrive —
+  // it reads highest exactly when you know least. It also disagreed with the
+  // WIP page, which meant two screens showed different "Actual Profit" numbers.
+  // See CLAUDE.md 10.
+  const projCostToDate = id =>
+    (purchases||[]).filter(pu=>pu.project_id===id).reduce((s,pu)=>s+parseFloat(pu.po_amount||0),0)
+    + (labor||[]).filter(l=>l.project_id===id).reduce((s,l)=>s+lc(l),0);
+  const projBudget = id =>
+    (budgets||[]).filter(b=>b.project_id===id).reduce((s,b)=>s+parseFloat(b.budgeted_amount||0),0)
+    + (lineItems||[]).filter(li=>li.project_id===id).reduce((s,li)=>s+parseFloat(li.budgeted_amount||0),0);
+  //
+  // One pass over the jobs produces both figures the card needs:
+  //   earnedRevenue        — contract earned so far, by completion
+  //   expectedProfitToDate — the estimate prorated to that same completion,
+  //                          so the comparison is like-for-like
+  // Proration is PER JOB, not company-wide: prorating the whole company's
+  // estimated profit by the whole company's percent complete would smear an
+  // unstarted job's expected margin onto a finished one.
+  let earnedRevenue = 0, expectedProfitToDate = 0;
+  state.projects.forEach(p => {
+    const contract = parseFloat(p.base_contract||0) + parseFloat(p.approved_cos||0);
+    const bud = projBudget(p.id);
+    // A finished job has earned all of its revenue regardless of what it spent
+    // getting there — cost/budget would understate a job that came in under.
+    // Otherwise earn in proportion to spend, capped at 100%: an over-budget job
+    // still cannot earn more than its contract.
+    const pct = p.status === 'Complete'
+      ? 1
+      : (bud > 0 ? Math.min(projCostToDate(p.id) / bud, 1) : 0);
+    earnedRevenue        += contract * pct;
+    expectedProfitToDate += (contract - bud) * pct;
+  });
+  const actProfit = earnedRevenue - totalCost;
+  const profitVariance = actProfit - expectedProfitToDate;
+  // Mid-job, POC profit tracks the prorated estimate almost exactly, so the
+  // variance sits near $0 — call that "on track" rather than flashing red.
+  // Mirrors the job-level view (renderProjectDashboard).
+  const onTrack = Math.abs(profitVariance) < Math.max(1, totalContract * 0.0005);
+  const aheadOfEst = onTrack || profitVariance >= 0;
 
   // Insurance alerts — check COI, General Liability, and Workers' Comp expiry
   // for every active sub. Surfaces anything expired or expiring within 30 days,
@@ -2007,10 +2054,11 @@ async function renderDashboard() {
         <div style="font-size:18px;font-weight:600;color:${estProfit>=0?'var(--green)':'var(--danger)'}">${fmt(estProfit)}</div>
         <div style="font-size:10px;color:var(--gray600)">${totalContract>0?(estProfit/totalContract*100).toFixed(1)+'% margin':''}</div>
       </div>
-      <div style="text-align:center;padding:12px;border:1px solid var(--border);border-radius:8px;border-top:3px solid ${actProfit>=estProfit?'var(--green)':'var(--red)'}">
+      <div style="text-align:center;padding:12px;border:1px solid var(--border);border-radius:8px;border-top:3px solid ${aheadOfEst?'var(--green)':'var(--red)'}">
         <div style="font-size:10px;color:var(--gray600);margin-bottom:4px">ACTUAL PROFIT (to date)</div>
         <div style="font-size:18px;font-weight:600;color:${actProfit>=0?'var(--green)':'var(--danger)'}">${fmt(actProfit)}</div>
-        <div style="font-size:10px;color:${actProfit>=estProfit?'var(--green)':'var(--danger)'}">${actProfit>=estProfit?'Ahead':'Behind'} by ${fmt(Math.abs(actProfit-estProfit))}</div>
+        <div style="font-size:10px;color:${aheadOfEst?'var(--green)':'var(--danger)'}">${onTrack?'On track':(profitVariance>=0?'Ahead':'Behind')+' by '+fmt(Math.abs(profitVariance))}</div>
+        <div style="font-size:9px;color:var(--gray600);margin-top:2px">on ${fmt(earnedRevenue)} earned</div>
       </div>
     </div>
   </div>`;
@@ -5652,7 +5700,9 @@ async function renderWIP() {
       const pCost = (purchases||[]).filter(pu=>pu.project_id===p.id).reduce((s,pu)=>s+parseFloat(pu.po_amount||0),0) + (labor||[]).filter(l=>l.project_id===p.id).reduce((s,l)=>s+laborCost(l),0);
       const pBilled = (invoices||[]).filter(i=>i.project_id===p.id).reduce((s,i)=>s+parseFloat(i.billed_amount||0),0);
       const contract = parseFloat(p.base_contract||0)+parseFloat(p.approved_cos||0);
-      const pctComplete = pBud>0?pCost/pBud:0;
+      // Cap at 100% — mirrors renderDashboard, so an over-budget job cannot
+      // earn more than its contract on one screen and not the other.
+      const pctComplete = pBud>0?Math.min(pCost/pBud,1):0;
       const earnedRev = contract*pctComplete;
       const overUnder = pBilled-earnedRev;
       return `<tr>
